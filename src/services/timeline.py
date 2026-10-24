@@ -1,0 +1,27 @@
+"""Pure timeline calculations shared by preview and rendering."""
+from dataclasses import dataclass
+from typing import Iterable
+
+
+@dataclass(frozen=True)
+class TimelineEntry:
+    index: int
+    title: str
+    path: str
+    duration: float
+    start: float
+    end: float
+
+
+def build_timeline(tracks: Iterable[dict]) -> list[TimelineEntry]:
+    """Build contiguous track intervals from tracks with known durations."""
+    entries: list[TimelineEntry] = []
+    cursor = 0.0
+    for index, track in enumerate(tracks):
+        duration = float(track.get("duration", 0) or 0)
+        if duration <= 0:
+            raise ValueError(f"Track {index + 1} has no valid duration")
+        start = cursor
+        cursor += duration
+        entries.append(TimelineEntry(index, str(track.get("title") or f"Track {index + 1}"), str(track["path"]), duration, start, cursor))
+    return entries
