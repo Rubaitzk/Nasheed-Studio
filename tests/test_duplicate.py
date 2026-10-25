@@ -117,19 +117,10 @@ class TestDuplicateExportGuard(unittest.TestCase):
         self.win.hide()
 
     def tearDown(self):
-        # Patch QMessageBox.question so closeEvent doesn't block on a dialog.
-        from unittest.mock import patch
-        with patch("src.ui.main_window.QMessageBox.question",
-                   return_value=QMessageBox.StandardButton.Yes):
-            # Force the job into a terminal state so closeEvent proceeds.
-            if self.win._job and self.win._job.is_running:
-                self.win._job.cancel()
-                self.win._job = None
-            self._patcher_cmd.stop()
-            self._patcher_job.stop()
-            self.win.close()
-            self.win.deleteLater()
-            _get_app().processEvents()
+        self._patcher_cmd.stop()
+        self._patcher_job.stop()
+        from tests.conftest import dispose_window
+        dispose_window(self.win)
 
     def _pump(self):
         _get_app().processEvents()

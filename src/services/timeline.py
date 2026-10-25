@@ -13,10 +13,10 @@ class TimelineEntry:
     end: float
 
 
-def build_timeline(tracks: Iterable[dict]) -> list[TimelineEntry]:
-    """Build contiguous track intervals from tracks with known durations."""
+def build_timeline(tracks: Iterable[dict], intro_duration: float = 0.0) -> list[TimelineEntry]:
+    """Build contiguous track intervals from tracks with known durations, offset by optional intro."""
     entries: list[TimelineEntry] = []
-    cursor = 0.0
+    cursor = max(0.0, float(intro_duration or 0.0))
     for index, track in enumerate(tracks):
         duration = float(track.get("duration", 0) or 0)
         if duration <= 0:

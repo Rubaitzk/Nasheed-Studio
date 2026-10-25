@@ -49,13 +49,8 @@ class TestTitleResponsiveness(unittest.TestCase):
         self.win.hide()
 
     def tearDown(self):
-        if hasattr(self.win, "_title_timer") and self.win._title_timer.isActive():
-            self.win._title_timer.stop()
-        if hasattr(self.win, "_preview_timer") and self.win._preview_timer.isActive():
-            self.win._preview_timer.stop()
-        self.win.close()
-        self.win.deleteLater()
-        _get_app().processEvents()
+        from tests.conftest import dispose_window
+        dispose_window(self.win)
 
     def test_typing_rapidly_updates_only_field_and_debounces(self):
         """Typing multiple characters rapidly does not synchronously refresh preview or commit title."""

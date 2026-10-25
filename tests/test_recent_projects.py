@@ -45,12 +45,9 @@ class TestRecentProjects(unittest.TestCase):
         self.win._clear_recent_projects()
 
     def tearDown(self):
-        if self.win._preview_timer.isActive():
-            self.win._preview_timer.stop()
         self.win._clear_recent_projects()
-        self.win.close()
-        self.win.deleteLater()
-        _get_app().processEvents()
+        from tests.conftest import dispose_window
+        dispose_window(self.win)
         self.temp_dir.cleanup()
 
     def test_saving_adds_to_recent(self):

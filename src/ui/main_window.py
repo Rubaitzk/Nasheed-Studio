@@ -36,13 +36,16 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFileDialog, QListWidget, QListWidgetItem, QLineEdit, QComboBox, QGroupBox,
     QFormLayout, QSplitter, QMessageBox, QProgressBar, QFrame, QAbstractItemView,
-    QToolButton, QInputDialog, QSizePolicy, QSpinBox,
+    QToolButton, QInputDialog, QSizePolicy, QSpinBox, QScrollArea, QCheckBox,
+    QDoubleSpinBox, QSlider,
 )
 from PIL import Image
 
 from src.services.media_probe import get_duration
 from src.services.render_service import build_render_command, RESOLUTIONS
 from src.services.export_job import ExportJob, STATE_RUNNING
+from src.services.font_service import list_system_font_families, list_family_styles, refresh_fonts
+from src.services.compositor import create_composition, create_intro_card, CORNER_POSITIONS
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +162,22 @@ QProgressBar {
 }
 QProgressBar::chunk { background: #b9dfc3; border-radius: 4px; }
 QSplitter::handle { background: #242c26; width: 5px; }
+QScrollArea { border: none; background: transparent; }
+QCheckBox { color: #dbe4dd; spacing: 8px; font-weight: 500; }
+QCheckBox::indicator { width: 16px; height: 16px; border-radius: 3px; border: 1px solid #3a453d; background: #202622; }
+QCheckBox::indicator:checked { background: #2e5c3e; border-color: #5c9c74; }
+QLabel#warning {
+    color: #f2ba49;
+    font-size: 8.5pt;
+    font-weight: 600;
+    padding: 5px 8px;
+    background: #2a251a;
+    border: 1px solid #635021;
+    border-radius: 4px;
+}
+QSlider::groove:horizontal { border: 1px solid #3a453d; height: 6px; background: #202622; border-radius: 3px; }
+QSlider::sub-page:horizontal { background: #4a7a5c; border-radius: 3px; }
+QSlider::handle:horizontal { background: #b9dfc3; width: 14px; margin-top: -5px; margin-bottom: -5px; border-radius: 7px; }
 """
 
 
@@ -186,11 +205,14 @@ class MainWindow(QMainWindow):
         self.background_path = ""
         self.logo_path = ""
         self.cursor_path = ""
+        self.sfx_path = ""
+        self._previewing_intro = False
         self.tracks: list[dict] = []
         self.project_path = ""
         self._is_dirty = False
         self._last_saved_snapshot: Optional[dict] = None
         self._loading_project = False
+        self._is_closing = False
         self._recent_menu = None
         self._committed_title = "Abu Ali Nasheeds Collection"
         self._title_timer = QTimer(self)
@@ -263,11 +285,21 @@ class MainWindow(QMainWindow):
         self.logo_btn = QPushButton("Choose logo…")
         self.logo_btn.clicked.connect(self.choose_logo)
 
+        self.logo_pos_combo = QComboBox()
+        self.logo_pos_combo.addItems(["Bottom-Right", "Bottom-Left", "Top-Right", "Top-Left"])
+        self.logo_pos_combo.currentTextChanged.connect(self._on_logo_pos_changed)
+        logo_pos_row = QHBoxLayout()
+        logo_pos_lbl = QLabel("Corner:")
+        logo_pos_lbl.setObjectName("muted")
+        logo_pos_row.addWidget(logo_pos_lbl)
+        logo_pos_row.addWidget(self.logo_pos_combo, 1)
+
         al.addWidget(self.background_label)
         al.addWidget(self.background_btn)
         al.addSpacing(5)
         al.addWidget(self.logo_label)
         al.addWidget(self.logo_btn)
+        al.addLayout(logo_pos_row)
         left_l.addWidget(assets)
 
         playlist_box = QGroupBox("PLAYLIST")
@@ -357,13 +389,18 @@ class MainWindow(QMainWindow):
         cl.addWidget(hint)
         splitter.addWidget(center)
 
-        # -- Right panel: design + export --
+        # -- Right panel: design + export (scrollable) --
+        right_scroll = QScrollArea()
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        right_scroll.setMinimumWidth(280)
         right = QWidget()
-        right.setMinimumWidth(240)
         rl = QVBoxLayout(right)
-        rl.setContentsMargins(4, 0, 0, 0)
+        rl.setContentsMargins(4, 0, 8, 0)
         rl.setSpacing(10)
+        right_scroll.setWidget(right)
 
+        # 1. Video Design
         template_box = QGroupBox("VIDEO DESIGN")
         tf = QFormLayout(template_box)
         self.template_combo = QComboBox()
@@ -379,6 +416,80 @@ class MainWindow(QMainWindow):
         tf.addRow("Encoding", self.fps_label)
         rl.addWidget(template_box)
 
+        # 2. Typography
+        typo_box = QGroupBox("TYPOGRAPHY & FONTS")
+        tyf = QFormLayout(typo_box)
+
+        self.title_font_combo = QComboBox()
+        self.title_font_combo.currentTextChanged.connect(self._on_title_font_changed)
+        self.title_style_combo = QComboBox()
+        self.title_style_combo.currentTextChanged.connect(self._on_title_style_changed)
+        self.title_size_spin = QSpinBox()
+        self.title_size_spin.setRange(20, 90)
+        self.title_size_spin.setValue(46)
+        self.title_size_spin.setSuffix(" px")
+        self.title_size_spin.valueChanged.connect(self._on_title_size_changed)
+
+        title_font_row = QHBoxLayout()
+        title_font_row.addWidget(self.title_font_combo, 2)
+        title_font_row.addWidget(self.title_style_combo, 1)
+        title_font_row.addWidget(self.title_size_spin, 1)
+        tyf.addRow("Collection title", title_font_row)
+
+        self.track_font_combo = QComboBox()
+        self.track_font_combo.currentTextChanged.connect(self._on_track_font_changed)
+        self.track_style_combo = QComboBox()
+        self.track_style_combo.currentTextChanged.connect(self._on_track_style_changed)
+        self.track_size_spin = QSpinBox()
+        self.track_size_spin.setRange(12, 48)
+        self.track_size_spin.setValue(22)
+        self.track_size_spin.setSuffix(" px")
+        self.track_size_spin.valueChanged.connect(self._on_track_size_changed)
+
+        track_font_row = QHBoxLayout()
+        track_font_row.addWidget(self.track_font_combo, 2)
+        track_font_row.addWidget(self.track_style_combo, 1)
+        track_font_row.addWidget(self.track_size_spin, 1)
+        tyf.addRow("Playlist tracks", track_font_row)
+
+        self.refresh_fonts_btn = QPushButton("🔄 Refresh system fonts")
+        self.refresh_fonts_btn.setObjectName("quiet")
+        self.refresh_fonts_btn.clicked.connect(lambda: self._refresh_system_fonts(initial=False))
+        tyf.addRow("", self.refresh_fonts_btn)
+
+        self._refresh_system_fonts(initial=True)
+        rl.addWidget(typo_box)
+
+        # 3. Website Watermark
+        web_box = QGroupBox("WEBSITE WATERMARK")
+        wf = QFormLayout(web_box)
+
+        self.website_edit = QLineEdit()
+        self.website_edit.setPlaceholderText("Optional: e.g. www.nasheedstudio.com")
+        self.website_edit.textChanged.connect(self._on_website_text_changed)
+        wf.addRow("Website address", self.website_edit)
+
+        web_pos_row = QHBoxLayout()
+        self.website_pos_combo = QComboBox()
+        self.website_pos_combo.addItems(["Top-Right", "Top-Left", "Bottom-Left", "Bottom-Right"])
+        self.website_pos_combo.currentTextChanged.connect(self._on_website_pos_changed)
+        self.website_size_spin = QSpinBox()
+        self.website_size_spin.setRange(10, 48)
+        self.website_size_spin.setValue(18)
+        self.website_size_spin.setSuffix(" px")
+        self.website_size_spin.valueChanged.connect(self._on_website_size_changed)
+        web_pos_row.addWidget(self.website_pos_combo, 2)
+        web_pos_row.addWidget(self.website_size_spin, 1)
+        wf.addRow("Corner & Size", web_pos_row)
+
+        self.overlap_warning = QLabel("⚠️ Logo and website share the same corner. Position will adjust automatically.")
+        self.overlap_warning.setObjectName("warning")
+        self.overlap_warning.setWordWrap(True)
+        self.overlap_warning.setVisible(False)
+        wf.addRow(self.overlap_warning)
+        rl.addWidget(web_box)
+
+        # 4. Active Track Indicator
         indicator_box = QGroupBox("ACTIVE TRACK INDICATOR")
         inf = QFormLayout(indicator_box)
 
@@ -412,9 +523,69 @@ class MainWindow(QMainWindow):
         self.cursor_size_spin.setSuffix(" px")
         self.cursor_size_spin.valueChanged.connect(self._on_cursor_size_changed)
         inf.addRow("Cursor size", self.cursor_size_spin)
-
         rl.addWidget(indicator_box)
 
+        # 5. Intro Presentation
+        intro_box = QGroupBox("INTRO PRESENTATION")
+        intf = QFormLayout(intro_box)
+
+        self.intro_check = QCheckBox("Enable intro sequence")
+        self.intro_check.toggled.connect(self._on_intro_toggled)
+        intf.addRow(self.intro_check)
+
+        self.intro_dur_spin = QDoubleSpinBox()
+        self.intro_dur_spin.setRange(1.0, 10.0)
+        self.intro_dur_spin.setValue(3.0)
+        self.intro_dur_spin.setSingleStep(0.5)
+        self.intro_dur_spin.setSuffix(" s")
+        self.intro_dur_spin.valueChanged.connect(self._on_intro_dur_changed)
+        intf.addRow("Duration", self.intro_dur_spin)
+
+        self.intro_anim_combo = QComboBox()
+        self.intro_anim_combo.addItems(["Fade in / out", "Zoom in", "Slide"])
+        self.intro_anim_combo.currentTextChanged.connect(self._on_intro_anim_changed)
+        intf.addRow("Animation", self.intro_anim_combo)
+
+        self.preview_intro_btn = QPushButton("👁 Preview Intro Card")
+        self.preview_intro_btn.clicked.connect(self._toggle_intro_preview)
+        intf.addRow("", self.preview_intro_btn)
+        rl.addWidget(intro_box)
+
+        # 6. Transition Sound Effect
+        sfx_box = QGroupBox("TRANSITION SOUND EFFECT")
+        sfxf = QFormLayout(sfx_box)
+
+        self.sfx_check = QCheckBox("Enable track transition SFX")
+        self.sfx_check.toggled.connect(self._on_sfx_toggled)
+        sfxf.addRow(self.sfx_check)
+
+        self.sfx_label = self._make_asset_label("No sound effect selected")
+        sfx_btn_row = QHBoxLayout()
+        self.sfx_btn = QPushButton("Choose SFX…")
+        self.sfx_btn.clicked.connect(self.choose_sfx)
+        self.sfx_reset_btn = QPushButton("Reset")
+        self.sfx_reset_btn.clicked.connect(self.reset_sfx)
+        sfx_btn_row.addWidget(self.sfx_btn, 1)
+        sfx_btn_row.addWidget(self.sfx_reset_btn)
+
+        sfx_col = QVBoxLayout()
+        sfx_col.addWidget(self.sfx_label)
+        sfx_col.addLayout(sfx_btn_row)
+        sfxf.addRow("SFX file", sfx_col)
+
+        sfx_vol_row = QHBoxLayout()
+        self.sfx_vol_slider = QSlider(Qt.Orientation.Horizontal)
+        self.sfx_vol_slider.setRange(0, 100)
+        self.sfx_vol_slider.setValue(70)
+        self.sfx_vol_slider.valueChanged.connect(self._on_sfx_vol_changed)
+        self.sfx_vol_label = QLabel("70%")
+        self.sfx_vol_label.setMinimumWidth(35)
+        sfx_vol_row.addWidget(self.sfx_vol_slider, 1)
+        sfx_vol_row.addWidget(self.sfx_vol_label)
+        sfxf.addRow("Volume", sfx_vol_row)
+        rl.addWidget(sfx_box)
+
+        # 7. Export Destination
         output_box = QGroupBox("EXPORT DESTINATION")
         ol = QVBoxLayout(output_box)
         self.output_edit = QLineEdit(str(Path.home() / "Videos" / "nasheed_collection.mp4"))
@@ -426,6 +597,7 @@ class MainWindow(QMainWindow):
         ol.addWidget(browse)
         rl.addWidget(output_box)
 
+        # 8. Render
         render_box = QGroupBox("RENDER")
         rv = QVBoxLayout(render_box)
         self.render_summary = QLabel("0 tracks · Add audio files to begin")
@@ -466,8 +638,9 @@ class MainWindow(QMainWindow):
         info.setWordWrap(True)
         rl.addWidget(info)
 
-        splitter.addWidget(right)
-        splitter.setSizes([330, 650, 310])
+        splitter.addWidget(right_scroll)
+        splitter.setSizes([310, 630, 340])
+        layout.addWidget(splitter, 1)
         layout.addWidget(splitter, 1)
 
         self.setStyleSheet(STYLE)
@@ -590,12 +763,28 @@ class MainWindow(QMainWindow):
             "collection_title": self._committed_title or "Nasheed Collection",
             "background": self.background_path,
             "logo": self.logo_path,
+            "logo_position": self.logo_pos_combo.currentText() if hasattr(self, "logo_pos_combo") else "Bottom-Right",
             "tracks": self.tracks,
             "template": self.template_combo.currentText(),
             "resolution": self.resolution_combo.currentText(),
             "indicator_mode": self._mode_from_combo(),
             "cursor_path": self.cursor_path,
             "cursor_size": self.cursor_size_spin.value(),
+            "title_font_family": self.title_font_combo.currentText() if hasattr(self, "title_font_combo") else "Segoe UI",
+            "title_font_style": self.title_style_combo.currentText() if hasattr(self, "title_style_combo") else "Bold",
+            "title_font_size": self.title_size_spin.value() if hasattr(self, "title_size_spin") else 46,
+            "track_font_family": self.track_font_combo.currentText() if hasattr(self, "track_font_combo") else "Segoe UI",
+            "track_font_style": self.track_style_combo.currentText() if hasattr(self, "track_style_combo") else "Bold",
+            "track_font_size": self.track_size_spin.value() if hasattr(self, "track_size_spin") else 22,
+            "website_text": self.website_edit.text().strip() if hasattr(self, "website_edit") else "",
+            "website_position": self.website_pos_combo.currentText() if hasattr(self, "website_pos_combo") else "Top-Right",
+            "website_font_size": self.website_size_spin.value() if hasattr(self, "website_size_spin") else 18,
+            "transition_sfx_enabled": self.sfx_check.isChecked() if hasattr(self, "sfx_check") else False,
+            "transition_sfx_path": self.sfx_path,
+            "transition_sfx_volume": round(self.sfx_vol_slider.value() / 100.0, 2) if hasattr(self, "sfx_vol_slider") else 0.7,
+            "intro_enabled": self.intro_check.isChecked() if hasattr(self, "intro_check") else False,
+            "intro_duration": self.intro_dur_spin.value() if hasattr(self, "intro_dur_spin") else 3.0,
+            "intro_animation": self.intro_anim_combo.currentText() if hasattr(self, "intro_anim_combo") else "Fade in / out",
             "output_path": self.output_edit.text().strip(),
         }
 
@@ -623,6 +812,7 @@ class MainWindow(QMainWindow):
             self.logo_path = path
             self._set_asset_label(self.logo_label, path)
             self._mark_dirty()
+            self._check_logo_website_overlap()
             self._refresh_preview()
 
     # ------------------------------------------------------------------
@@ -768,6 +958,171 @@ class MainWindow(QMainWindow):
         self.collection_title.setText(self._committed_title)
         self.title_apply_btn.setEnabled(False)
 
+    def _refresh_system_fonts(self, initial: bool = False) -> None:
+        if not initial:
+            refresh_fonts()
+        families = list_system_font_families()
+        cur_title = self.title_font_combo.currentText() if hasattr(self, "title_font_combo") and self.title_font_combo.count() else "Segoe UI"
+        cur_track = self.track_font_combo.currentText() if hasattr(self, "track_font_combo") and self.track_font_combo.count() else "Segoe UI"
+
+        self.title_font_combo.blockSignals(True)
+        self.track_font_combo.blockSignals(True)
+        self.title_font_combo.clear()
+        self.track_font_combo.clear()
+
+        self.title_font_combo.addItems(families)
+        self.track_font_combo.addItems(families)
+
+        if cur_title in families:
+            self.title_font_combo.setCurrentText(cur_title)
+        else:
+            self.title_font_combo.setCurrentText("Segoe UI" if "Segoe UI" in families else families[0])
+
+        if cur_track in families:
+            self.track_font_combo.setCurrentText(cur_track)
+        else:
+            self.track_font_combo.setCurrentText("Segoe UI" if "Segoe UI" in families else families[0])
+
+        self.title_font_combo.blockSignals(False)
+        self.track_font_combo.blockSignals(False)
+
+        self._update_title_styles()
+        self._update_track_styles()
+
+        if not initial:
+            self._mark_dirty()
+            self._schedule_preview(150)
+
+    def _update_title_styles(self) -> None:
+        if not hasattr(self, "title_font_combo") or not hasattr(self, "title_style_combo"):
+            return
+        fam = self.title_font_combo.currentText()
+        styles = list_family_styles(fam)
+        cur = self.title_style_combo.currentText()
+        self.title_style_combo.blockSignals(True)
+        self.title_style_combo.clear()
+        self.title_style_combo.addItems(styles)
+        if cur in styles:
+            self.title_style_combo.setCurrentText(cur)
+        elif "Bold" in styles:
+            self.title_style_combo.setCurrentText("Bold")
+        elif "Regular" in styles:
+            self.title_style_combo.setCurrentText("Regular")
+        self.title_style_combo.blockSignals(False)
+
+    def _update_track_styles(self) -> None:
+        if not hasattr(self, "track_font_combo") or not hasattr(self, "track_style_combo"):
+            return
+        fam = self.track_font_combo.currentText()
+        styles = list_family_styles(fam)
+        cur = self.track_style_combo.currentText()
+        self.track_style_combo.blockSignals(True)
+        self.track_style_combo.clear()
+        self.track_style_combo.addItems(styles)
+        if cur in styles:
+            self.track_style_combo.setCurrentText(cur)
+        elif "Bold" in styles:
+            self.track_style_combo.setCurrentText("Bold")
+        elif "Regular" in styles:
+            self.track_style_combo.setCurrentText("Regular")
+        self.track_style_combo.blockSignals(False)
+
+    def _on_title_font_changed(self, text: str) -> None:
+        self._update_title_styles()
+        self._mark_dirty()
+        self._schedule_preview(150)
+
+    def _on_title_style_changed(self, text: str) -> None:
+        self._mark_dirty()
+        self._schedule_preview(150)
+
+    def _on_title_size_changed(self, val: int) -> None:
+        self._mark_dirty()
+        self._schedule_preview(150)
+
+    def _on_track_font_changed(self, text: str) -> None:
+        self._update_track_styles()
+        self._mark_dirty()
+        self._schedule_preview(150)
+
+    def _on_track_style_changed(self, text: str) -> None:
+        self._mark_dirty()
+        self._schedule_preview(150)
+
+    def _on_track_size_changed(self, val: int) -> None:
+        self._mark_dirty()
+        self._schedule_preview(150)
+
+    def _on_logo_pos_changed(self, text: str) -> None:
+        self._mark_dirty()
+        self._check_logo_website_overlap()
+        self._refresh_preview()
+
+    def _on_website_text_changed(self, text: str) -> None:
+        self._mark_dirty()
+        self._check_logo_website_overlap()
+        self._schedule_preview(200)
+
+    def _on_website_pos_changed(self, text: str) -> None:
+        self._mark_dirty()
+        self._check_logo_website_overlap()
+        self._refresh_preview()
+
+    def _on_website_size_changed(self, val: int) -> None:
+        self._mark_dirty()
+        self._schedule_preview(150)
+
+    def _check_logo_website_overlap(self) -> None:
+        if not hasattr(self, "overlap_warning") or not hasattr(self, "logo_pos_combo") or not hasattr(self, "website_pos_combo"):
+            return
+        has_logo = bool(self.logo_path)
+        has_web = bool(self.website_edit.text().strip())
+        same_corner = (self.logo_pos_combo.currentText().strip().lower() == self.website_pos_combo.currentText().strip().lower())
+        self.overlap_warning.setVisible(has_logo and has_web and same_corner)
+
+    def choose_sfx(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose transition sound effect", "",
+            "Audio files (*.mp3 *.wav *.m4a *.aac *.flac *.ogg *.opus *.wma);;All files (*.*)"
+        )
+        if path:
+            self.sfx_path = path
+            self._set_asset_label(self.sfx_label, path)
+            self._mark_dirty()
+
+    def reset_sfx(self) -> None:
+        if self.sfx_path:
+            self.sfx_path = ""
+            self._set_asset_label(self.sfx_label, "")
+            self.sfx_label.setText("No sound effect selected")
+            self._mark_dirty()
+
+    def _on_sfx_toggled(self, checked: bool) -> None:
+        self._mark_dirty()
+
+    def _on_sfx_vol_changed(self, val: int) -> None:
+        if hasattr(self, "sfx_vol_label"):
+            self.sfx_vol_label.setText(f"{val}%")
+        self._mark_dirty()
+
+    def _on_intro_toggled(self, checked: bool) -> None:
+        self._mark_dirty()
+
+    def _on_intro_dur_changed(self, val: float) -> None:
+        self._mark_dirty()
+
+    def _on_intro_anim_changed(self, text: str) -> None:
+        self._mark_dirty()
+
+    def _toggle_intro_preview(self) -> None:
+        self._previewing_intro = not getattr(self, "_previewing_intro", False)
+        if hasattr(self, "preview_intro_btn"):
+            if self._previewing_intro:
+                self.preview_intro_btn.setText("👁 Preview Playlist")
+            else:
+                self.preview_intro_btn.setText("👁 Preview Intro Card")
+        self._refresh_preview()
+
     def _on_template_changed(self, text: str) -> None:
         self._mark_dirty()
         self._refresh_preview()
@@ -790,6 +1145,9 @@ class MainWindow(QMainWindow):
             self._refresh_preview()
 
     def _update_resolution_badge(self) -> None:
+        if getattr(self, "_previewing_intro", False):
+            self.preview_badge.setText("PREVIEW · INTRO CARD")
+            return
         size = RESOLUTIONS[self.resolution_combo.currentText()]
         self.preview_badge.setText(f"PREVIEW · {size[0]} × {size[1]}")
 
@@ -801,6 +1159,49 @@ class MainWindow(QMainWindow):
                 "Choose a background image and add audio tracks to preview your composition."
             )
             return
+
+        title_fam = self.title_font_combo.currentText() if hasattr(self, "title_font_combo") else "Segoe UI"
+        title_style = self.title_style_combo.currentText() if hasattr(self, "title_style_combo") else "Bold"
+        title_sz = self.title_size_spin.value() if hasattr(self, "title_size_spin") else 46
+        track_fam = self.track_font_combo.currentText() if hasattr(self, "track_font_combo") else "Segoe UI"
+        track_style = self.track_style_combo.currentText() if hasattr(self, "track_style_combo") else "Bold"
+        track_sz = self.track_size_spin.value() if hasattr(self, "track_size_spin") else 22
+        logo_pos = self.logo_pos_combo.currentText() if hasattr(self, "logo_pos_combo") else "Bottom-Right"
+        web_txt = self.website_edit.text().strip() if hasattr(self, "website_edit") else ""
+        web_pos = self.website_pos_combo.currentText() if hasattr(self, "website_pos_combo") else "Top-Right"
+        web_sz = self.website_size_spin.value() if hasattr(self, "website_size_spin") else 18
+
+        # If user is previewing intro presentation card
+        if getattr(self, "_previewing_intro", False):
+            try:
+                with tempfile.TemporaryDirectory(prefix="nasheed_intro_prev_") as tmp:
+                    card_path = create_intro_card(
+                        width=1280,
+                        height=720,
+                        background_path=self.background_path,
+                        logo_path=self.logo_path or None,
+                        collection_title=self._committed_title or "Nasheed Collection",
+                        template=self.template_combo.currentText(),
+                        out_dir=tmp,
+                        title_font_family=title_fam,
+                        title_font_style=title_style,
+                        title_font_size=max(28, int(title_sz * 1.2)),
+                        website_text=web_txt,
+                    )
+                    pix = QPixmap(card_path)
+                    self.preview_image.setPixmap(
+                        pix.scaled(
+                            self.preview_image.size(),
+                            Qt.AspectRatioMode.KeepAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation,
+                        )
+                    )
+                    self.preview_image.setText("")
+            except Exception as exc:
+                self.preview_image.setPixmap(QPixmap())
+                self.preview_image.setText(f"Intro preview unavailable: {exc}")
+            return
+
         try:
             from src.services.compositor import create_composition
             with tempfile.TemporaryDirectory(prefix="nasheed_preview_") as tmp:
@@ -821,6 +1222,16 @@ class MainWindow(QMainWindow):
                     cursor_path=self.cursor_path or None,
                     cursor_size=self.cursor_size_spin.value(),
                     preview_only_first_overlay=True,
+                    title_font_family=title_fam,
+                    title_font_style=title_style,
+                    title_font_size=title_sz,
+                    track_font_family=track_fam,
+                    track_font_style=track_style,
+                    track_font_size=track_sz,
+                    logo_position=logo_pos,
+                    website_text=web_txt,
+                    website_position=web_pos,
+                    website_font_size=web_sz,
                 )
                 img = Image.open(base).convert("RGBA")
                 if overlays:
@@ -935,23 +1346,58 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def closeEvent(self, event) -> None:
-        if self._job and self._job.is_running:
-            answer = QMessageBox.question(
-                self, "Export in progress",
-                "An export is running. Cancel it and close?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if answer != QMessageBox.StandardButton.Yes:
-                event.ignore()
-                return
-            self._job.cancel()
-            # Wait briefly for the worker thread to clean up.
-            self._job.join(timeout=5.0)
-        if hasattr(self, "_title_timer") and self._title_timer.isActive():
-            self._title_timer.stop()
-        if hasattr(self, "_preview_timer") and self._preview_timer.isActive():
-            self._preview_timer.stop()
-        event.accept()
+        if getattr(self, "_is_closing", False):
+            event.ignore()
+            return
+        self._is_closing = True
+        try:
+            # 1. Export in progress check
+            if self._job and self._job.is_running:
+                answer = QMessageBox.question(
+                    self, "Export in progress",
+                    "An export is running. Cancel it and close?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                )
+                if answer != QMessageBox.StandardButton.Yes:
+                    event.ignore()
+                    return
+
+            # 2. Unsaved changes check
+            if self.has_unsaved_changes():
+                ret = QMessageBox.warning(
+                    self, "Unsaved Changes",
+                    "Do you want to save changes before closing?",
+                    QMessageBox.StandardButton.Save
+                    | QMessageBox.StandardButton.Discard
+                    | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Save,
+                )
+                if ret == QMessageBox.StandardButton.Save:
+                    if not self.save_project():
+                        event.ignore()
+                        return
+                elif ret == QMessageBox.StandardButton.Discard:
+                    pass
+                else:  # Cancel or dialog dismissed
+                    event.ignore()
+                    return
+
+            # 3. Clean shutdown: cancel export job if still running
+            if self._job and self._job.is_running:
+                self._job.cancel()
+                # Wait briefly for the worker thread to clean up.
+                self._job.join(timeout=5.0)
+
+            # 4. Stop timers
+            if hasattr(self, "_title_timer") and self._title_timer.isActive():
+                self._title_timer.stop()
+            if hasattr(self, "_preview_timer") and self._preview_timer.isActive():
+                self._preview_timer.stop()
+
+            event.accept()
+        finally:
+            if not event.isAccepted():
+                self._is_closing = False
 
     # ------------------------------------------------------------------
     # Project persistence & dirty state
@@ -976,6 +1422,10 @@ class MainWindow(QMainWindow):
             or self.background_path
             or self.logo_path
             or (self._committed_title != default_title)
+            or (hasattr(self, "website_edit") and self.website_edit.text().strip())
+            or (hasattr(self, "sfx_path") and self.sfx_path)
+            or (hasattr(self, "intro_check") and self.intro_check.isChecked())
+            or (hasattr(self, "sfx_check") and self.sfx_check.isChecked())
         )
 
     def _get_recent_projects(self) -> list[str]:
@@ -1070,6 +1520,8 @@ class MainWindow(QMainWindow):
             self.background_path = ""
             self.logo_path = ""
             self.cursor_path = ""
+            self.sfx_path = ""
+            self._previewing_intro = False
             self.tracks = []
             self.project_path = ""
             self._set_asset_label(self.background_label, "")
@@ -1078,12 +1530,38 @@ class MainWindow(QMainWindow):
             self.logo_label.setText("No logo selected")
             self._set_asset_label(self.cursor_label, "")
             self.cursor_label.setText("Default arrow cursor")
+            if hasattr(self, "sfx_label"):
+                self._set_asset_label(self.sfx_label, "")
+                self.sfx_label.setText("No sound effect selected")
             self.collection_title.setText(self._committed_title)
             self.title_apply_btn.setEnabled(False)
             self.template_combo.setCurrentText("Cinematic")
             self.resolution_combo.setCurrentIndex(0)
             self._set_combo_from_mode("both")
             self.cursor_size_spin.setValue(32)
+            if hasattr(self, "logo_pos_combo"):
+                self.logo_pos_combo.setCurrentText("Bottom-Right")
+            if hasattr(self, "title_font_combo"):
+                self.title_font_combo.setCurrentText("Segoe UI" if "Segoe UI" in [self.title_font_combo.itemText(i) for i in range(self.title_font_combo.count())] else self.title_font_combo.itemText(0))
+                self.title_style_combo.setCurrentText("Bold")
+                self.title_size_spin.setValue(46)
+            if hasattr(self, "track_font_combo"):
+                self.track_font_combo.setCurrentText("Segoe UI" if "Segoe UI" in [self.track_font_combo.itemText(i) for i in range(self.track_font_combo.count())] else self.track_font_combo.itemText(0))
+                self.track_style_combo.setCurrentText("Bold")
+                self.track_size_spin.setValue(22)
+            if hasattr(self, "website_edit"):
+                self.website_edit.setText("")
+                self.website_pos_combo.setCurrentText("Top-Right")
+                self.website_size_spin.setValue(18)
+                self.overlap_warning.setVisible(False)
+            if hasattr(self, "intro_check"):
+                self.intro_check.setChecked(False)
+                self.intro_dur_spin.setValue(3.0)
+                self.intro_anim_combo.setCurrentText("Fade in / out")
+                self.preview_intro_btn.setText("👁 Preview Intro Card")
+            if hasattr(self, "sfx_check"):
+                self.sfx_check.setChecked(False)
+                self.sfx_vol_slider.setValue(70)
             self.output_edit.setText(str(Path.home() / "Videos" / "nasheed_collection.mp4"))
             self._refresh_tracks()
             self._refresh_preview()
@@ -1093,12 +1571,12 @@ class MainWindow(QMainWindow):
         finally:
             self._loading_project = False
 
-    def save_project(self) -> None:
+    def save_project(self) -> bool:
         if not self.project_path:
             return self.save_project_as()
-        self._write_project(self.project_path)
+        return self._write_project(self.project_path)
 
-    def save_project_as(self) -> None:
+    def save_project_as(self) -> bool:
         path, _ = QFileDialog.getSaveFileName(
             self, "Save project",
             self.project_path or str(Path.home() / "nasheed_project.json"),
@@ -1107,9 +1585,10 @@ class MainWindow(QMainWindow):
         if path:
             if not path.lower().endswith(".json"):
                 path += ".json"
-            self._write_project(path)
+            return self._write_project(path)
+        return False
 
-    def _write_project(self, path: str) -> None:
+    def _write_project(self, path: str) -> bool:
         try:
             payload = json.dumps(self._project(), indent=2)
             Path(path).write_text(payload, encoding="utf-8")
@@ -1118,9 +1597,11 @@ class MainWindow(QMainWindow):
             self._last_saved_snapshot = self._project()
             self._add_recent_project(path)
             self.status_label.setText(f"Project saved: {path}")
+            return True
         except Exception as exc:
             # Failed save preserves dirty state
             QMessageBox.critical(self, "Save failed", str(exc))
+            return False
 
     def open_project(self) -> None:
         if self.has_unsaved_changes():
@@ -1148,6 +1629,8 @@ class MainWindow(QMainWindow):
                 self.background_path = data.get("background", "")
                 self.logo_path = data.get("logo", "")
                 self.cursor_path = data.get("cursor_path", "")
+                self.sfx_path = data.get("transition_sfx_path", "")
+                self._previewing_intro = False
                 self.tracks = data.get("tracks", [])
                 self.collection_title.setText(self._committed_title)
                 self.title_apply_btn.setEnabled(False)
@@ -1155,6 +1638,31 @@ class MainWindow(QMainWindow):
                 self.resolution_combo.setCurrentText(data.get("resolution", "1080p · Full HD"))
                 self._set_combo_from_mode(data.get("indicator_mode", "both"))
                 self.cursor_size_spin.setValue(int(data.get("cursor_size", 32) or 32))
+                if hasattr(self, "logo_pos_combo"):
+                    self.logo_pos_combo.setCurrentText(data.get("logo_position", "Bottom-Right"))
+                if hasattr(self, "title_font_combo"):
+                    self.title_font_combo.setCurrentText(data.get("title_font_family", "Segoe UI"))
+                    self._update_title_styles()
+                    self.title_style_combo.setCurrentText(data.get("title_font_style", "Bold"))
+                    self.title_size_spin.setValue(int(data.get("title_font_size", 46) or 46))
+                if hasattr(self, "track_font_combo"):
+                    self.track_font_combo.setCurrentText(data.get("track_font_family", "Segoe UI"))
+                    self._update_track_styles()
+                    self.track_style_combo.setCurrentText(data.get("track_font_style", "Bold"))
+                    self.track_size_spin.setValue(int(data.get("track_font_size", 22) or 22))
+                if hasattr(self, "website_edit"):
+                    self.website_edit.setText(data.get("website_text", ""))
+                    self.website_pos_combo.setCurrentText(data.get("website_position", "Top-Right"))
+                    self.website_size_spin.setValue(int(data.get("website_font_size", 18) or 18))
+                if hasattr(self, "intro_check"):
+                    self.intro_check.setChecked(bool(data.get("intro_enabled", False)))
+                    self.intro_dur_spin.setValue(float(data.get("intro_duration", 3.0) or 3.0))
+                    self.intro_anim_combo.setCurrentText(data.get("intro_animation", "Fade in / out"))
+                    self.preview_intro_btn.setText("👁 Preview Intro Card")
+                if hasattr(self, "sfx_check"):
+                    self.sfx_check.setChecked(bool(data.get("transition_sfx_enabled", False)))
+                    sfx_vol = int(float(data.get("transition_sfx_volume", 0.7) if data.get("transition_sfx_volume") is not None else 0.7) * 100)
+                    self.sfx_vol_slider.setValue(sfx_vol)
                 self.output_edit.setText(
                     data.get("output_path", str(Path.home() / "Videos" / "nasheed_collection.mp4"))
                 )
@@ -1170,6 +1678,13 @@ class MainWindow(QMainWindow):
                 else:
                     self._set_asset_label(self.cursor_label, "")
                     self.cursor_label.setText("Default arrow cursor")
+                if hasattr(self, "sfx_label"):
+                    if self.sfx_path:
+                        self._set_asset_label(self.sfx_label, self.sfx_path)
+                    else:
+                        self._set_asset_label(self.sfx_label, "")
+                        self.sfx_label.setText("No sound effect selected")
+                self._check_logo_website_overlap()
                 self._refresh_tracks()
                 self._refresh_preview()
                 self._is_dirty = False

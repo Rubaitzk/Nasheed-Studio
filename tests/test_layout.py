@@ -37,9 +37,8 @@ class TestLongFilenameLayout(unittest.TestCase):
         self.win.hide()
 
     def tearDown(self):
-        self.win.close()
-        self.win.deleteLater()
-        _get_app().processEvents()
+        from tests.conftest import dispose_window
+        dispose_window(self.win)
 
     def _long_path(self, n=120):
         return "/".join(["a" * 40] * 3) + "/" + ("x" * n) + ".png"

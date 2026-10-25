@@ -43,11 +43,8 @@ class TestDirtyState(unittest.TestCase):
         self.tmp_path = Path(self.temp_dir.name)
 
     def tearDown(self):
-        if self.win._preview_timer.isActive():
-            self.win._preview_timer.stop()
-        self.win.close()
-        self.win.deleteLater()
-        _get_app().processEvents()
+        from tests.conftest import dispose_window
+        dispose_window(self.win)
         self.temp_dir.cleanup()
 
     def test_1_edit_save_create_project_no_warning(self):
