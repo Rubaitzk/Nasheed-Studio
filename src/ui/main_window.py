@@ -30,7 +30,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QThread, Signal, QObject
+from PySide6.QtCore import Qt, QThread, Signal, QObject, QTimer, QSettings
 from PySide6.QtGui import QPixmap, QAction
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -182,6 +182,14 @@ class MainWindow(QMainWindow):
         self.logo_path = ""
         self.tracks: list[dict] = []
         self.project_path = ""
+        self._is_dirty = False
+        self._last_saved_snapshot: Optional[dict] = None
+        self._loading_project = False
+        self._recent_menu = None
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(300)
+        self._preview_timer.timeout.connect(self._refresh_preview)
         self._job: Optional[ExportJob] = None
         self._bridge = _ExportBridge()
         self._bridge.progress.connect(self._on_progress)
@@ -255,7 +263,8 @@ class MainWindow(QMainWindow):
         pl = QVBoxLayout(playlist_box)
         title_form = QFormLayout()
         self.collection_title = QLineEdit("Abu Ali Nasheeds Collection")
-        self.collection_title.textChanged.connect(self._refresh_preview)
+        self.collection_title.textChanged.connect(self._on_title_changed)
+        self.collection_title.editingFinished.connect(self._flush_preview)
         title_form.addRow("Collection title", self.collection_title)
         pl.addLayout(title_form)
 
@@ -337,11 +346,11 @@ class MainWindow(QMainWindow):
         tf = QFormLayout(template_box)
         self.template_combo = QComboBox()
         self.template_combo.addItems(["Cinematic", "Minimal", "Two-column"])
-        self.template_combo.currentTextChanged.connect(self._refresh_preview)
+        self.template_combo.currentTextChanged.connect(self._on_template_changed)
         tf.addRow("Layout template", self.template_combo)
         self.resolution_combo = QComboBox()
         self.resolution_combo.addItems(list(RESOLUTIONS.keys()))
-        self.resolution_combo.currentTextChanged.connect(self._update_resolution_badge)
+        self.resolution_combo.currentTextChanged.connect(self._on_resolution_changed)
         tf.addRow("Export resolution", self.resolution_combo)
         self.fps_label = QLabel("30 fps · H.264 / AAC")
         self.fps_label.setObjectName("muted")
@@ -352,6 +361,7 @@ class MainWindow(QMainWindow):
         ol = QVBoxLayout(output_box)
         self.output_edit = QLineEdit(str(Path.home() / "Videos" / "nasheed_collection.mp4"))
         self.output_edit.setPlaceholderText("Choose output MP4 path")
+        self.output_edit.textChanged.connect(self._mark_dirty)
         browse = QPushButton("Choose output file…")
         browse.clicked.connect(self.choose_output)
         ol.addWidget(self.output_edit)
@@ -406,15 +416,24 @@ class MainWindow(QMainWindow):
 
         # Menus
         file_menu = self.menuBar().addMenu("Project")
-        for label, fn in [
-            ("New project", self.new_project),
-            ("Open project…", self.open_project),
-            ("Save project", self.save_project),
-            ("Save project as…", self.save_project_as),
-        ]:
-            act = QAction(label, self)
-            act.triggered.connect(fn)
-            file_menu.addAction(act)
+        new_act = QAction("New project", self)
+        new_act.triggered.connect(self.new_project)
+        file_menu.addAction(new_act)
+
+        open_act = QAction("Open project…", self)
+        open_act.triggered.connect(self.open_project)
+        file_menu.addAction(open_act)
+
+        self._recent_menu = file_menu.addMenu("Open recent")
+        self._rebuild_recent_menu()
+
+        save_act = QAction("Save project", self)
+        save_act.triggered.connect(self.save_project)
+        file_menu.addAction(save_act)
+
+        save_as_act = QAction("Save project as…", self)
+        save_as_act.triggered.connect(self.save_project_as)
+        file_menu.addAction(save_as_act)
 
         help_menu = self.menuBar().addMenu("Help")
         about = QAction("About Nasheed Studio", self)
@@ -483,6 +502,7 @@ class MainWindow(QMainWindow):
         if path:
             self.background_path = path
             self._set_asset_label(self.background_label, path)
+            self._mark_dirty()
             self._refresh_preview()
 
     def choose_logo(self) -> None:
@@ -493,6 +513,7 @@ class MainWindow(QMainWindow):
         if path:
             self.logo_path = path
             self._set_asset_label(self.logo_label, path)
+            self._mark_dirty()
             self._refresh_preview()
 
     # ------------------------------------------------------------------
@@ -504,6 +525,7 @@ class MainWindow(QMainWindow):
             self, "Add audio tracks", "",
             "Audio files (*.mp3 *.wav *.m4a *.aac *.flac *.ogg *.opus *.wma);;All files (*.*)"
         )
+        added = False
         for path in paths:
             if any(t["path"] == path for t in self.tracks):
                 continue
@@ -511,10 +533,13 @@ class MainWindow(QMainWindow):
                 duration = get_duration(path)
                 title = Path(path).stem.replace("_", " ").replace("-", " ").strip()
                 self.tracks.append({"title": title, "path": path, "duration": duration})
+                added = True
             except Exception as exc:
                 QMessageBox.warning(self, "Could not import audio", f"{Path(path).name}\n\n{exc}")
-        self._refresh_tracks()
-        self._refresh_preview()
+        if added:
+            self._mark_dirty()
+            self._refresh_tracks()
+            self._refresh_preview()
 
     def _refresh_tracks(self) -> None:
         self.track_list.blockSignals(True)
@@ -544,6 +569,7 @@ class MainWindow(QMainWindow):
                 reordered.append(by_path[path])
         if len(reordered) == len(self.tracks):
             self.tracks = reordered
+            self._mark_dirty()
         self._refresh_tracks()
         self._refresh_preview()
 
@@ -557,6 +583,7 @@ class MainWindow(QMainWindow):
         )
         if ok and title.strip():
             self.tracks[idx]["title"] = title.strip()
+            self._mark_dirty()
             self._refresh_tracks()
             self._refresh_preview()
 
@@ -564,6 +591,7 @@ class MainWindow(QMainWindow):
         idx = self.track_list.currentRow()
         if idx >= 0:
             self.tracks.pop(idx)
+            self._mark_dirty()
             self._refresh_tracks()
             self._refresh_preview()
 
@@ -573,6 +601,7 @@ class MainWindow(QMainWindow):
         if idx < 0 or not (0 <= target < len(self.tracks)):
             return
         self.tracks[idx], self.tracks[target] = self.tracks[target], self.tracks[idx]
+        self._mark_dirty()
         self._refresh_tracks()
         self.track_list.setCurrentRow(target)
         self._refresh_preview()
@@ -593,6 +622,28 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Preview
     # ------------------------------------------------------------------
+
+    def _on_title_changed(self, text: str) -> None:
+        self._mark_dirty()
+        self._schedule_preview(300)
+
+    def _on_template_changed(self, text: str) -> None:
+        self._mark_dirty()
+        self._refresh_preview()
+
+    def _on_resolution_changed(self, text: str) -> None:
+        self._mark_dirty()
+        self._update_resolution_badge()
+
+    def _schedule_preview(self, delay: int = 300) -> None:
+        """Debounce preview generation to keep UI responsive during typing/resizing."""
+        self._preview_timer.start(delay)
+
+    def _flush_preview(self) -> None:
+        """Immediately update preview if an update is pending."""
+        if self._preview_timer.isActive():
+            self._preview_timer.stop()
+            self._refresh_preview()
 
     def _update_resolution_badge(self) -> None:
         size = RESOLUTIONS[self.resolution_combo.currentText()]
@@ -638,7 +689,7 @@ class MainWindow(QMainWindow):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        self._refresh_preview()
+        self._schedule_preview(150)
 
     # ------------------------------------------------------------------
     # Bug C: Export lifecycle
@@ -739,30 +790,133 @@ class MainWindow(QMainWindow):
         event.accept()
 
     # ------------------------------------------------------------------
-    # Project persistence
+    # Project persistence & dirty state
     # ------------------------------------------------------------------
 
+    def _mark_dirty(self, *args) -> None:
+        if not self._loading_project:
+            self._is_dirty = True
+
+    def has_unsaved_changes(self) -> bool:
+        if self._is_dirty:
+            return True
+        if self.project_path:
+            if self._last_saved_snapshot is not None:
+                return self._project() != self._last_saved_snapshot
+            return False
+        default_title = "Abu Ali Nasheeds Collection"
+        return bool(
+            self.tracks
+            or self.background_path
+            or self.logo_path
+            or (self.collection_title.text().strip() != default_title)
+        )
+
+    def _get_recent_projects(self) -> list[str]:
+        settings = QSettings("NasheedStudio", "NasheedStudio")
+        val = settings.value("recent_projects", [])
+        if isinstance(val, str):
+            val = [val] if val else []
+        elif not isinstance(val, list):
+            val = []
+        return [str(p) for p in val if p]
+
+    def _add_recent_project(self, path: str) -> None:
+        try:
+            resolved = str(Path(path).resolve())
+            recents = [p for p in self._get_recent_projects() if str(Path(p).resolve()) != resolved]
+            recents.insert(0, path)
+            recents = recents[:10]
+            settings = QSettings("NasheedStudio", "NasheedStudio")
+            settings.setValue("recent_projects", recents)
+            self._rebuild_recent_menu()
+        except Exception:
+            pass
+
+    def _remove_recent_project(self, path: str) -> None:
+        try:
+            resolved = str(Path(path).resolve())
+            recents = [p for p in self._get_recent_projects() if str(Path(p).resolve()) != resolved]
+            settings = QSettings("NasheedStudio", "NasheedStudio")
+            settings.setValue("recent_projects", recents)
+            self._rebuild_recent_menu()
+        except Exception:
+            pass
+
+    def _clear_recent_projects(self) -> None:
+        settings = QSettings("NasheedStudio", "NasheedStudio")
+        settings.remove("recent_projects")
+        self._rebuild_recent_menu()
+
+    def _rebuild_recent_menu(self) -> None:
+        if not self._recent_menu:
+            return
+        self._recent_menu.clear()
+        recents = self._get_recent_projects()
+        if not recents:
+            empty_act = QAction("No recent projects", self)
+            empty_act.setEnabled(False)
+            self._recent_menu.addAction(empty_act)
+            return
+
+        for p in recents:
+            name = Path(p).name
+            act = QAction(f"{name}  ({p})", self)
+            act.setToolTip(p)
+            act.triggered.connect(lambda checked=False, target_path=p: self.open_recent_project(target_path))
+            self._recent_menu.addAction(act)
+
+        self._recent_menu.addSeparator()
+        clear_act = QAction("Clear recent projects", self)
+        clear_act.triggered.connect(self._clear_recent_projects)
+        self._recent_menu.addAction(clear_act)
+
+    def open_recent_project(self, path: str) -> None:
+        if not Path(path).is_file():
+            QMessageBox.warning(
+                self, "Project not found",
+                f"The project file could not be found:\n\n{path}\n\nIt may have been moved, renamed, or deleted."
+            )
+            self._remove_recent_project(path)
+            return
+        if self.has_unsaved_changes():
+            answer = QMessageBox.question(
+                self, "Unsaved changes", "Discard unsaved changes and open project?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self._load_project_file(path)
+
     def new_project(self) -> None:
-        if self.tracks or self.background_path or self.logo_path:
+        if self.has_unsaved_changes():
             answer = QMessageBox.question(
                 self, "New project", "Discard the current unsaved project?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
             )
             if answer != QMessageBox.StandardButton.Yes:
                 return
-        self.background_path = ""
-        self.logo_path = ""
-        self.tracks = []
-        self.project_path = ""
-        self._set_asset_label(self.background_label, "")
-        self.background_label.setText("No background selected")
-        self._set_asset_label(self.logo_label, "")
-        self.logo_label.setText("No logo selected")
-        self.collection_title.setText("Abu Ali Nasheeds Collection")
-        self.template_combo.setCurrentText("Cinematic")
-        self.resolution_combo.setCurrentIndex(0)
-        self._refresh_tracks()
-        self._refresh_preview()
+        self._loading_project = True
+        try:
+            self.background_path = ""
+            self.logo_path = ""
+            self.tracks = []
+            self.project_path = ""
+            self._set_asset_label(self.background_label, "")
+            self.background_label.setText("No background selected")
+            self._set_asset_label(self.logo_label, "")
+            self.logo_label.setText("No logo selected")
+            self.collection_title.setText("Abu Ali Nasheeds Collection")
+            self.template_combo.setCurrentText("Cinematic")
+            self.resolution_combo.setCurrentIndex(0)
+            self.output_edit.setText(str(Path.home() / "Videos" / "nasheed_collection.mp4"))
+            self._refresh_tracks()
+            self._refresh_preview()
+            self._is_dirty = False
+            self._last_saved_snapshot = None
+            self.status_label.setText("New project ready.")
+        finally:
+            self._loading_project = False
 
     def save_project(self) -> None:
         if not self.project_path:
@@ -778,42 +932,65 @@ class MainWindow(QMainWindow):
         if path:
             if not path.lower().endswith(".json"):
                 path += ".json"
-            self.project_path = path
             self._write_project(path)
 
     def _write_project(self, path: str) -> None:
         try:
-            Path(path).write_text(json.dumps(self._project(), indent=2), encoding="utf-8")
+            payload = json.dumps(self._project(), indent=2)
+            Path(path).write_text(payload, encoding="utf-8")
+            self.project_path = path
+            self._is_dirty = False
+            self._last_saved_snapshot = self._project()
+            self._add_recent_project(path)
             self.status_label.setText(f"Project saved: {path}")
         except Exception as exc:
+            # Failed save preserves dirty state
             QMessageBox.critical(self, "Save failed", str(exc))
 
     def open_project(self) -> None:
+        if self.has_unsaved_changes():
+            answer = QMessageBox.question(
+                self, "Unsaved changes", "Discard unsaved changes and open project?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
         path, _ = QFileDialog.getOpenFileName(
             self, "Open project", "", "Nasheed Studio project (*.json)"
         )
         if not path:
             return
+        self._load_project_file(path)
+
+    def _load_project_file(self, path: str) -> None:
         try:
             data = json.loads(Path(path).read_text(encoding="utf-8"))
-            self.background_path = data.get("background", "")
-            self.logo_path = data.get("logo", "")
-            self.tracks = data.get("tracks", [])
-            self.collection_title.setText(data.get("collection_title", "Nasheed Collection"))
-            self.template_combo.setCurrentText(data.get("template", "Cinematic"))
-            self.resolution_combo.setCurrentText(data.get("resolution", "1080p · Full HD"))
-            self.output_edit.setText(
-                data.get("output_path", str(Path.home() / "Videos" / "nasheed_collection.mp4"))
-            )
-            self.project_path = path
-            self._set_asset_label(self.background_label, self.background_path)
-            if not self.background_path:
-                self.background_label.setText("No background selected")
-            self._set_asset_label(self.logo_label, self.logo_path)
-            if not self.logo_path:
-                self.logo_label.setText("No logo selected")
-            self._refresh_tracks()
-            self._refresh_preview()
+            self._loading_project = True
+            try:
+                self.background_path = data.get("background", "")
+                self.logo_path = data.get("logo", "")
+                self.tracks = data.get("tracks", [])
+                self.collection_title.setText(data.get("collection_title", "Nasheed Collection"))
+                self.template_combo.setCurrentText(data.get("template", "Cinematic"))
+                self.resolution_combo.setCurrentText(data.get("resolution", "1080p · Full HD"))
+                self.output_edit.setText(
+                    data.get("output_path", str(Path.home() / "Videos" / "nasheed_collection.mp4"))
+                )
+                self.project_path = path
+                self._set_asset_label(self.background_label, self.background_path)
+                if not self.background_path:
+                    self.background_label.setText("No background selected")
+                self._set_asset_label(self.logo_label, self.logo_path)
+                if not self.logo_path:
+                    self.logo_label.setText("No logo selected")
+                self._refresh_tracks()
+                self._refresh_preview()
+                self._is_dirty = False
+                self._last_saved_snapshot = self._project()
+            finally:
+                self._loading_project = False
+
+            self._add_recent_project(path)
             self.status_label.setText(f"Project opened: {path}")
         except Exception as exc:
             QMessageBox.critical(self, "Could not open project", str(exc))
