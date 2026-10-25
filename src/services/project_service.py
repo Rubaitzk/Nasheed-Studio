@@ -27,6 +27,8 @@ TEMPLATE_DESIGN_KEYS = [
     "track_font_family",
     "track_font_style",
     "track_font_size",
+    "custom_title_font_path",
+    "custom_track_font_path",
     "logo_position",
     "website_position",
     "website_font_size",
@@ -116,6 +118,7 @@ def check_missing_assets(project_data: dict) -> Dict[str, List[Dict[str, str]]]:
         "logo": [],
         "cursor": [],
         "sfx": [],
+        "fonts": [],
         "tracks": [],
     }
 
@@ -138,6 +141,12 @@ def check_missing_assets(project_data: dict) -> Dict[str, List[Dict[str, str]]]:
     sfx = project_data.get("transition_sfx_path", "")
     if project_data.get("transition_sfx_enabled") and sfx and not Path(sfx).is_file():
         missing["sfx"].append({"path": sfx, "field": "transition_sfx_path"})
+
+    # Custom Fonts
+    for font_key in ["custom_title_font_path", "custom_track_font_path"]:
+        fp = project_data.get(font_key, "")
+        if fp and not Path(fp).is_file():
+            missing["fonts"].append({"path": fp, "field": font_key})
 
     # Audio Tracks
     for idx, track in enumerate(project_data.get("tracks", [])):
@@ -162,7 +171,7 @@ def relink_asset(project_data: dict, old_path: str, new_path: str) -> dict:
         return updated
 
     # Check top-level asset fields
-    for field in ["background", "logo", "cursor_path", "transition_sfx_path"]:
+    for field in ["background", "logo", "cursor_path", "transition_sfx_path", "custom_title_font_path", "custom_track_font_path"]:
         cur = updated.get(field, "")
         if cur and str(Path(cur).resolve()) == old_norm:
             updated[field] = new_norm
@@ -230,7 +239,13 @@ def bundle_managed_assets(project_data: dict, project_bundle_dir: Path) -> dict:
     if managed.get("transition_sfx_path"):
         managed["transition_sfx_path"] = copy_file_safe(managed["transition_sfx_path"], "audio")
 
-    # 5. Tracks
+    # 5. Custom Fonts
+    if managed.get("custom_title_font_path"):
+        managed["custom_title_font_path"] = copy_file_safe(managed["custom_title_font_path"], "fonts")
+    if managed.get("custom_track_font_path"):
+        managed["custom_track_font_path"] = copy_file_safe(managed["custom_track_font_path"], "fonts")
+
+    # 6. Tracks
     if "tracks" in managed:
         managed_tracks = []
         for track in managed["tracks"]:

@@ -48,3 +48,4 @@ def guard_unexpected_modal_dialogs(monkeypatch):
     monkeypatch.setattr(QMessageBox, "warning", lambda *a, **kw: _fail_on_unexpected_dialog("warning", *a, **kw))
     monkeypatch.setattr(QMessageBox, "question", lambda *a, **kw: _fail_on_unexpected_dialog("question", *a, **kw))
     monkeypatch.setattr(QMessageBox, "critical", lambda *a, **kw: _fail_on_unexpected_dialog("critical", *a, **kw))
+    monkeypatch.setattr(QMessageBox, "exec", lambda self, *a, **kw: _fail_on_unexpected_dialog("exec", self.windowTitle(), self.text()))

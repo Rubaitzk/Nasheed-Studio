@@ -1,43 +1,45 @@
 """
-Main application window.
+Main application window for Nasheed Studio.
 
-Phase-1 changes
----------------
-Bug C – Export lifecycle
-    * RenderThread is replaced by ExportJob (owns FFmpeg via Windows Job Object).
-    * A Cancel button terminates the whole process tree.
-    * closeEvent asks for confirmation when an export is running and cancels
-      before allowing the window to close.
-    * Failed, cancelled and completed exports all reach a terminal UI state;
-      the Render button re-enables after every terminal state.
-    * Duplicate exports are blocked: the Render button is disabled while running.
-
-Bug A – Long filenames distort the layout
-    * background_label and logo_label have a fixed maximum width and show an
-      ellipsis.  The full path is available as a tooltip.
-    * The splitter has minimum sizes so no panel collapses.
-
-Bug B – Selected audio item unreadable
-    * QListWidget item selected/focused/hover/disabled states are defined
-      explicitly in the stylesheet so the OS default (black-on-black) is
-      never reached.
+Stage 2 Architecture
+--------------------
+- Top bar: app branding, active project name, dynamic "Unsaved" pill, New, Open, Save (only filled button),
+  Templates dropdown menu, Inspector toggle. Menus contain rare actions: Save As, Open Recent,
+  Apply/Save Reusable Template, Open Workspace Directory.
+- Main QSplitter with three horizontal panes:
+    1. Playlist pane (min width 260): collection title draft + Apply button, drag-and-drop track list,
+       add/remove/reorder controls, track count & duration summary badge, and empty state.
+    2. Preview pane (min width 400, stretch 1): 16:9 aspect-ratio constrained canvas, Playlist/Intro card
+       preview toggle, and reserved scrubber row (inert until Stage 3).
+    3. Inspector pane (min width 280, collapsible): clean icon tab strip with 4 tabs replacing stacked boxes:
+       Tab 1: Layout & Assets (template, background, logo, logo corner).
+       Tab 2: Text (title & track font family/style/size, refresh fonts).
+       Tab 3: Indicator & Watermark (cursor/highlight mode, custom cursor + size, website watermark, overlap warning).
+       Tab 4: Intro & Sound (intro toggle/duration/animation, transition SFX + volume).
+- Export bar (full width, bottom, outside inspector): output path + browse, resolution + encoding, resource profile
+  combo, Render MP4 (accent filled). While job runs: displays progress bar and Cancel export in the same bar.
+- Thin status bar: left status message, right project/track summary.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QThread, Signal, QObject, QTimer, QSettings, QEvent
-from PySide6.QtGui import QPixmap, QAction
+from PySide6.QtCore import Qt, Signal, QObject, QTimer, QSettings, QEvent, QSize
+from PySide6.QtGui import QPixmap, QAction, QIcon, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QFileDialog, QListWidget, QListWidgetItem, QLineEdit, QComboBox, QGroupBox,
+    QFileDialog, QListWidget, QListWidgetItem, QLineEdit, QComboBox,
     QFormLayout, QSplitter, QMessageBox, QProgressBar, QFrame, QAbstractItemView,
     QToolButton, QInputDialog, QSizePolicy, QSpinBox, QScrollArea, QCheckBox,
-    QDoubleSpinBox, QSlider,
+    QDoubleSpinBox, QSlider, QTabWidget, QMenu,
 )
 from PIL import Image
 
@@ -58,139 +60,8 @@ from src.services.project_service import (
     save_project_atomic, extract_template, save_template_atomic,
     load_template, apply_template_to_project, check_missing_assets,
 )
-
-
-# ---------------------------------------------------------------------------
-# Stylesheet
-# ---------------------------------------------------------------------------
-
-STYLE = """
-QMainWindow, QWidget {
-    background: #171b19;
-    color: #e7ece8;
-    font-family: 'Segoe UI', sans-serif;
-    font-size: 10pt;
-}
-QLabel#muted  { color: #9ba69f; }
-QLabel#heading { font-size: 15pt; font-weight: 650; color: #f4f6f4; }
-QLabel#section { color: #c6d1c9; font-size: 9pt; font-weight: 700; letter-spacing: 1px; }
-QGroupBox {
-    border: 1px solid #343d37;
-    border-radius: 9px;
-    margin-top: 12px;
-    padding: 12px 10px 10px 10px;
-    font-weight: 600;
-    color: #dbe4dd;
-}
-QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 5px; }
-QLineEdit, QComboBox {
-    background: #202622;
-    color: #edf2ee;
-    border: 1px solid #3a453d;
-    border-radius: 6px;
-    padding: 7px;
-    selection-background-color: #4a7a5c;
-    selection-color: #edf2ee;
-}
-/* ---- Bug B fix: explicit states for all list-widget item combinations ---- */
-QListWidget {
-    background: #202622;
-    color: #edf2ee;
-    border: 1px solid #3a453d;
-    border-radius: 6px;
-    padding: 3px;
-    outline: none;
-}
-QListWidget::item {
-    padding: 8px 5px;
-    border-bottom: 1px solid #303a33;
-    color: #edf2ee;
-    background: #202622;
-}
-QListWidget::item:hover {
-    background: #253029;
-    color: #edf2ee;
-}
-QListWidget::item:selected {
-    background: #2e5c3e;
-    color: #e8f5ec;
-}
-QListWidget::item:selected:active {
-    background: #2e5c3e;
-    color: #e8f5ec;
-}
-QListWidget::item:selected:!active {
-    background: #264a35;
-    color: #ddeee3;
-}
-QListWidget::item:focus {
-    background: #2e5c3e;
-    color: #e8f5ec;
-}
-QListWidget::item:disabled {
-    color: #8da194;
-    background: #1a1f1c;
-}
-/* ----------------------------------------------------------------- */
-QPushButton, QToolButton {
-    background: #29332c;
-    color: #e9f0eb;
-    border: 1px solid #3e4b42;
-    border-radius: 6px;
-    padding: 8px 10px;
-}
-QPushButton:hover, QToolButton:hover { background: #354239; }
-QPushButton:disabled, QToolButton:disabled {
-    background: #1e2420;
-    color: #5c6e62;
-    border: 1px solid #2d3630;
-}
-QPushButton#primary {
-    background: #c0e4c9;
-    color: #15261b;
-    border: 0;
-    font-weight: 700;
-    padding: 11px 14px;
-}
-QPushButton#primary:hover  { background: #d2efd9; }
-QPushButton#primary:disabled { background: #4a5e50; color: #8a9e90; }
-QPushButton#cancel {
-    background: #4a2424;
-    color: #f0d0d0;
-    border: 1px solid #7a3535;
-    font-weight: 600;
-    padding: 11px 14px;
-}
-QPushButton#cancel:hover { background: #5e2e2e; }
-QPushButton#quiet { background: transparent; }
-QFrame#preview { background: #0e110f; border: 1px solid #38423b; border-radius: 8px; }
-QProgressBar {
-    border: 1px solid #3a453d;
-    border-radius: 5px;
-    background: #202622;
-    text-align: center;
-    color: #edf2ee;
-    height: 14px;
-}
-QProgressBar::chunk { background: #b9dfc3; border-radius: 4px; }
-QSplitter::handle { background: #242c26; width: 5px; }
-QScrollArea { border: none; background: transparent; }
-QCheckBox { color: #dbe4dd; spacing: 8px; font-weight: 500; }
-QCheckBox::indicator { width: 16px; height: 16px; border-radius: 3px; border: 1px solid #3a453d; background: #202622; }
-QCheckBox::indicator:checked { background: #2e5c3e; border-color: #5c9c74; }
-QLabel#warning {
-    color: #f2ba49;
-    font-size: 8.5pt;
-    font-weight: 600;
-    padding: 5px 8px;
-    background: #2a251a;
-    border: 1px solid #635021;
-    border-radius: 4px;
-}
-QSlider::groove:horizontal { border: 1px solid #3a453d; height: 6px; background: #202622; border-radius: 3px; }
-QSlider::sub-page:horizontal { background: #4a7a5c; border-radius: 3px; }
-QSlider::handle:horizontal { background: #b9dfc3; width: 14px; margin-top: -5px; margin-bottom: -5px; border-radius: 7px; }
-"""
+from src.ui.icons import get_svg_icon, get_svg_pixmap
+from src.ui.style import STYLE, TOKENS
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +76,78 @@ class _ExportBridge(QObject):
 
 
 # ---------------------------------------------------------------------------
+# Aspect ratio container (Strict 16:9 Canvas)
+# ---------------------------------------------------------------------------
+
+class AspectRatioContainer(QWidget):
+    """Container widget that centers and constrains its child to a 16:9 aspect ratio."""
+
+    def __init__(self, child_widget: QWidget, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.child = child_widget
+        self.child.setParent(self)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setMinimumSize(360, 202)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        margin = 8
+        avail_w = max(10, self.width() - margin * 2)
+        avail_h = max(10, self.height() - margin * 2)
+
+        target_w = avail_w
+        target_h = int(target_w * 9 / 16)
+        if target_h > avail_h:
+            target_h = avail_h
+            target_w = int(target_h * 16 / 9)
+
+        x = (self.width() - target_w) // 2
+        y = (self.height() - target_h) // 2
+        self.child.setGeometry(x, y, target_w, target_h)
+
+
+# ---------------------------------------------------------------------------
+# Drag & Drop Aware Track List
+# ---------------------------------------------------------------------------
+
+class PlaylistListWidget(QListWidget):
+    """QListWidget that supports internal reordering and external audio file drops."""
+
+    def __init__(self, main_window: MainWindow, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.main_window = main_window
+        self.setAcceptDrops(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        if event.mimeData().hasUrls():
+            paths = []
+            for url in event.mimeData().urls():
+                lp = url.toLocalFile()
+                if lp and Path(lp).suffix.lower() in [
+                    ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wma"
+                ]:
+                    paths.append(lp)
+            if paths:
+                self.main_window.import_audio_paths(paths)
+                event.acceptProposedAction()
+                return
+        super().dropEvent(event)
+
+
+# ---------------------------------------------------------------------------
 # Main window
 # ---------------------------------------------------------------------------
 
@@ -214,35 +157,52 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Nasheed Studio · Playlist Video Automation")
         self.resize(1440, 900)
         self.setMinimumSize(1120, 720)
+
+        # Asset state
         self.background_path = ""
         self.logo_path = ""
         self.cursor_path = ""
         self.sfx_path = ""
+        self.custom_title_font_path = ""
+        self.custom_track_font_path = ""
         self._previewing_intro = False
         self.tracks: list[dict] = []
         self.project_path = ""
+        self.missing_assets: list[str] = []
         self._is_dirty = False
         self._last_saved_snapshot: Optional[dict] = None
         self._loading_project = False
         self._is_closing = False
-        self._recent_menu = None
+        self._recent_menu: Optional[QMenu] = None
         self._committed_title = "Abu Ali Nasheeds Collection"
+        self._last_inspector_width = 320
+
+        # Preview cache
+        self._cached_preview_key = None
+        self._cached_preview_pixmap: Optional[QPixmap] = None
+
+        # Timers
         self._title_timer = QTimer(self)
         self._title_timer.setSingleShot(True)
         self._title_timer.setInterval(1500)
         self._title_timer.timeout.connect(self._apply_title)
+
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
         self._preview_timer.setInterval(300)
         self._preview_timer.timeout.connect(self._refresh_preview)
+
+        # Export & Process Job Bridge
         self._job: Optional[ExportJob] = None
         self._bridge = _ExportBridge()
         self._bridge.progress.connect(self._on_progress)
         self._bridge.done.connect(self._render_complete)
         self._bridge.failed.connect(self._render_failed)
         self._bridge.cancelled.connect(self._render_cancelled)
+
         clean_stale_temp_dirs()
         self._build_ui()
+        self._update_project_ui_indicators()
         self._refresh_preview()
 
     # ------------------------------------------------------------------
@@ -250,421 +210,417 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
+        self.setStyleSheet(STYLE)
+
         root = QWidget()
+        root.setObjectName("central_root")
         self.setCentralWidget(root)
-        layout = QVBoxLayout(root)
-        layout.setContentsMargins(18, 14, 18, 14)
-        layout.setSpacing(12)
+        root_layout = QVBoxLayout(root)
+        root_layout.setContentsMargins(12, 10, 12, 8)
+        root_layout.setSpacing(8)
 
-        # -- Top bar --
-        top = QHBoxLayout()
-        brand = QVBoxLayout()
+        # --------------------------------------------------------------
+        # 1. Top Bar
+        # --------------------------------------------------------------
+        top_bar = QFrame()
+        top_bar.setObjectName("top_bar")
+        tbl = QHBoxLayout(top_bar)
+        tbl.setContentsMargins(10, 6, 10, 6)
+        tbl.setSpacing(10)
+
+        # App Brand & Name
+        brand_icon = QLabel()
+        brand_icon.setPixmap(get_svg_pixmap("app", 20, "#3d8b58"))
+        tbl.addWidget(brand_icon)
+
         title_lbl = QLabel("Nasheed Studio")
-        title_lbl.setObjectName("heading")
-        subtitle = QLabel("PLAYLIST VIDEO AUTOMATION")
-        subtitle.setObjectName("muted")
-        brand.addWidget(title_lbl)
-        brand.addWidget(subtitle)
-        top.addLayout(brand)
-        top.addStretch(1)
-        for label, fn in [("New project", self.new_project),
-                           ("Open", self.open_project),
-                           ("Save", self.save_project)]:
-            b = QPushButton(label)
-            b.clicked.connect(fn)
-            top.addWidget(b)
-        layout.addLayout(top)
+        title_lbl.setObjectName("app_title")
+        tbl.addWidget(title_lbl)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.setChildrenCollapsible(False)
+        tbl.addSpacing(6)
+        sep1 = QFrame()
+        sep1.setFrameShape(QFrame.Shape.VLine)
+        sep1.setObjectName("hairline_h")
+        sep1.setFixedWidth(1)
+        tbl.addWidget(sep1)
+        tbl.addSpacing(6)
 
-        # -- Left panel: assets + playlist --
-        left = QWidget()
-        left.setMinimumWidth(260)
-        left_l = QVBoxLayout(left)
-        left_l.setContentsMargins(0, 0, 4, 0)
-        left_l.setSpacing(10)
+        # Project Name & Unsaved Pill
+        self.project_name_label = QLabel("Abu Ali Nasheeds Collection")
+        self.project_name_label.setObjectName("project_name")
+        self.project_name_label.setToolTip("Active Project Name")
+        tbl.addWidget(self.project_name_label)
 
-        assets = QGroupBox("PROJECT ASSETS")
-        al = QVBoxLayout(assets)
+        self.unsaved_pill = QLabel("Unsaved")
+        self.unsaved_pill.setObjectName("unsaved_pill")
+        self.unsaved_pill.setVisible(False)
+        tbl.addWidget(self.unsaved_pill)
 
-        # Bug A fix: labels have a fixed max-width so they never stretch the panel.
-        # The full path is shown in the tooltip.
-        self.background_label = self._make_asset_label("No background selected")
-        self.background_btn = QPushButton("Choose background image…")
-        self.background_btn.clicked.connect(self.choose_background)
+        tbl.addStretch(1)
 
-        self.logo_label = self._make_asset_label("No logo selected")
-        self.logo_btn = QPushButton("Choose logo…")
-        self.logo_btn.clicked.connect(self.choose_logo)
+        # Top Bar Action Buttons
+        self.new_btn = QPushButton("New")
+        self.new_btn.setIcon(get_svg_icon("new", 14, "#edf2ee"))
+        self.new_btn.setToolTip("Create new project (Ctrl+N)")
+        self.new_btn.clicked.connect(self.new_project)
+        tbl.addWidget(self.new_btn)
 
-        self.logo_pos_combo = QComboBox()
-        self.logo_pos_combo.addItems(["Bottom-Right", "Bottom-Left", "Top-Right", "Top-Left"])
-        self.logo_pos_combo.currentTextChanged.connect(self._on_logo_pos_changed)
-        logo_pos_row = QHBoxLayout()
-        logo_pos_lbl = QLabel("Corner:")
-        logo_pos_lbl.setObjectName("muted")
-        logo_pos_row.addWidget(logo_pos_lbl)
-        logo_pos_row.addWidget(self.logo_pos_combo, 1)
+        self.open_btn = QPushButton("Open")
+        self.open_btn.setIcon(get_svg_icon("open", 14, "#edf2ee"))
+        self.open_btn.setToolTip("Open existing project (Ctrl+O)")
+        self.open_btn.clicked.connect(self.open_project)
+        tbl.addWidget(self.open_btn)
 
-        al.addWidget(self.background_label)
-        al.addWidget(self.background_btn)
-        al.addSpacing(5)
-        al.addWidget(self.logo_label)
-        al.addWidget(self.logo_btn)
-        al.addLayout(logo_pos_row)
-        left_l.addWidget(assets)
+        # Save is the ONLY filled button in the top bar
+        self.save_btn = QPushButton("Save")
+        self.save_btn.setObjectName("primary")
+        self.save_btn.setIcon(get_svg_icon("save", 14, "#ffffff"))
+        self.save_btn.setToolTip("Save project changes (Ctrl+S)")
+        self.save_btn.clicked.connect(self.save_project)
+        tbl.addWidget(self.save_btn)
 
-        playlist_box = QGroupBox("PLAYLIST")
-        pl = QVBoxLayout(playlist_box)
-        title_form = QFormLayout()
+        # Templates dropdown menu button
+        self.templates_btn = QToolButton()
+        self.templates_btn.setText("Templates ▾")
+        self.templates_btn.setIcon(get_svg_icon("template", 14, "#edf2ee"))
+        self.templates_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        tmpl_menu = QMenu(self.templates_btn)
+        act_apply_tmpl = tmpl_menu.addAction("Apply Reusable Template…")
+        act_apply_tmpl.triggered.connect(self.apply_template)
+        act_save_tmpl = tmpl_menu.addAction("Save as Reusable Template…")
+        act_save_tmpl.triggered.connect(self.save_as_template)
+        self.templates_btn.setMenu(tmpl_menu)
+        tbl.addWidget(self.templates_btn)
 
-        title_row = QHBoxLayout()
+        # Inspector toggle button
+        self.inspector_toggle_btn = QToolButton()
+        self.inspector_toggle_btn.setText("Inspector")
+        self.inspector_toggle_btn.setIcon(get_svg_icon("inspector", 14, "#edf2ee"))
+        self.inspector_toggle_btn.setCheckable(True)
+        self.inspector_toggle_btn.setChecked(True)
+        self.inspector_toggle_btn.setToolTip("Toggle Inspector Panel")
+        self.inspector_toggle_btn.clicked.connect(self.toggle_inspector)
+        tbl.addWidget(self.inspector_toggle_btn)
+
+        root_layout.addWidget(top_bar)
+
+        # --------------------------------------------------------------
+        # 2. Main QSplitter (Three Panes)
+        # --------------------------------------------------------------
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.setChildrenCollapsible(False)
+
+        # Pane 1: Playlist Pane (min 260)
+        self.playlist_panel = QFrame()
+        self.playlist_panel.setObjectName("playlist_pane")
+        self.playlist_panel.setMinimumWidth(260)
+        pl_layout = QVBoxLayout(self.playlist_panel)
+        pl_layout.setContentsMargins(10, 10, 10, 10)
+        pl_layout.setSpacing(8)
+
+        # Header: Collection Title Form
+        pl_hdr = QLabel("PLAYLIST & AUDIO")
+        pl_hdr.setObjectName("section")
+        pl_layout.addWidget(pl_hdr)
+
+        title_col = QVBoxLayout()
+        title_col.setSpacing(4)
+        title_lbl_hint = QLabel("Collection Title")
+        title_lbl_hint.setObjectName("muted")
+        title_col.addWidget(title_lbl_hint)
+
+        title_input_row = QHBoxLayout()
+        title_input_row.setSpacing(6)
         self.collection_title = QLineEdit(self._committed_title)
+        self.collection_title.setPlaceholderText("Collection title shown in video")
         self.collection_title.textChanged.connect(self._on_title_draft_changed)
         self.collection_title.returnPressed.connect(self._apply_title)
         self.collection_title.installEventFilter(self)
 
         self.title_apply_btn = QPushButton("Apply")
         self.title_apply_btn.setEnabled(False)
-        self.title_apply_btn.setToolTip("Apply title changes (Enter)")
+        self.title_apply_btn.setToolTip("Commit title changes (Enter)")
         self.title_apply_btn.clicked.connect(self._apply_title)
 
-        title_row.addWidget(self.collection_title, 1)
-        title_row.addWidget(self.title_apply_btn)
-        title_form.addRow("Collection title", title_row)
-        pl.addLayout(title_form)
+        title_input_row.addWidget(self.collection_title, 1)
+        title_input_row.addWidget(self.title_apply_btn)
+        title_col.addLayout(title_input_row)
+        pl_layout.addLayout(title_col)
 
-        self.track_list = QListWidget()
-        self.track_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        # Hairline divider
+        hl1 = QFrame()
+        hl1.setObjectName("hairline_h")
+        hl1.setFrameShape(QFrame.Shape.HLine)
+        pl_layout.addWidget(hl1)
+
+        # Track List (with DnD and Double-Click rename)
+        self.track_list = PlaylistListWidget(self)
         self.track_list.model().rowsMoved.connect(self._on_rows_moved)
         self.track_list.itemDoubleClicked.connect(self.rename_track)
-        pl.addWidget(self.track_list, 1)
+        pl_layout.addWidget(self.track_list, 1)
 
-        row = QHBoxLayout()
-        add_btn = QPushButton("＋ Add audio")
-        add_btn.clicked.connect(self.add_tracks)
-        remove_btn = QPushButton("Remove")
-        remove_btn.clicked.connect(self.remove_track)
-        row.addWidget(add_btn, 1)
-        row.addWidget(remove_btn)
-        pl.addLayout(row)
+        # Action Buttons: Add, Remove, Move Up, Move Down
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(6)
+        self.add_tracks_btn = QPushButton("Add audio")
+        self.add_tracks_btn.setIcon(get_svg_icon("add", 13, "#edf2ee"))
+        self.add_tracks_btn.setToolTip("Add audio files (MP3, WAV, M4A, AAC, FLAC)")
+        self.add_tracks_btn.clicked.connect(self.add_tracks)
 
-        move = QHBoxLayout()
-        up_btn = QPushButton("↑ Move up")
-        up_btn.clicked.connect(lambda: self.move_track(-1))
-        down_btn = QPushButton("↓ Move down")
-        down_btn.clicked.connect(lambda: self.move_track(1))
-        move.addWidget(up_btn)
-        move.addWidget(down_btn)
-        pl.addLayout(move)
+        self.remove_track_btn = QPushButton("Remove")
+        self.remove_track_btn.setIcon(get_svg_icon("remove", 13, "#edf2ee"))
+        self.remove_track_btn.clicked.connect(self.remove_track)
 
-        left_l.addWidget(playlist_box, 1)
-        splitter.addWidget(left)
+        self.up_btn = QPushButton()
+        self.up_btn.setIcon(get_svg_icon("up", 13, "#edf2ee"))
+        self.up_btn.setToolTip("Move selected track up")
+        self.up_btn.clicked.connect(lambda: self.move_track(-1))
 
-        # -- Center panel: preview --
-        center = QWidget()
-        center.setMinimumWidth(360)
-        cl = QVBoxLayout(center)
-        cl.setContentsMargins(4, 0, 4, 0)
-        cl.setSpacing(10)
+        self.down_btn = QPushButton()
+        self.down_btn.setIcon(get_svg_icon("down", 13, "#edf2ee"))
+        self.down_btn.setToolTip("Move selected track down")
+        self.down_btn.clicked.connect(lambda: self.move_track(1))
 
-        heading_row = QHBoxLayout()
-        preview_title = QLabel("VIDEO CANVAS")
-        preview_title.setObjectName("section")
-        heading_row.addWidget(preview_title)
-        heading_row.addStretch()
-        self.preview_badge = QLabel("PREVIEW · 16:9")
+        btn_row.addWidget(self.add_tracks_btn, 1)
+        btn_row.addWidget(self.remove_track_btn)
+        btn_row.addWidget(self.up_btn)
+        btn_row.addWidget(self.down_btn)
+        pl_layout.addLayout(btn_row)
+
+        # Playlist Summary Line Badge
+        self.playlist_summary_label = QLabel("0 tracks · Add audio files to begin")
+        self.playlist_summary_label.setObjectName("subtle")
+        self.playlist_summary_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        pl_layout.addWidget(self.playlist_summary_label)
+
+        self.splitter.addWidget(self.playlist_panel)
+
+        # Pane 2: Preview Pane (min 400, stretch 1)
+        self.preview_panel = QFrame()
+        self.preview_panel.setObjectName("preview_pane")
+        self.preview_panel.setMinimumWidth(400)
+        pv_layout = QVBoxLayout(self.preview_panel)
+        pv_layout.setContentsMargins(10, 10, 10, 10)
+        pv_layout.setSpacing(8)
+
+        # Canvas Header Toolbar
+        pv_hdr = QHBoxLayout()
+        pv_title = QLabel("VIDEO CANVAS")
+        pv_title.setObjectName("section")
+        pv_hdr.addWidget(pv_title)
+        pv_hdr.addStretch(1)
+
+        self.preview_badge = QLabel("PREVIEW · 16:9 · 1080p")
         self.preview_badge.setObjectName("muted")
-        heading_row.addWidget(self.preview_badge)
-        cl.addLayout(heading_row)
+        pv_hdr.addWidget(self.preview_badge)
 
+        self.preview_intro_btn = QPushButton("Preview Intro Card")
+        self.preview_intro_btn.setIcon(get_svg_icon("eye", 13, "#edf2ee"))
+        self.preview_intro_btn.setToolTip("Toggle between composition preview and intro card preview")
+        self.preview_intro_btn.clicked.connect(self._toggle_intro_preview)
+        pv_hdr.addWidget(self.preview_intro_btn)
+        pv_layout.addLayout(pv_hdr)
+
+        # 16:9 Frame inside AspectRatioContainer
         self.preview_frame = QFrame()
         self.preview_frame.setObjectName("preview")
-        pv = QVBoxLayout(self.preview_frame)
-        pv.setContentsMargins(8, 8, 8, 8)
-        self.preview_image = QLabel(
-            "Choose a background and add audio tracks to preview your composition."
-        )
+        pf_layout = QVBoxLayout(self.preview_frame)
+        pf_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.preview_image = QLabel("Drop audio files here or choose a background to preview.")
         self.preview_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_image.setMinimumSize(420, 270)
         self.preview_image.setWordWrap(True)
         self.preview_image.setObjectName("muted")
-        pv.addWidget(self.preview_image)
-        cl.addWidget(self.preview_frame, 1)
+        pf_layout.addWidget(self.preview_image)
 
-        hint = QLabel(
-            "Preview shows the selected template and active-track styling. "
-            "The exported MP4 uses the calculated audio timeline."
-        )
-        hint.setObjectName("muted")
-        hint.setWordWrap(True)
-        cl.addWidget(hint)
-        splitter.addWidget(center)
+        self.preview_container = AspectRatioContainer(self.preview_frame)
+        pv_layout.addWidget(self.preview_container, 1)
 
-        # -- Right panel: design + export (scrollable) --
-        right_scroll = QScrollArea()
-        right_scroll.setWidgetResizable(True)
-        right_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        right_scroll.setMinimumWidth(280)
-        right = QWidget()
-        rl = QVBoxLayout(right)
-        rl.setContentsMargins(4, 0, 8, 0)
-        rl.setSpacing(10)
-        right_scroll.setWidget(right)
+        # Reserved Scrubber Row (Inert until Stage 3)
+        scrubber_row = QHBoxLayout()
+        scrubber_row.setSpacing(8)
+        self.scrubber_cur_label = QLabel("00:00")
+        self.scrubber_cur_label.setObjectName("subtle")
 
-        # 1. Video Design
-        template_box = QGroupBox("VIDEO DESIGN")
-        tf = QFormLayout(template_box)
-        self.template_combo = QComboBox()
-        self.template_combo.addItems(["Cinematic", "Minimal", "Two-column"])
-        self.template_combo.currentTextChanged.connect(self._on_template_changed)
-        tf.addRow("Layout template", self.template_combo)
+        self.timeline_scrubber = QSlider(Qt.Orientation.Horizontal)
+        self.timeline_scrubber.setRange(0, 100)
+        self.timeline_scrubber.setValue(0)
+        self.timeline_scrubber.setEnabled(False)  # Inert until Stage 3
+        self.timeline_scrubber.setToolTip("Timeline navigation (available in Stage 3)")
+
+        self.scrubber_total_label = QLabel("00:00")
+        self.scrubber_total_label.setObjectName("subtle")
+
+        scrubber_row.addWidget(self.scrubber_cur_label)
+        scrubber_row.addWidget(self.timeline_scrubber, 1)
+        scrubber_row.addWidget(self.scrubber_total_label)
+        pv_layout.addLayout(scrubber_row)
+
+        self.splitter.addWidget(self.preview_panel)
+
+        # Pane 3: Inspector Pane (min 280, collapsible)
+        self.inspector_panel = QFrame()
+        self.inspector_panel.setObjectName("inspector_pane")
+        self.inspector_panel.setMinimumWidth(280)
+        insp_layout = QVBoxLayout(self.inspector_panel)
+        insp_layout.setContentsMargins(8, 8, 8, 8)
+        insp_layout.setSpacing(6)
+
+        insp_hdr = QLabel("INSPECTOR")
+        insp_hdr.setObjectName("section")
+        insp_layout.addWidget(insp_hdr)
+
+        # 4-Tab Icon Tab Strip
+        self.inspector_tabs = QTabWidget()
+        self.inspector_tabs.setObjectName("inspector_tabs")
+
+        # Tab 1: Layout & Assets
+        t1_scroll, t1_layout = self._create_tab_scroll()
+        self._build_tab_layout_assets(t1_layout)
+        self.inspector_tabs.addTab(t1_scroll, get_svg_icon("tab_layout", 14, "#95a399"), "Layout")
+        self.inspector_tabs.setTabToolTip(0, "Layout & Project Assets")
+
+        # Tab 2: Text
+        t2_scroll, t2_layout = self._create_tab_scroll()
+        self._build_tab_text(t2_layout)
+        self.inspector_tabs.addTab(t2_scroll, get_svg_icon("tab_text", 14, "#95a399"), "Text")
+        self.inspector_tabs.setTabToolTip(1, "Typography & Fonts")
+
+        # Tab 3: Indicator & Watermark
+        t3_scroll, t3_layout = self._create_tab_scroll()
+        self._build_tab_indicator_watermark(t3_layout)
+        self.inspector_tabs.addTab(t3_scroll, get_svg_icon("tab_indicator", 14, "#95a399"), "Indicator")
+        self.inspector_tabs.setTabToolTip(2, "Track Indicator & Website Watermark")
+
+        # Tab 4: Intro & Sound
+        t4_scroll, t4_layout = self._create_tab_scroll()
+        self._build_tab_intro_sound(t4_layout)
+        self.inspector_tabs.addTab(t4_scroll, get_svg_icon("tab_intro", 14, "#95a399"), "Sound")
+        self.inspector_tabs.setTabToolTip(3, "Intro Card & Sound Effects")
+
+        insp_layout.addWidget(self.inspector_tabs, 1)
+        self.splitter.addWidget(self.inspector_panel)
+
+        # Set default splitter weights & stretch
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setStretchFactor(2, 0)
+        self.splitter.setSizes([310, 620, 320])
+        root_layout.addWidget(self.splitter, 1)
+
+        # --------------------------------------------------------------
+        # 3. Export Bar (Full width, bottom, outside inspector)
+        # --------------------------------------------------------------
+        export_bar = QFrame()
+        export_bar.setObjectName("export_bar")
+        eb_layout = QHBoxLayout(export_bar)
+        eb_layout.setContentsMargins(12, 6, 12, 6)
+        eb_layout.setSpacing(10)
+
+        # Output destination
+        out_col = QHBoxLayout()
+        out_col.setSpacing(6)
+        out_lbl = QLabel("Export:")
+        out_lbl.setObjectName("muted")
+        out_col.addWidget(out_lbl)
+
+        self.output_edit = QLineEdit(str(get_exports_dir() / "nasheed_collection.mp4"))
+        self.output_edit.setPlaceholderText("Target MP4 destination path")
+        self.output_edit.textChanged.connect(self._mark_dirty)
+        out_col.addWidget(self.output_edit, 1)
+
+        self.choose_output_btn = QPushButton("Browse…")
+        self.choose_output_btn.setIcon(get_svg_icon("folder", 13, "#edf2ee"))
+        self.choose_output_btn.clicked.connect(self.choose_output)
+        out_col.addWidget(self.choose_output_btn)
+        eb_layout.addLayout(out_col, 2)
+
+        # Resolution & Encoding
+        res_col = QHBoxLayout()
+        res_col.setSpacing(6)
+        res_lbl = QLabel("Resolution:")
+        res_lbl.setObjectName("muted")
+        res_col.addWidget(res_lbl)
+
         self.resolution_combo = QComboBox()
         self.resolution_combo.addItems(list(RESOLUTIONS.keys()))
         self.resolution_combo.currentTextChanged.connect(self._on_resolution_changed)
-        tf.addRow("Export resolution", self.resolution_combo)
-        self.fps_label = QLabel("30 fps · H.264 / AAC")
-        self.fps_label.setObjectName("muted")
-        tf.addRow("Encoding", self.fps_label)
-        rl.addWidget(template_box)
+        res_col.addWidget(self.resolution_combo)
 
-        # 2. Typography
-        typo_box = QGroupBox("TYPOGRAPHY & FONTS")
-        tyf = QFormLayout(typo_box)
+        self.fps_label = QLabel("30 fps · H.264")
+        self.fps_label.setObjectName("subtle")
+        res_col.addWidget(self.fps_label)
+        eb_layout.addLayout(res_col, 1)
 
-        self.title_font_combo = QComboBox()
-        self.title_font_combo.currentTextChanged.connect(self._on_title_font_changed)
-        self.title_style_combo = QComboBox()
-        self.title_style_combo.currentTextChanged.connect(self._on_title_style_changed)
-        self.title_size_spin = QSpinBox()
-        self.title_size_spin.setRange(20, 90)
-        self.title_size_spin.setValue(46)
-        self.title_size_spin.setSuffix(" px")
-        self.title_size_spin.valueChanged.connect(self._on_title_size_changed)
+        # Encoder Resource Profile (Inert hook for Stage 4)
+        prof_col = QHBoxLayout()
+        prof_col.setSpacing(6)
+        prof_lbl = QLabel("Profile:")
+        prof_lbl.setObjectName("muted")
+        prof_col.addWidget(prof_lbl)
 
-        title_font_row = QHBoxLayout()
-        title_font_row.addWidget(self.title_font_combo, 2)
-        title_font_row.addWidget(self.title_style_combo, 1)
-        title_font_row.addWidget(self.title_size_spin, 1)
-        tyf.addRow("Collection title", title_font_row)
+        self.resource_profile_combo = QComboBox()
+        self.resource_profile_combo.addItems(["Balanced", "Background-friendly", "Maximum-speed"])
+        self.resource_profile_combo.setToolTip("Encoder resource profile (Stage 4)")
+        prof_col.addWidget(self.resource_profile_combo)
+        eb_layout.addLayout(prof_col)
 
-        self.track_font_combo = QComboBox()
-        self.track_font_combo.currentTextChanged.connect(self._on_track_font_changed)
-        self.track_style_combo = QComboBox()
-        self.track_style_combo.currentTextChanged.connect(self._on_track_style_changed)
-        self.track_size_spin = QSpinBox()
-        self.track_size_spin.setRange(12, 48)
-        self.track_size_spin.setValue(22)
-        self.track_size_spin.setSuffix(" px")
-        self.track_size_spin.valueChanged.connect(self._on_track_size_changed)
-
-        track_font_row = QHBoxLayout()
-        track_font_row.addWidget(self.track_font_combo, 2)
-        track_font_row.addWidget(self.track_style_combo, 1)
-        track_font_row.addWidget(self.track_size_spin, 1)
-        tyf.addRow("Playlist tracks", track_font_row)
-
-        self.refresh_fonts_btn = QPushButton("🔄 Refresh system fonts")
-        self.refresh_fonts_btn.setObjectName("quiet")
-        self.refresh_fonts_btn.clicked.connect(lambda: self._refresh_system_fonts(initial=False))
-        tyf.addRow("", self.refresh_fonts_btn)
-
-        self._refresh_system_fonts(initial=True)
-        rl.addWidget(typo_box)
-
-        # 3. Website Watermark
-        web_box = QGroupBox("WEBSITE WATERMARK")
-        wf = QFormLayout(web_box)
-
-        self.website_edit = QLineEdit()
-        self.website_edit.setPlaceholderText("Optional: e.g. www.nasheedstudio.com")
-        self.website_edit.textChanged.connect(self._on_website_text_changed)
-        wf.addRow("Website address", self.website_edit)
-
-        web_pos_row = QHBoxLayout()
-        self.website_pos_combo = QComboBox()
-        self.website_pos_combo.addItems(["Top-Right", "Top-Left", "Bottom-Left", "Bottom-Right"])
-        self.website_pos_combo.currentTextChanged.connect(self._on_website_pos_changed)
-        self.website_size_spin = QSpinBox()
-        self.website_size_spin.setRange(10, 48)
-        self.website_size_spin.setValue(18)
-        self.website_size_spin.setSuffix(" px")
-        self.website_size_spin.valueChanged.connect(self._on_website_size_changed)
-        web_pos_row.addWidget(self.website_pos_combo, 2)
-        web_pos_row.addWidget(self.website_size_spin, 1)
-        wf.addRow("Corner & Size", web_pos_row)
-
-        self.overlap_warning = QLabel("⚠️ Logo and website share the same corner. Position will adjust automatically.")
-        self.overlap_warning.setObjectName("warning")
-        self.overlap_warning.setWordWrap(True)
-        self.overlap_warning.setVisible(False)
-        wf.addRow(self.overlap_warning)
-        rl.addWidget(web_box)
-
-        # 4. Active Track Indicator
-        indicator_box = QGroupBox("ACTIVE TRACK INDICATOR")
-        inf = QFormLayout(indicator_box)
-
-        self.indicator_combo = QComboBox()
-        self.indicator_combo.addItems([
-            "Both (Cursor & Highlight)",
-            "Cursor only",
-            "Highlight only",
-            "Neither (Clean)"
-        ])
-        self.indicator_combo.currentTextChanged.connect(self._on_indicator_changed)
-        inf.addRow("Mode", self.indicator_combo)
-
-        self.cursor_label = self._make_asset_label("Default arrow cursor")
-        cursor_btn_row = QHBoxLayout()
-        self.cursor_btn = QPushButton("Upload cursor (SVG/PNG)…")
-        self.cursor_btn.clicked.connect(self.choose_cursor)
-        self.cursor_reset_btn = QPushButton("Reset")
-        self.cursor_reset_btn.clicked.connect(self.reset_cursor)
-        cursor_btn_row.addWidget(self.cursor_btn, 1)
-        cursor_btn_row.addWidget(self.cursor_reset_btn)
-
-        cursor_col = QVBoxLayout()
-        cursor_col.addWidget(self.cursor_label)
-        cursor_col.addLayout(cursor_btn_row)
-        inf.addRow("Cursor asset", cursor_col)
-
-        self.cursor_size_spin = QSpinBox()
-        self.cursor_size_spin.setRange(16, 96)
-        self.cursor_size_spin.setValue(32)
-        self.cursor_size_spin.setSuffix(" px")
-        self.cursor_size_spin.valueChanged.connect(self._on_cursor_size_changed)
-        inf.addRow("Cursor size", self.cursor_size_spin)
-        rl.addWidget(indicator_box)
-
-        # 5. Intro Presentation
-        intro_box = QGroupBox("INTRO PRESENTATION")
-        intf = QFormLayout(intro_box)
-
-        self.intro_check = QCheckBox("Enable intro sequence")
-        self.intro_check.toggled.connect(self._on_intro_toggled)
-        intf.addRow(self.intro_check)
-
-        self.intro_dur_spin = QDoubleSpinBox()
-        self.intro_dur_spin.setRange(1.0, 10.0)
-        self.intro_dur_spin.setValue(3.0)
-        self.intro_dur_spin.setSingleStep(0.5)
-        self.intro_dur_spin.setSuffix(" s")
-        self.intro_dur_spin.valueChanged.connect(self._on_intro_dur_changed)
-        intf.addRow("Duration", self.intro_dur_spin)
-
-        self.intro_anim_combo = QComboBox()
-        self.intro_anim_combo.addItems(["Fade in / out", "Zoom in", "Slide"])
-        self.intro_anim_combo.currentTextChanged.connect(self._on_intro_anim_changed)
-        intf.addRow("Animation", self.intro_anim_combo)
-
-        self.preview_intro_btn = QPushButton("👁 Preview Intro Card")
-        self.preview_intro_btn.clicked.connect(self._toggle_intro_preview)
-        intf.addRow("", self.preview_intro_btn)
-        rl.addWidget(intro_box)
-
-        # 6. Transition Sound Effect
-        sfx_box = QGroupBox("TRANSITION SOUND EFFECT")
-        sfxf = QFormLayout(sfx_box)
-
-        self.sfx_check = QCheckBox("Enable track transition SFX")
-        self.sfx_check.toggled.connect(self._on_sfx_toggled)
-        sfxf.addRow(self.sfx_check)
-
-        self.sfx_label = self._make_asset_label("No sound effect selected")
-        sfx_btn_row = QHBoxLayout()
-        self.sfx_btn = QPushButton("Choose SFX…")
-        self.sfx_btn.clicked.connect(self.choose_sfx)
-        self.sfx_reset_btn = QPushButton("Reset")
-        self.sfx_reset_btn.clicked.connect(self.reset_sfx)
-        sfx_btn_row.addWidget(self.sfx_btn, 1)
-        sfx_btn_row.addWidget(self.sfx_reset_btn)
-
-        sfx_col = QVBoxLayout()
-        sfx_col.addWidget(self.sfx_label)
-        sfx_col.addLayout(sfx_btn_row)
-        sfxf.addRow("SFX file", sfx_col)
-
-        sfx_vol_row = QHBoxLayout()
-        self.sfx_vol_slider = QSlider(Qt.Orientation.Horizontal)
-        self.sfx_vol_slider.setRange(0, 100)
-        self.sfx_vol_slider.setValue(70)
-        self.sfx_vol_slider.valueChanged.connect(self._on_sfx_vol_changed)
-        self.sfx_vol_label = QLabel("70%")
-        self.sfx_vol_label.setMinimumWidth(35)
-        sfx_vol_row.addWidget(self.sfx_vol_slider, 1)
-        sfx_vol_row.addWidget(self.sfx_vol_label)
-        sfxf.addRow("Volume", sfx_vol_row)
-        rl.addWidget(sfx_box)
-
-        # 7. Export Destination
-        output_box = QGroupBox("EXPORT DESTINATION")
-        ol = QVBoxLayout(output_box)
-        self.output_edit = QLineEdit(str(get_exports_dir() / "nasheed_collection.mp4"))
-        self.output_edit.setPlaceholderText("Choose output MP4 path")
-        self.output_edit.textChanged.connect(self._mark_dirty)
-        browse = QPushButton("Choose output file…")
-        browse.clicked.connect(self.choose_output)
-        ol.addWidget(self.output_edit)
-        ol.addWidget(browse)
-        rl.addWidget(output_box)
-
-        # 8. Render
-        render_box = QGroupBox("RENDER")
-        rv = QVBoxLayout(render_box)
-        self.render_summary = QLabel("0 tracks · Add audio files to begin")
-        self.render_summary.setObjectName("muted")
-        self.render_summary.setWordWrap(True)
-        rv.addWidget(self.render_summary)
-
+        # Progress bar (visible during active job)
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
         self.progress.setVisible(False)
-        rv.addWidget(self.progress)
+        self.progress.setMinimumWidth(120)
+        eb_layout.addWidget(self.progress)
+
+        # Cancel button (visible during active job)
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setObjectName("cancel")
+        self.cancel_btn.setIcon(get_svg_icon("cancel", 12, "#f0d0d0"))
+        self.cancel_btn.setVisible(False)
+        self.cancel_btn.clicked.connect(self._cancel_export)
+        eb_layout.addWidget(self.cancel_btn)
+
+        # Render button (Filled green primary button)
+        self.render_btn = QPushButton("Render MP4 →")
+        self.render_btn.setObjectName("primary")
+        self.render_btn.setIcon(get_svg_icon("render", 13, "#ffffff"))
+        self.render_btn.clicked.connect(self.render_video)
+        eb_layout.addWidget(self.render_btn)
+
+        root_layout.addWidget(export_bar)
+
+        # --------------------------------------------------------------
+        # 4. Thin Status Bar
+        # --------------------------------------------------------------
+        status_bar = QFrame()
+        status_bar.setObjectName("status_bar")
+        sb_layout = QHBoxLayout(status_bar)
+        sb_layout.setContentsMargins(6, 2, 6, 2)
+        sb_layout.setSpacing(12)
 
         self.status_label = QLabel("Ready when you are.")
         self.status_label.setObjectName("muted")
-        self.status_label.setWordWrap(True)
-        rv.addWidget(self.status_label)
+        sb_layout.addWidget(self.status_label, 1)
 
-        self.render_btn = QPushButton("Render MP4  →")
-        self.render_btn.setObjectName("primary")
-        self.render_btn.clicked.connect(self.render_video)
-        rv.addWidget(self.render_btn)
+        self.render_summary = QLabel("0 tracks · Add audio files to begin")
+        self.render_summary.setObjectName("subtle")
+        self.render_summary.setAlignment(Qt.AlignmentFlag.AlignRight)
+        sb_layout.addWidget(self.render_summary)
 
-        # Bug C: Cancel button
-        self.cancel_btn = QPushButton("Cancel export")
-        self.cancel_btn.setObjectName("cancel")
-        self.cancel_btn.setVisible(False)
-        self.cancel_btn.clicked.connect(self._cancel_export)
-        rv.addWidget(self.cancel_btn)
+        root_layout.addWidget(status_bar)
 
-        rl.addWidget(render_box)
-        rl.addStretch(1)
-
-        info = QLabel(
-            "Projects save your asset paths, playlist order, template and export "
-            "settings. Keep the source media in place when reopening a project."
-        )
-        info.setObjectName("muted")
-        info.setWordWrap(True)
-        rl.addWidget(info)
-
-        splitter.addWidget(right_scroll)
-        splitter.setSizes([310, 630, 340])
-        layout.addWidget(splitter, 1)
-        layout.addWidget(splitter, 1)
-
-        self.setStyleSheet(STYLE)
-
-        # Menus
+        # --------------------------------------------------------------
+        # 5. Application Menus (Rare actions)
+        # --------------------------------------------------------------
         file_menu = self.menuBar().addMenu("Project")
+
         new_act = QAction("New project", self)
+        new_act.setShortcut("Ctrl+N")
         new_act.triggered.connect(self.new_project)
         file_menu.addAction(new_act)
 
         open_act = QAction("Open project…", self)
+        open_act.setShortcut("Ctrl+O")
         open_act.triggered.connect(self.open_project)
         file_menu.addAction(open_act)
 
@@ -672,21 +628,30 @@ class MainWindow(QMainWindow):
         self._rebuild_recent_menu()
 
         save_act = QAction("Save project", self)
+        save_act.setShortcut("Ctrl+S")
         save_act.triggered.connect(self.save_project)
         file_menu.addAction(save_act)
 
         save_as_act = QAction("Save project as…", self)
+        save_as_act.setShortcut("Ctrl+Shift+S")
         save_as_act.triggered.connect(self.save_project_as)
         file_menu.addAction(save_as_act)
 
         file_menu.addSeparator()
-        save_tmpl_act = QAction("Save as Reusable Template…", self)
-        save_tmpl_act.triggered.connect(self.save_as_template)
-        file_menu.addAction(save_tmpl_act)
 
         apply_tmpl_act = QAction("Apply Reusable Template…", self)
         apply_tmpl_act.triggered.connect(self.apply_template)
         file_menu.addAction(apply_tmpl_act)
+
+        save_tmpl_act = QAction("Save as Reusable Template…", self)
+        save_tmpl_act.triggered.connect(self.save_as_template)
+        file_menu.addAction(save_tmpl_act)
+
+        file_menu.addSeparator()
+
+        workspace_act = QAction("Open Workspace Directory", self)
+        workspace_act.triggered.connect(self.open_workspace)
+        file_menu.addAction(workspace_act)
 
         help_menu = self.menuBar().addMenu("Help")
         about = QAction("About Nasheed Studio", self)
@@ -698,12 +663,502 @@ class MainWindow(QMainWindow):
         help_menu.addAction(about)
 
     # ------------------------------------------------------------------
-    # Bug A helper: constrained asset filename label
+    # Inspector Tab Builders
+    # ------------------------------------------------------------------
+
+    def _create_tab_scroll(self) -> tuple[QScrollArea, QVBoxLayout]:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(6, 8, 6, 8)
+        layout.setSpacing(10)
+        scroll.setWidget(content)
+        return scroll, layout
+
+    def _build_tab_layout_assets(self, layout: QVBoxLayout) -> None:
+        # Layout template
+        sec_lbl = QLabel("LAYOUT TEMPLATE")
+        sec_lbl.setObjectName("section")
+        layout.addWidget(sec_lbl)
+
+        self.template_combo = QComboBox()
+        self.template_combo.addItems(["Cinematic", "Minimal", "Two-column"])
+        self.template_combo.currentTextChanged.connect(self._on_template_changed)
+        layout.addWidget(self.template_combo)
+
+        layout.addSpacing(4)
+        div1 = QFrame()
+        div1.setObjectName("hairline_h")
+        div1.setFrameShape(QFrame.Shape.HLine)
+        layout.addWidget(div1)
+        layout.addSpacing(4)
+
+        # Background Image
+        bg_lbl = QLabel("BACKGROUND IMAGE")
+        bg_lbl.setObjectName("section")
+        layout.addWidget(bg_lbl)
+
+        self.background_label = self._make_asset_label("No background selected")
+        self.background_clear_btn = QPushButton()
+        self.background_clear_btn.setIcon(get_svg_icon("clear", 12, "#95a399"))
+        self.background_clear_btn.setToolTip("Clear background image")
+        self.background_clear_btn.clicked.connect(self.clear_background)
+
+        self.background_btn = QPushButton("Choose background image…")
+        self.background_btn.setIcon(get_svg_icon("image", 13, "#edf2ee"))
+        self.background_btn.clicked.connect(self.choose_background)
+
+        bg_row = QHBoxLayout()
+        bg_row.setSpacing(6)
+        bg_icon = QLabel()
+        bg_icon.setPixmap(get_svg_pixmap("image", 14, "#95a399"))
+        bg_row.addWidget(bg_icon)
+        bg_row.addWidget(self.background_label, 1)
+        bg_row.addWidget(self.background_clear_btn)
+
+        layout.addLayout(bg_row)
+        layout.addWidget(self.background_btn)
+
+        layout.addSpacing(4)
+        div2 = QFrame()
+        div2.setObjectName("hairline_h")
+        div2.setFrameShape(QFrame.Shape.HLine)
+        layout.addWidget(div2)
+        layout.addSpacing(4)
+
+        # Logo overlay
+        logo_sec = QLabel("LOGO OVERLAY")
+        logo_sec.setObjectName("section")
+        layout.addWidget(logo_sec)
+
+        self.logo_label = self._make_asset_label("No logo selected")
+        self.logo_clear_btn = QPushButton()
+        self.logo_clear_btn.setIcon(get_svg_icon("clear", 12, "#95a399"))
+        self.logo_clear_btn.setToolTip("Clear logo image")
+        self.logo_clear_btn.clicked.connect(self.clear_logo)
+
+        self.logo_btn = QPushButton("Choose logo…")
+        self.logo_btn.setIcon(get_svg_icon("image", 13, "#edf2ee"))
+        self.logo_btn.clicked.connect(self.choose_logo)
+
+        logo_row = QHBoxLayout()
+        logo_row.setSpacing(6)
+        logo_icon = QLabel()
+        logo_icon.setPixmap(get_svg_pixmap("image", 14, "#95a399"))
+        logo_row.addWidget(logo_icon)
+        logo_row.addWidget(self.logo_label, 1)
+        logo_row.addWidget(self.logo_clear_btn)
+
+        layout.addLayout(logo_row)
+        layout.addWidget(self.logo_btn)
+
+        logo_pos_row = QHBoxLayout()
+        logo_pos_row.setSpacing(6)
+        logo_pos_lbl = QLabel("Corner:")
+        logo_pos_lbl.setObjectName("muted")
+        self.logo_pos_combo = QComboBox()
+        self.logo_pos_combo.addItems(["Bottom-Right", "Bottom-Left", "Top-Right", "Top-Left"])
+        self.logo_pos_combo.currentTextChanged.connect(self._on_logo_pos_changed)
+        logo_pos_row.addWidget(logo_pos_lbl)
+        logo_pos_row.addWidget(self.logo_pos_combo, 1)
+        layout.addLayout(logo_pos_row)
+
+        self.logo_cleanup_check = QCheckBox("Remove solid white / checkerboard background")
+        self.logo_cleanup_check.setChecked(True)
+        self.logo_cleanup_check.toggled.connect(lambda _: self._on_layout_param_changed())
+        layout.addWidget(self.logo_cleanup_check)
+
+        layout.addSpacing(4)
+        div3 = QFrame()
+        div3.setObjectName("hairline_h")
+        div3.setFrameShape(QFrame.Shape.HLine)
+        layout.addWidget(div3)
+        layout.addSpacing(4)
+
+        # Playlist Layout & Background Panel
+        pl_sec = QLabel("PLAYLIST LAYOUT & BACKGROUND")
+        pl_sec.setObjectName("section")
+        layout.addWidget(pl_sec)
+
+        pl_pos_row = QHBoxLayout()
+        pl_pos_row.setSpacing(6)
+        pl_pos_lbl = QLabel("Position:")
+        pl_pos_lbl.setObjectName("muted")
+        self.playlist_pos_combo = QComboBox()
+        self.playlist_pos_combo.addItems(["Left", "Center", "Right"])
+        self.playlist_pos_combo.currentTextChanged.connect(lambda _: self._on_layout_param_changed())
+        pl_pos_row.addWidget(pl_pos_lbl)
+        pl_pos_row.addWidget(self.playlist_pos_combo, 1)
+
+        cols_lbl = QLabel("Cols:")
+        cols_lbl.setObjectName("muted")
+        self.playlist_cols_spin = QSpinBox()
+        self.playlist_cols_spin.setRange(1, 2)
+        self.playlist_cols_spin.setValue(1)
+        self.playlist_cols_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
+        pl_pos_row.addWidget(cols_lbl)
+        pl_pos_row.addWidget(self.playlist_cols_spin)
+        layout.addLayout(pl_pos_row)
+
+        bg_op_row = QHBoxLayout()
+        bg_op_row.setSpacing(6)
+        bg_op_lbl = QLabel("Panel Opacity:")
+        bg_op_lbl.setObjectName("muted")
+        self.playlist_bg_slider = QSlider(Qt.Orientation.Horizontal)
+        self.playlist_bg_slider.setRange(0, 100)
+        self.playlist_bg_slider.setValue(0)
+        self.playlist_bg_val_lbl = QLabel("0% (Transparent)")
+        self.playlist_bg_val_lbl.setObjectName("muted")
+        self.playlist_bg_slider.valueChanged.connect(self._on_playlist_bg_changed)
+        bg_op_row.addWidget(bg_op_lbl)
+        bg_op_row.addWidget(self.playlist_bg_slider, 1)
+        bg_op_row.addWidget(self.playlist_bg_val_lbl)
+        layout.addLayout(bg_op_row)
+
+        layout.addStretch(1)
+
+    def _build_tab_text(self, layout: QVBoxLayout) -> None:
+        # Title Typography
+        title_sec = QLabel("COLLECTION TITLE TYPOGRAPHY")
+        title_sec.setObjectName("section")
+        layout.addWidget(title_sec)
+
+        tf_box = QHBoxLayout()
+        tf_box.setSpacing(6)
+        self.title_font_combo = QComboBox()
+        self.title_font_combo.currentTextChanged.connect(self._on_title_font_changed)
+        self.title_font_browse_btn = QPushButton("Browse…")
+        self.title_font_browse_btn.setToolTip("Select custom .ttf/.otf/.ttc font file from disk")
+        self.title_font_browse_btn.clicked.connect(self.choose_custom_title_font)
+        tf_box.addWidget(self.title_font_combo, 1)
+        tf_box.addWidget(self.title_font_browse_btn)
+        layout.addLayout(tf_box)
+
+        t_row = QHBoxLayout()
+        t_row.setSpacing(6)
+        self.title_style_combo = QComboBox()
+        self.title_style_combo.currentTextChanged.connect(self._on_title_style_changed)
+        self.title_size_spin = QSpinBox()
+        self.title_size_spin.setRange(20, 90)
+        self.title_size_spin.setValue(46)
+        self.title_size_spin.setSuffix(" px")
+        self.title_size_spin.valueChanged.connect(self._on_title_size_changed)
+        t_row.addWidget(self.title_style_combo, 2)
+        t_row.addWidget(self.title_size_spin, 1)
+        layout.addLayout(t_row)
+
+        t_pos_row = QHBoxLayout()
+        t_pos_row.setSpacing(6)
+        self.title_show_check = QCheckBox("Show Title")
+        self.title_show_check.setChecked(True)
+        self.title_show_check.toggled.connect(lambda _: self._on_layout_param_changed())
+        self.title_pos_combo = QComboBox()
+        self.title_pos_combo.addItems(["Top-Center", "Above Playlist", "Top-Left", "Hidden"])
+        self.title_pos_combo.currentTextChanged.connect(lambda _: self._on_layout_param_changed())
+        t_pos_row.addWidget(self.title_show_check)
+        t_pos_row.addWidget(self.title_pos_combo, 1)
+        layout.addLayout(t_pos_row)
+
+        layout.addSpacing(4)
+        div = QFrame()
+        div.setObjectName("hairline_h")
+        div.setFrameShape(QFrame.Shape.HLine)
+        layout.addWidget(div)
+        layout.addSpacing(4)
+
+        # Track Typography
+        track_sec = QLabel("PLAYLIST TRACKS TYPOGRAPHY")
+        track_sec.setObjectName("section")
+        layout.addWidget(track_sec)
+
+        trf_box = QHBoxLayout()
+        trf_box.setSpacing(6)
+        self.track_font_combo = QComboBox()
+        self.track_font_combo.currentTextChanged.connect(self._on_track_font_changed)
+        self.track_font_browse_btn = QPushButton("Browse…")
+        self.track_font_browse_btn.setToolTip("Select custom .ttf/.otf/.ttc font file from disk")
+        self.track_font_browse_btn.clicked.connect(self.choose_custom_track_font)
+        trf_box.addWidget(self.track_font_combo, 1)
+        trf_box.addWidget(self.track_font_browse_btn)
+        layout.addLayout(trf_box)
+
+        tr_row = QHBoxLayout()
+        tr_row.setSpacing(6)
+        self.track_style_combo = QComboBox()
+        self.track_style_combo.currentTextChanged.connect(self._on_track_style_changed)
+        self.track_size_spin = QSpinBox()
+        self.track_size_spin.setRange(12, 48)
+        self.track_size_spin.setValue(22)
+        self.track_size_spin.setSuffix(" px")
+        self.track_size_spin.valueChanged.connect(self._on_track_size_changed)
+        tr_row.addWidget(self.track_style_combo, 2)
+        tr_row.addWidget(self.track_size_spin, 1)
+        layout.addLayout(tr_row)
+
+        sp_row = QHBoxLayout()
+        sp_row.setSpacing(6)
+        sp_lbl = QLabel("Row spacing:")
+        sp_lbl.setObjectName("muted")
+        self.track_spacing_spin = QDoubleSpinBox()
+        self.track_spacing_spin.setRange(1.2, 2.8)
+        self.track_spacing_spin.setSingleStep(0.1)
+        self.track_spacing_spin.setValue(1.85)
+        self.track_spacing_spin.setSuffix("x")
+        self.track_spacing_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
+        sp_row.addWidget(sp_lbl)
+        sp_row.addWidget(self.track_spacing_spin, 1)
+        layout.addLayout(sp_row)
+
+        layout.addSpacing(4)
+        div2 = QFrame()
+        div2.setObjectName("hairline_h")
+        div2.setFrameShape(QFrame.Shape.HLine)
+        layout.addWidget(div2)
+        layout.addSpacing(4)
+
+        self.refresh_fonts_btn = QPushButton("Refresh system fonts")
+        self.refresh_fonts_btn.setObjectName("quiet")
+        self.refresh_fonts_btn.setIcon(get_svg_icon("refresh", 13, "#95a399"))
+        self.refresh_fonts_btn.clicked.connect(lambda: self._refresh_system_fonts(initial=False))
+        layout.addWidget(self.refresh_fonts_btn)
+
+        self._refresh_system_fonts(initial=True)
+        layout.addStretch(1)
+
+    def _build_tab_indicator_watermark(self, layout: QVBoxLayout) -> None:
+        # Active track indicator
+        ind_sec = QLabel("ACTIVE TRACK INDICATOR")
+        ind_sec.setObjectName("section")
+        layout.addWidget(ind_sec)
+
+        self.indicator_combo = QComboBox()
+        self.indicator_combo.addItems([
+            "Both (Cursor & Highlight)",
+            "Cursor only",
+            "Highlight only",
+            "Neither (Clean)"
+        ])
+        self.indicator_combo.currentTextChanged.connect(self._on_indicator_changed)
+        layout.addWidget(self.indicator_combo)
+
+        self.cursor_label = self._make_asset_label("Default arrow cursor")
+        cur_row = QHBoxLayout()
+        cur_row.setSpacing(6)
+        cur_icon = QLabel()
+        cur_icon.setPixmap(get_svg_pixmap("tab_indicator", 14, "#95a399"))
+        self.cursor_btn = QPushButton("Choose cursor…")
+        self.cursor_btn.clicked.connect(self.choose_cursor)
+        self.cursor_reset_btn = QPushButton("Reset")
+        self.cursor_reset_btn.clicked.connect(self.reset_cursor)
+        cur_row.addWidget(cur_icon)
+        cur_row.addWidget(self.cursor_label, 1)
+        cur_row.addWidget(self.cursor_reset_btn)
+        layout.addLayout(cur_row)
+        layout.addWidget(self.cursor_btn)
+
+        sz_row = QHBoxLayout()
+        sz_lbl = QLabel("Cursor size:")
+        sz_lbl.setObjectName("muted")
+        self.cursor_size_spin = QSpinBox()
+        self.cursor_size_spin.setRange(16, 96)
+        self.cursor_size_spin.setValue(32)
+        self.cursor_size_spin.setSuffix(" px")
+        self.cursor_size_spin.valueChanged.connect(self._on_cursor_size_changed)
+        sz_row.addWidget(sz_lbl)
+        sz_row.addWidget(self.cursor_size_spin, 1)
+        layout.addLayout(sz_row)
+
+        hl_style_row = QHBoxLayout()
+        hl_style_row.setSpacing(6)
+        hl_style_lbl = QLabel("Highlight Style:")
+        hl_style_lbl.setObjectName("muted")
+        self.highlight_style_combo = QComboBox()
+        self.highlight_style_combo.addItems(["Pill", "Accent Bar", "Outline", "Underline"])
+        self.highlight_style_combo.currentTextChanged.connect(lambda _: self._on_layout_param_changed())
+        hl_style_row.addWidget(hl_style_lbl)
+        hl_style_row.addWidget(self.highlight_style_combo, 1)
+        layout.addLayout(hl_style_row)
+
+        hl_op_row = QHBoxLayout()
+        hl_op_row.setSpacing(6)
+        hl_op_lbl = QLabel("Highlight Tint:")
+        hl_op_lbl.setObjectName("muted")
+        self.highlight_opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.highlight_opacity_slider.setRange(5, 100)
+        self.highlight_opacity_slider.setValue(25)
+        self.highlight_opacity_val = QLabel("25%")
+        self.highlight_opacity_val.setObjectName("muted")
+        self.highlight_opacity_slider.valueChanged.connect(self._on_highlight_opacity_changed)
+        hl_op_row.addWidget(hl_op_lbl)
+        hl_op_row.addWidget(self.highlight_opacity_slider, 1)
+        hl_op_row.addWidget(self.highlight_opacity_val)
+        layout.addLayout(hl_op_row)
+
+        layout.addSpacing(4)
+        div = QFrame()
+        div.setObjectName("hairline_h")
+        div.setFrameShape(QFrame.Shape.HLine)
+        layout.addWidget(div)
+        layout.addSpacing(4)
+
+        # Website Watermark
+        web_sec = QLabel("WEBSITE WATERMARK")
+        web_sec.setObjectName("section")
+        layout.addWidget(web_sec)
+
+        self.website_edit = QLineEdit()
+        self.website_edit.setPlaceholderText("Optional: e.g. www.nasheedstudio.com")
+        self.website_edit.textChanged.connect(self._on_website_text_changed)
+        layout.addWidget(self.website_edit)
+
+        pos_row = QHBoxLayout()
+        pos_row.setSpacing(6)
+        self.website_pos_combo = QComboBox()
+        self.website_pos_combo.addItems(["Top-Right", "Top-Left", "Bottom-Left", "Bottom-Right"])
+        self.website_pos_combo.currentTextChanged.connect(self._on_website_pos_changed)
+        self.website_size_spin = QSpinBox()
+        self.website_size_spin.setRange(10, 48)
+        self.website_size_spin.setValue(18)
+        self.website_size_spin.setSuffix(" px")
+        self.website_size_spin.valueChanged.connect(self._on_website_size_changed)
+        pos_row.addWidget(self.website_pos_combo, 2)
+        pos_row.addWidget(self.website_size_spin, 1)
+        layout.addLayout(pos_row)
+
+        self.overlap_warning = QLabel("Logo and website share the same corner. Position will adjust automatically.")
+        self.overlap_warning.setObjectName("warning")
+        self.overlap_warning.setWordWrap(True)
+        self.overlap_warning.setVisible(False)
+        layout.addWidget(self.overlap_warning)
+
+        layout.addStretch(1)
+
+    def _build_tab_intro_sound(self, layout: QVBoxLayout) -> None:
+        # Intro Presentation
+        intro_sec = QLabel("INTRO PRESENTATION")
+        intro_sec.setObjectName("section")
+        layout.addWidget(intro_sec)
+
+        self.intro_check = QCheckBox("Enable intro sequence")
+        self.intro_check.toggled.connect(self._on_intro_toggled)
+        layout.addWidget(self.intro_check)
+
+        dur_row = QHBoxLayout()
+        dur_lbl = QLabel("Duration:")
+        dur_lbl.setObjectName("muted")
+        self.intro_dur_spin = QDoubleSpinBox()
+        self.intro_dur_spin.setRange(1.0, 10.0)
+        self.intro_dur_spin.setValue(3.0)
+        self.intro_dur_spin.setSingleStep(0.5)
+        self.intro_dur_spin.setSuffix(" s")
+        self.intro_dur_spin.valueChanged.connect(self._on_intro_dur_changed)
+        dur_row.addWidget(dur_lbl)
+        dur_row.addWidget(self.intro_dur_spin, 1)
+        layout.addLayout(dur_row)
+
+        anim_row = QHBoxLayout()
+        anim_lbl = QLabel("Animation:")
+        anim_lbl.setObjectName("muted")
+        self.intro_anim_combo = QComboBox()
+        self.intro_anim_combo.addItems(["Fade in / out", "Zoom in", "Slide"])
+        self.intro_anim_combo.currentTextChanged.connect(self._on_intro_anim_changed)
+        anim_row.addWidget(anim_lbl)
+        anim_row.addWidget(self.intro_anim_combo, 1)
+        layout.addLayout(anim_row)
+
+        layout.addSpacing(4)
+        div = QFrame()
+        div.setObjectName("hairline_h")
+        div.setFrameShape(QFrame.Shape.HLine)
+        layout.addWidget(div)
+        layout.addSpacing(4)
+
+        # Transition Sound Effects
+        sfx_sec = QLabel("TRANSITION SOUND EFFECT")
+        sfx_sec.setObjectName("section")
+        layout.addWidget(sfx_sec)
+
+        self.sfx_check = QCheckBox("Enable track transition SFX")
+        self.sfx_check.toggled.connect(self._on_sfx_toggled)
+        layout.addWidget(self.sfx_check)
+
+        self.sfx_label = self._make_asset_label("No sound effect selected")
+        sfx_row = QHBoxLayout()
+        sfx_row.setSpacing(6)
+        sfx_icon = QLabel()
+        sfx_icon.setPixmap(get_svg_pixmap("tab_intro", 14, "#95a399"))
+        self.sfx_reset_btn = QPushButton("Reset")
+        self.sfx_reset_btn.clicked.connect(self.reset_sfx)
+        self.sfx_btn = QPushButton("Choose SFX…")
+        self.sfx_btn.clicked.connect(self.choose_sfx)
+
+        sfx_row.addWidget(sfx_icon)
+        sfx_row.addWidget(self.sfx_label, 1)
+        sfx_row.addWidget(self.sfx_reset_btn)
+        layout.addLayout(sfx_row)
+        layout.addWidget(self.sfx_btn)
+
+        vol_row = QHBoxLayout()
+        vol_row.setSpacing(6)
+        vol_lbl = QLabel("Volume:")
+        vol_lbl.setObjectName("muted")
+        self.sfx_vol_slider = QSlider(Qt.Orientation.Horizontal)
+        self.sfx_vol_slider.setRange(0, 100)
+        self.sfx_vol_slider.setValue(70)
+        self.sfx_vol_slider.valueChanged.connect(self._on_sfx_vol_changed)
+        self.sfx_vol_label = QLabel("70%")
+        self.sfx_vol_label.setMinimumWidth(36)
+        vol_row.addWidget(vol_lbl)
+        vol_row.addWidget(self.sfx_vol_slider, 1)
+        vol_row.addWidget(self.sfx_vol_label)
+        layout.addLayout(vol_row)
+
+        layout.addStretch(1)
+
+    # ------------------------------------------------------------------
+    # Inspector Toggle & Workspace Reveal
+    # ------------------------------------------------------------------
+
+    def toggle_inspector(self) -> None:
+        """Collapse or restore the inspector pane in the main splitter."""
+        is_visible = self.inspector_panel.isVisible()
+        if is_visible:
+            sizes = self.splitter.sizes()
+            if len(sizes) >= 3 and sizes[2] > 0:
+                self._last_inspector_width = max(280, sizes[2])
+            self.inspector_panel.hide()
+            self.inspector_toggle_btn.setChecked(False)
+        else:
+            self.inspector_panel.show()
+            self.inspector_toggle_btn.setChecked(True)
+            w = max(280, getattr(self, "_last_inspector_width", 320))
+            sizes = self.splitter.sizes()
+            total = sum(sizes)
+            left = sizes[0] if sizes else 310
+            right = w
+            center = max(400, total - left - right)
+            self.splitter.setSizes([left, center, right])
+
+    def open_workspace(self) -> None:
+        """Reveal workspace root directory in Windows Explorer."""
+        root = get_workspace_root()
+        try:
+            if sys.platform == "win32":
+                os.startfile(str(root))
+            else:
+                subprocess.run(["xdg-open", str(root)])
+        except Exception as exc:
+            QMessageBox.warning(self, "Open Workspace", f"Could not open directory:\n\n{exc}")
+
+    # ------------------------------------------------------------------
+    # Asset Label & File Field Helpers (Bug A)
     # ------------------------------------------------------------------
 
     @staticmethod
     def _make_asset_label(text: str) -> QLabel:
-        """A label that truncates long filenames with an ellipsis."""
+        """A label that truncates long filenames with an ellipsis (Bug A)."""
         lbl = QLabel(text)
         lbl.setObjectName("muted")
         lbl.setMaximumWidth(280)
@@ -727,8 +1182,27 @@ class MainWindow(QMainWindow):
         else:
             label.setText(name)
 
+    def clear_background(self) -> None:
+        """Clear background asset and refresh preview."""
+        if self.background_path:
+            self.background_path = ""
+            self._set_asset_label(self.background_label, "")
+            self.background_label.setText("No background selected")
+            self._mark_dirty()
+            self._refresh_preview()
+
+    def clear_logo(self) -> None:
+        """Clear logo asset and refresh preview."""
+        if self.logo_path:
+            self.logo_path = ""
+            self._set_asset_label(self.logo_label, "")
+            self.logo_label.setText("No logo selected")
+            self._mark_dirty()
+            self._check_logo_website_overlap()
+            self._refresh_preview()
+
     # ------------------------------------------------------------------
-    # Project helper
+    # Active Track Indicator & Custom Cursor
     # ------------------------------------------------------------------
 
     def _mode_from_combo(self) -> str:
@@ -777,6 +1251,10 @@ class MainWindow(QMainWindow):
             self._mark_dirty()
             self._refresh_preview()
 
+    # ------------------------------------------------------------------
+    # Project Snapshot Builder
+    # ------------------------------------------------------------------
+
     def _project(self) -> dict:
         if self.collection_title.text().strip() != self._committed_title:
             self._apply_title()
@@ -795,9 +1273,11 @@ class MainWindow(QMainWindow):
             "title_font_family": self.title_font_combo.currentText() if hasattr(self, "title_font_combo") else "Segoe UI",
             "title_font_style": self.title_style_combo.currentText() if hasattr(self, "title_style_combo") else "Bold",
             "title_font_size": self.title_size_spin.value() if hasattr(self, "title_size_spin") else 46,
+            "custom_title_font_path": getattr(self, "custom_title_font_path", ""),
             "track_font_family": self.track_font_combo.currentText() if hasattr(self, "track_font_combo") else "Segoe UI",
             "track_font_style": self.track_style_combo.currentText() if hasattr(self, "track_style_combo") else "Bold",
             "track_font_size": self.track_size_spin.value() if hasattr(self, "track_size_spin") else 22,
+            "custom_track_font_path": getattr(self, "custom_track_font_path", ""),
             "website_text": self.website_edit.text().strip() if hasattr(self, "website_edit") else "",
             "website_position": self.website_pos_combo.currentText() if hasattr(self, "website_pos_combo") else "Top-Right",
             "website_font_size": self.website_size_spin.value() if hasattr(self, "website_size_spin") else 18,
@@ -807,11 +1287,21 @@ class MainWindow(QMainWindow):
             "intro_enabled": self.intro_check.isChecked() if hasattr(self, "intro_check") else False,
             "intro_duration": self.intro_dur_spin.value() if hasattr(self, "intro_dur_spin") else 3.0,
             "intro_animation": self.intro_anim_combo.currentText() if hasattr(self, "intro_anim_combo") else "Fade in / out",
+            "resource_profile": self.resource_profile_combo.currentText() if hasattr(self, "resource_profile_combo") else "Balanced",
+            "playlist_position": self.playlist_pos_combo.currentText() if hasattr(self, "playlist_pos_combo") else "Left",
+            "playlist_columns": self.playlist_cols_spin.value() if hasattr(self, "playlist_cols_spin") else 1,
+            "playlist_row_spacing": round(self.track_spacing_spin.value(), 2) if hasattr(self, "track_spacing_spin") else 1.85,
+            "playlist_bg_opacity": round(self.playlist_bg_slider.value() / 100.0, 2) if hasattr(self, "playlist_bg_slider") else 0.0,
+            "logo_cleanup_mode": "auto" if (hasattr(self, "logo_cleanup_check") and self.logo_cleanup_check.isChecked()) else "none",
+            "title_position": self.title_pos_combo.currentText() if hasattr(self, "title_pos_combo") else "Top-Center",
+            "title_show": self.title_show_check.isChecked() if hasattr(self, "title_show_check") else True,
+            "highlight_style": self.highlight_style_combo.currentText() if hasattr(self, "highlight_style_combo") else "Pill",
+            "highlight_bg_opacity": round(self.highlight_opacity_slider.value() / 100.0, 2) if hasattr(self, "highlight_opacity_slider") else 0.25,
             "output_path": self.output_edit.text().strip(),
         }
 
     # ------------------------------------------------------------------
-    # Asset pickers
+    # Asset Pickers
     # ------------------------------------------------------------------
 
     def choose_background(self) -> None:
@@ -838,7 +1328,7 @@ class MainWindow(QMainWindow):
             self._refresh_preview()
 
     # ------------------------------------------------------------------
-    # Track management
+    # Track Management & Audio Import
     # ------------------------------------------------------------------
 
     def add_tracks(self) -> None:
@@ -846,6 +1336,10 @@ class MainWindow(QMainWindow):
             self, "Add audio tracks", "",
             "Audio files (*.mp3 *.wav *.m4a *.aac *.flac *.ogg *.opus *.wma);;All files (*.*)"
         )
+        if paths:
+            self.import_audio_paths(paths)
+
+    def import_audio_paths(self, paths: list[str]) -> None:
         added = False
         for path in paths:
             if any(t["path"] == path for t in self.tracks):
@@ -860,39 +1354,59 @@ class MainWindow(QMainWindow):
         if added:
             self._mark_dirty()
             self._refresh_tracks()
-            self._refresh_preview()
+            self._schedule_preview(200)
 
     def _refresh_tracks(self) -> None:
         self.track_list.blockSignals(True)
         self.track_list.clear()
         for i, track in enumerate(self.tracks):
+            track.setdefault("_id", uuid.uuid4().hex)
             mins, secs = divmod(int(track.get("duration", 0)), 60)
             item = QListWidgetItem(
                 f"{i+1:02d}   {track['title']}\n       {mins:02d}:{secs:02d}  ·  {Path(track['path']).name}"
             )
             item.setData(Qt.ItemDataRole.UserRole, track["path"])
+            item.setData(Qt.ItemDataRole.UserRole + 1, track["_id"])
             item.setToolTip(track["path"])
             self.track_list.addItem(item)
         self.track_list.blockSignals(False)
+        self._refresh_tracks_labels()
+
+    def _refresh_tracks_labels(self) -> None:
         total = sum(float(t.get("duration", 0)) for t in self.tracks)
         m, s = divmod(int(total), 60)
-        self.render_summary.setText(
+        summary_txt = (
             f"{len(self.tracks)} tracks · Estimated duration {m:02d}:{s:02d}"
             if self.tracks else "0 tracks · Add audio files to begin"
         )
+        if hasattr(self, "render_summary"):
+            self.render_summary.setText(summary_txt)
+        if hasattr(self, "playlist_summary_label"):
+            self.playlist_summary_label.setText(
+                f"{len(self.tracks)} tracks · {m:02d}:{s:02d}" if self.tracks else "0 tracks · Add audio files"
+            )
+        if hasattr(self, "scrubber_total_label"):
+            self.scrubber_total_label.setText(f"{m:02d}:{s:02d}")
 
     def _on_rows_moved(self, *args) -> None:
-        by_path = {t["path"]: t for t in self.tracks}
+        by_id = {t.get("_id"): t for t in self.tracks if "_id" in t}
         reordered = []
         for i in range(self.track_list.count()):
-            path = self.track_list.item(i).data(Qt.ItemDataRole.UserRole)
-            if path in by_path:
-                reordered.append(by_path[path])
+            item = self.track_list.item(i)
+            tid = item.data(Qt.ItemDataRole.UserRole + 1)
+            if tid and tid in by_id:
+                reordered.append(by_id[tid])
+            else:
+                path = item.data(Qt.ItemDataRole.UserRole)
+                for t in self.tracks:
+                    if t.get("path") == path and t not in reordered:
+                        reordered.append(t)
+                        break
         if len(reordered) == len(self.tracks):
             self.tracks = reordered
             self._mark_dirty()
-        self._refresh_tracks()
-        self._refresh_preview()
+        self._refresh_tracks_labels()
+        self._schedule_preview(200)
 
     def rename_track(self, item: QListWidgetItem) -> None:
         idx = self.track_list.row(item)
@@ -906,7 +1420,7 @@ class MainWindow(QMainWindow):
             self.tracks[idx]["title"] = title.strip()
             self._mark_dirty()
             self._refresh_tracks()
-            self._refresh_preview()
+            self._schedule_preview(200)
 
     def remove_track(self) -> None:
         idx = self.track_list.currentRow()
@@ -914,7 +1428,7 @@ class MainWindow(QMainWindow):
             self.tracks.pop(idx)
             self._mark_dirty()
             self._refresh_tracks()
-            self._refresh_preview()
+            self._schedule_preview(200)
 
     def move_track(self, delta: int) -> None:
         idx = self.track_list.currentRow()
@@ -925,10 +1439,10 @@ class MainWindow(QMainWindow):
         self._mark_dirty()
         self._refresh_tracks()
         self.track_list.setCurrentRow(target)
-        self._refresh_preview()
+        self._schedule_preview(200)
 
     # ------------------------------------------------------------------
-    # Output path
+    # Output Path
     # ------------------------------------------------------------------
 
     def choose_output(self) -> None:
@@ -959,7 +1473,7 @@ class MainWindow(QMainWindow):
         self._on_title_draft_changed(text)
 
     def _apply_title(self) -> None:
-        """Commit the draft title to the project and refresh preview."""
+        """Commit draft title to project and schedule preview."""
         if hasattr(self, "_title_timer") and self._title_timer.isActive():
             self._title_timer.stop()
         if hasattr(self, "_preview_timer") and self._preview_timer.isActive():
@@ -1075,10 +1589,49 @@ class MainWindow(QMainWindow):
         self._mark_dirty()
         self._schedule_preview(150)
 
+    def choose_custom_title_font(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose custom font file for Title", "",
+            "Font files (*.ttf *.otf *.ttc);;TrueType Font (*.ttf);;OpenType Font (*.otf);;All files (*.*)"
+        )
+        if path:
+            self._set_custom_font(path, is_title=True)
+
+    def choose_custom_track_font(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose custom font file for Playlist Tracks", "",
+            "Font files (*.ttf *.otf *.ttc);;TrueType Font (*.ttf);;OpenType Font (*.otf);;All files (*.*)"
+        )
+        if path:
+            self._set_custom_font(path, is_title=False)
+
+    def _set_custom_font(self, font_path: str, is_title: bool = True) -> None:
+        from src.services.font_service import register_custom_font
+        try:
+            family, style = register_custom_font(font_path)
+            if is_title:
+                self.custom_title_font_path = font_path
+                self._refresh_system_fonts(initial=False)
+                if hasattr(self, "title_font_combo"):
+                    self.title_font_combo.setCurrentText(family)
+                if style and hasattr(self, "title_style_combo"):
+                    self.title_style_combo.setCurrentText(style)
+            else:
+                self.custom_track_font_path = font_path
+                self._refresh_system_fonts(initial=False)
+                if hasattr(self, "track_font_combo"):
+                    self.track_font_combo.setCurrentText(family)
+                if style and hasattr(self, "track_style_combo"):
+                    self.track_style_combo.setCurrentText(style)
+            self._mark_dirty()
+            self._schedule_preview(150)
+        except Exception as exc:
+            QMessageBox.warning(self, "Invalid Font File", f"Could not load custom font:\n\n{exc}")
+
     def _on_logo_pos_changed(self, text: str) -> None:
         self._mark_dirty()
         self._check_logo_website_overlap()
-        self._refresh_preview()
+        self._schedule_preview(150)
 
     def _on_website_text_changed(self, text: str) -> None:
         self._mark_dirty()
@@ -1088,7 +1641,7 @@ class MainWindow(QMainWindow):
     def _on_website_pos_changed(self, text: str) -> None:
         self._mark_dirty()
         self._check_logo_website_overlap()
-        self._refresh_preview()
+        self._schedule_preview(150)
 
     def _on_website_size_changed(self, val: int) -> None:
         self._mark_dirty()
@@ -1101,6 +1654,20 @@ class MainWindow(QMainWindow):
         has_web = bool(self.website_edit.text().strip())
         same_corner = (self.logo_pos_combo.currentText().strip().lower() == self.website_pos_combo.currentText().strip().lower())
         self.overlap_warning.setVisible(has_logo and has_web and same_corner)
+
+    def _on_layout_param_changed(self) -> None:
+        self._mark_dirty()
+        self._schedule_preview(150)
+
+    def _on_playlist_bg_changed(self, val: int) -> None:
+        if hasattr(self, "playlist_bg_val_lbl"):
+            self.playlist_bg_val_lbl.setText(f"{val}% (Transparent)" if val == 0 else f"{val}%")
+        self._on_layout_param_changed()
+
+    def _on_highlight_opacity_changed(self, val: int) -> None:
+        if hasattr(self, "highlight_opacity_val"):
+            self.highlight_opacity_val.setText(f"{val}%")
+        self._on_layout_param_changed()
 
     def choose_sfx(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -1140,9 +1707,9 @@ class MainWindow(QMainWindow):
         self._previewing_intro = not getattr(self, "_previewing_intro", False)
         if hasattr(self, "preview_intro_btn"):
             if self._previewing_intro:
-                self.preview_intro_btn.setText("👁 Preview Playlist")
+                self.preview_intro_btn.setText("Preview Playlist")
             else:
-                self.preview_intro_btn.setText("👁 Preview Intro Card")
+                self.preview_intro_btn.setText("Preview Intro Card")
         self._refresh_preview()
 
     def _on_template_changed(self, text: str) -> None:
@@ -1154,11 +1721,11 @@ class MainWindow(QMainWindow):
         self._update_resolution_badge()
 
     def _schedule_preview(self, delay: int = 300) -> None:
-        """Debounce preview generation to keep UI responsive during typing/resizing."""
+        """Debounce preview generation (~300ms) to keep UI thread fluid."""
         self._preview_timer.start(delay)
 
     def _flush_preview(self) -> None:
-        """Immediately update preview if an update is pending."""
+        """Immediately commit any pending title or preview updates."""
         if hasattr(self, "_title_timer") and self._title_timer.isActive():
             self._title_timer.stop()
             self._apply_title()
@@ -1171,14 +1738,19 @@ class MainWindow(QMainWindow):
             self.preview_badge.setText("PREVIEW · INTRO CARD")
             return
         size = RESOLUTIONS[self.resolution_combo.currentText()]
-        self.preview_badge.setText(f"PREVIEW · {size[0]} × {size[1]}")
+        self.preview_badge.setText(f"PREVIEW · 16:9 · {size[0]}×{size[1]}")
 
     def _refresh_preview(self) -> None:
         self._update_resolution_badge()
+        target_size = self.preview_frame.size()
+        if target_size.width() <= 10 or target_size.height() <= 10:
+            target_size = QSize(640, 360)
+
         if not self.background_path or not Path(self.background_path).is_file():
             self.preview_image.setPixmap(QPixmap())
             self.preview_image.setText(
-                "Choose a background image and add audio tracks to preview your composition."
+                "Choose a background image and add audio tracks to preview your composition.\n"
+                "Drop audio files into the playlist."
             )
             return
 
@@ -1192,6 +1764,35 @@ class MainWindow(QMainWindow):
         web_txt = self.website_edit.text().strip() if hasattr(self, "website_edit") else ""
         web_pos = self.website_pos_combo.currentText() if hasattr(self, "website_pos_combo") else "Top-Right"
         web_sz = self.website_size_spin.value() if hasattr(self, "website_size_spin") else 18
+
+        cache_key = (
+            self.background_path, self.logo_path, self.cursor_path,
+            self._committed_title, tuple(t.get("title", "") for t in self.tracks),
+            self.template_combo.currentText() if hasattr(self, "template_combo") else "",
+            title_fam, title_style, title_sz,
+            track_fam, track_style, track_sz,
+            logo_pos, web_txt, web_pos, web_sz,
+            getattr(self, "_previewing_intro", False),
+            self.playlist_pos_combo.currentText() if hasattr(self, "playlist_pos_combo") else "Left",
+            self.playlist_cols_spin.value() if hasattr(self, "playlist_cols_spin") else 1,
+            round(self.track_spacing_spin.value(), 2) if hasattr(self, "track_spacing_spin") else 1.85,
+            round(self.playlist_bg_slider.value() / 100.0, 2) if hasattr(self, "playlist_bg_slider") else 0.0,
+            self.highlight_style_combo.currentText() if hasattr(self, "highlight_style_combo") else "Pill",
+            round(self.highlight_opacity_slider.value() / 100.0, 2) if hasattr(self, "highlight_opacity_slider") else 0.25,
+            (hasattr(self, "logo_cleanup_check") and self.logo_cleanup_check.isChecked()),
+            self.title_pos_combo.currentText() if hasattr(self, "title_pos_combo") else "Top-Center",
+            self.title_show_check.isChecked() if hasattr(self, "title_show_check") else True,
+        )
+
+        if getattr(self, "_cached_preview_key", None) == cache_key and self._cached_preview_pixmap:
+            scaled_pix = self._cached_preview_pixmap.scaled(
+                target_size,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            self.preview_image.setPixmap(scaled_pix)
+            self.preview_image.setText("")
+            return
 
         # If user is previewing intro presentation card
         if getattr(self, "_previewing_intro", False):
@@ -1211,13 +1812,12 @@ class MainWindow(QMainWindow):
                         website_text=web_txt,
                     )
                     pix = QPixmap(card_path)
-                    self.preview_image.setPixmap(
-                        pix.scaled(
-                            self.preview_image.size(),
-                            Qt.AspectRatioMode.KeepAspectRatio,
-                            Qt.TransformationMode.SmoothTransformation,
-                        )
+                    scaled_pix = pix.scaled(
+                        target_size,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
                     )
+                    self.preview_image.setPixmap(scaled_pix)
                     self.preview_image.setText("")
             except Exception as exc:
                 self.preview_image.setPixmap(QPixmap())
@@ -1225,7 +1825,6 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            from src.services.compositor import create_composition
             with tempfile.TemporaryDirectory(prefix="nasheed_preview_") as tmp:
                 titles = (
                     [t["title"] for t in self.tracks]
@@ -1254,6 +1853,15 @@ class MainWindow(QMainWindow):
                     website_text=web_txt,
                     website_position=web_pos,
                     website_font_size=web_sz,
+                    playlist_position=self.playlist_pos_combo.currentText() if hasattr(self, "playlist_pos_combo") else "Left",
+                    playlist_columns=self.playlist_cols_spin.value() if hasattr(self, "playlist_cols_spin") else 1,
+                    playlist_row_spacing=round(self.track_spacing_spin.value(), 2) if hasattr(self, "track_spacing_spin") else 1.85,
+                    playlist_bg_opacity=round(self.playlist_bg_slider.value() / 100.0, 2) if hasattr(self, "playlist_bg_slider") else 0.0,
+                    logo_cleanup_mode="auto" if (hasattr(self, "logo_cleanup_check") and self.logo_cleanup_check.isChecked()) else "none",
+                    title_position=self.title_pos_combo.currentText() if hasattr(self, "title_pos_combo") else "Top-Center",
+                    title_show=self.title_show_check.isChecked() if hasattr(self, "title_show_check") else True,
+                    highlight_style=self.highlight_style_combo.currentText() if hasattr(self, "highlight_style_combo") else "Pill",
+                    highlight_bg_opacity=round(self.highlight_opacity_slider.value() / 100.0, 2) if hasattr(self, "highlight_opacity_slider") else 0.25,
                 )
                 img = Image.open(base).convert("RGBA")
                 if overlays:
@@ -1261,13 +1869,14 @@ class MainWindow(QMainWindow):
                 preview_path = Path(tmp) / "preview.png"
                 img.save(preview_path)
                 pix = QPixmap(str(preview_path))
-                self.preview_image.setPixmap(
-                    pix.scaled(
-                        self.preview_image.size(),
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation,
-                    )
+                self._cached_preview_key = cache_key
+                self._cached_preview_pixmap = pix
+                scaled_pix = pix.scaled(
+                    target_size,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
                 )
+                self.preview_image.setPixmap(scaled_pix)
                 self.preview_image.setText("")
         except Exception as exc:
             self.preview_image.setPixmap(QPixmap())
@@ -1285,7 +1894,7 @@ class MainWindow(QMainWindow):
         return super().eventFilter(obj, event)
 
     # ------------------------------------------------------------------
-    # Bug C: Export lifecycle
+    # Bug C: Export Lifecycle & Safe Background Rendering
     # ------------------------------------------------------------------
 
     def render_video(self) -> None:
@@ -1340,7 +1949,7 @@ class MainWindow(QMainWindow):
                 out_path = Path(new_path).expanduser().resolve()
 
         job_id = generate_job_id()
-        # Isolate work_dir in workspace temp/ (never pollute user's video folder)
+        # Isolate work_dir in workspace temp/ (never pollute user folder)
         work_dir = create_job_work_dir(job_id=job_id)
         # Staging file in destination directory with valid .mp4 extension for FFmpeg
         staging_path = get_staging_path(out_path, job_id=job_id)
@@ -1389,13 +1998,21 @@ class MainWindow(QMainWindow):
 
     def _on_progress(self, message: str) -> None:
         self.status_label.setText(message)
+        if hasattr(self, "progress"):
+            import re
+            m = re.search(r"(\d+)%", message)
+            if m:
+                self.progress.setValue(int(m.group(1)))
 
     def _render_complete(self, path: str) -> None:
         self._set_ui_running(False)
-        self.status_label.setText(f"Export complete: {path}")
+        p = Path(path)
+        sz_mb = p.stat().st_size / (1024 * 1024) if p.exists() else 0.0
+        res = self.resolution_combo.currentText() if hasattr(self, "resolution_combo") else "1080p"
+        self.status_label.setText(f"Export complete: {p.name} ({res}, {sz_mb:.1f} MB)")
         self._job = None
         QMessageBox.information(self, "Video exported",
-                                f"Your MP4 has been created:\n\n{path}")
+                                f"Your MP4 has been created:\n\n{path}\n\nResolution: {res}\nFile size: {sz_mb:.1f} MB")
 
     def _render_failed(self, message: str) -> None:
         self._set_ui_running(False)
@@ -1409,7 +2026,7 @@ class MainWindow(QMainWindow):
         self._job = None
 
     # ------------------------------------------------------------------
-    # Bug C: close-event confirmation
+    # Bug C: Close-Event Confirmation & Graceful Cleanup
     # ------------------------------------------------------------------
 
     def closeEvent(self, event) -> None:
@@ -1452,7 +2069,6 @@ class MainWindow(QMainWindow):
             # 3. Clean shutdown: cancel export job if still running
             if self._job and self._job.is_running:
                 self._job.cancel()
-                # Wait briefly for the worker thread to clean up.
                 self._job.join(timeout=5.0)
 
             # 4. Stop timers
@@ -1467,12 +2083,13 @@ class MainWindow(QMainWindow):
                 self._is_closing = False
 
     # ------------------------------------------------------------------
-    # Project persistence & dirty state
+    # Project Persistence, Dirty-State & UI Indicators
     # ------------------------------------------------------------------
 
     def _mark_dirty(self, *args) -> None:
         if not self._loading_project:
             self._is_dirty = True
+            self._update_project_ui_indicators()
 
     def has_unsaved_changes(self) -> bool:
         if self._is_dirty:
@@ -1494,6 +2111,17 @@ class MainWindow(QMainWindow):
             or (hasattr(self, "intro_check") and self.intro_check.isChecked())
             or (hasattr(self, "sfx_check") and self.sfx_check.isChecked())
         )
+
+    def _update_project_ui_indicators(self) -> None:
+        """Update top bar project name, window title, and unsaved pill badge."""
+        dirty = self.has_unsaved_changes()
+        name = Path(self.project_path).stem if self.project_path else (self._committed_title or "Unsaved Project")
+        if hasattr(self, "project_name_label"):
+            self.project_name_label.setText(name)
+        if hasattr(self, "unsaved_pill"):
+            self.unsaved_pill.setVisible(dirty)
+        star = " *" if dirty else ""
+        self.setWindowTitle(f"Nasheed Studio · {name}{star}")
 
     def _get_recent_projects(self) -> list[str]:
         settings = QSettings("NasheedStudio", "NasheedStudio")
@@ -1625,7 +2253,7 @@ class MainWindow(QMainWindow):
                 self.intro_check.setChecked(False)
                 self.intro_dur_spin.setValue(3.0)
                 self.intro_anim_combo.setCurrentText("Fade in / out")
-                self.preview_intro_btn.setText("👁 Preview Intro Card")
+                self.preview_intro_btn.setText("Preview Intro Card")
             if hasattr(self, "sfx_check"):
                 self.sfx_check.setChecked(False)
                 self.sfx_vol_slider.setValue(70)
@@ -1634,6 +2262,7 @@ class MainWindow(QMainWindow):
             self._refresh_preview()
             self._is_dirty = False
             self._last_saved_snapshot = None
+            self._update_project_ui_indicators()
             self.status_label.setText("New project ready.")
         finally:
             self._loading_project = False
@@ -1663,6 +2292,7 @@ class MainWindow(QMainWindow):
             self._is_dirty = False
             self._last_saved_snapshot = self._project()
             self._add_recent_project(path)
+            self._update_project_ui_indicators()
             self.status_label.setText(f"Project saved: {path}")
             return True
         except Exception as exc:
@@ -1749,6 +2379,24 @@ class MainWindow(QMainWindow):
         if "transition_sfx_volume" in tmpl:
             vol = int(float(tmpl["transition_sfx_volume"]) * 100)
             self.sfx_vol_slider.setValue(vol)
+        if "playlist_position" in tmpl and hasattr(self, "playlist_pos_combo"):
+            self.playlist_pos_combo.setCurrentText(tmpl["playlist_position"])
+        if "playlist_columns" in tmpl and hasattr(self, "playlist_cols_spin"):
+            self.playlist_cols_spin.setValue(int(tmpl["playlist_columns"]))
+        if "playlist_row_spacing" in tmpl and hasattr(self, "track_spacing_spin"):
+            self.track_spacing_spin.setValue(float(tmpl["playlist_row_spacing"]))
+        if "playlist_bg_opacity" in tmpl and hasattr(self, "playlist_bg_slider"):
+            self.playlist_bg_slider.setValue(int(float(tmpl["playlist_bg_opacity"]) * 100))
+        if "title_position" in tmpl and hasattr(self, "title_pos_combo"):
+            self.title_pos_combo.setCurrentText(tmpl["title_position"])
+        if "title_show" in tmpl and hasattr(self, "title_show_check"):
+            self.title_show_check.setChecked(bool(tmpl["title_show"]))
+        if "highlight_style" in tmpl and hasattr(self, "highlight_style_combo"):
+            self.highlight_style_combo.setCurrentText(tmpl["highlight_style"])
+        if "highlight_bg_opacity" in tmpl and hasattr(self, "highlight_opacity_slider"):
+            self.highlight_opacity_slider.setValue(int(float(tmpl["highlight_bg_opacity"]) * 100))
+        if "logo_cleanup_mode" in tmpl and hasattr(self, "logo_cleanup_check"):
+            self.logo_cleanup_check.setChecked(tmpl["logo_cleanup_mode"] != "none")
 
     def open_project(self) -> None:
         if self.has_unsaved_changes():
@@ -1786,6 +2434,24 @@ class MainWindow(QMainWindow):
                 self.resolution_combo.setCurrentText(data.get("resolution", "1080p · Full HD"))
                 self._set_combo_from_mode(data.get("indicator_mode", "both"))
                 self.cursor_size_spin.setValue(int(data.get("cursor_size", 32) or 32))
+
+                # Custom Fonts registration
+                self.custom_title_font_path = data.get("custom_title_font_path", "")
+                self.custom_track_font_path = data.get("custom_track_font_path", "")
+                if self.custom_title_font_path and Path(self.custom_title_font_path).is_file():
+                    try:
+                        from src.services.font_service import register_custom_font
+                        register_custom_font(self.custom_title_font_path)
+                    except Exception:
+                        pass
+                if self.custom_track_font_path and Path(self.custom_track_font_path).is_file():
+                    try:
+                        from src.services.font_service import register_custom_font
+                        register_custom_font(self.custom_track_font_path)
+                    except Exception:
+                        pass
+                self._refresh_system_fonts(initial=False)
+
                 if hasattr(self, "logo_pos_combo"):
                     self.logo_pos_combo.setCurrentText(data.get("logo_position", "Bottom-Right"))
                 if hasattr(self, "title_font_combo"):
@@ -1806,11 +2472,31 @@ class MainWindow(QMainWindow):
                     self.intro_check.setChecked(bool(data.get("intro_enabled", False)))
                     self.intro_dur_spin.setValue(float(data.get("intro_duration", 3.0) or 3.0))
                     self.intro_anim_combo.setCurrentText(data.get("intro_animation", "Fade in / out"))
-                    self.preview_intro_btn.setText("👁 Preview Intro Card")
+                    self.preview_intro_btn.setText("Preview Intro Card")
                 if hasattr(self, "sfx_check"):
                     self.sfx_check.setChecked(bool(data.get("transition_sfx_enabled", False)))
                     sfx_vol = int(float(data.get("transition_sfx_volume", 0.7) if data.get("transition_sfx_volume") is not None else 0.7) * 100)
                     self.sfx_vol_slider.setValue(sfx_vol)
+                if hasattr(self, "resource_profile_combo") and "resource_profile" in data:
+                    self.resource_profile_combo.setCurrentText(data["resource_profile"])
+                if hasattr(self, "playlist_pos_combo") and "playlist_position" in data:
+                    self.playlist_pos_combo.setCurrentText(data["playlist_position"])
+                if hasattr(self, "playlist_cols_spin") and "playlist_columns" in data:
+                    self.playlist_cols_spin.setValue(int(data["playlist_columns"]))
+                if hasattr(self, "track_spacing_spin") and "playlist_row_spacing" in data:
+                    self.track_spacing_spin.setValue(float(data["playlist_row_spacing"]))
+                if hasattr(self, "playlist_bg_slider") and "playlist_bg_opacity" in data:
+                    self.playlist_bg_slider.setValue(int(float(data["playlist_bg_opacity"]) * 100))
+                if hasattr(self, "title_pos_combo") and "title_position" in data:
+                    self.title_pos_combo.setCurrentText(data["title_position"])
+                if hasattr(self, "title_show_check") and "title_show" in data:
+                    self.title_show_check.setChecked(bool(data["title_show"]))
+                if hasattr(self, "highlight_style_combo") and "highlight_style" in data:
+                    self.highlight_style_combo.setCurrentText(data["highlight_style"])
+                if hasattr(self, "highlight_opacity_slider") and "highlight_bg_opacity" in data:
+                    self.highlight_opacity_slider.setValue(int(float(data["highlight_bg_opacity"]) * 100))
+                if hasattr(self, "logo_cleanup_check") and "logo_cleanup_mode" in data:
+                    self.logo_cleanup_check.setChecked(data["logo_cleanup_mode"] != "none")
                 self.output_edit.setText(
                     data.get("output_path", str(Path.home() / "Videos" / "nasheed_collection.mp4"))
                 )
@@ -1837,6 +2523,7 @@ class MainWindow(QMainWindow):
                 self._refresh_preview()
                 self._is_dirty = False
                 self._last_saved_snapshot = self._project()
+                self._update_project_ui_indicators()
             finally:
                 self._loading_project = False
 

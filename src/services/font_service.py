@@ -16,6 +16,7 @@ from typing import Dict, List, Optional, Tuple
 
 _FONT_REGISTRY_CACHE: Optional[Dict[str, Dict[str, str]]] = None
 _SYSTEM_FAMILIES_CACHE: Optional[List[str]] = None
+_CUSTOM_FONTS: Dict[str, Dict[str, str]] = {}
 
 STYLE_VARIANTS = {
     "Regular": ["regular", "normal", "book", "roman"],
@@ -119,8 +120,69 @@ def _build_font_cache() -> Dict[str, Dict[str, str]]:
     return cache
 
 
+def register_custom_font(font_path: str | Path, family_alias: Optional[str] = None) -> Tuple[str, str]:
+    """
+    Validate and register an external .ttf, .otf, or .ttc font file.
+    Inspects font metadata via Pillow to extract family and style names.
+    Returns (family_name, style_name).
+    """
+    global _CUSTOM_FONTS, _SYSTEM_FAMILIES_CACHE
+    p = Path(font_path).resolve()
+    if not p.is_file():
+        raise FileNotFoundError(f"Custom font file does not exist: {p}")
+
+    ext = p.suffix.lower()
+    if ext not in (".ttf", ".otf", ".ttc"):
+        raise ValueError(f"Unsupported font format '{ext}'. Must be .ttf, .otf, or .ttc")
+
+    family_name = ""
+    style_name = "Regular"
+
+    # Use Pillow ImageFont to validate and probe metadata
+    try:
+        from PIL import ImageFont
+        probe_font = ImageFont.truetype(str(p), size=20)
+        try:
+            name_tuple = probe_font.getname()
+            if isinstance(name_tuple, (tuple, list)) and len(name_tuple) >= 2:
+                family_name = str(name_tuple[0]).strip()
+                style_name = str(name_tuple[1]).strip()
+        except Exception:
+            pass
+    except Exception as exc:
+        raise ValueError(f"Could not load font file {p.name}: {exc}") from exc
+
+    if family_alias and family_alias.strip():
+        family_name = family_alias.strip()
+    elif not family_name:
+        family_name = p.stem.replace("-", " ").replace("_", " ").title()
+
+    if not style_name:
+        style_name = "Regular"
+
+    if family_name not in _CUSTOM_FONTS:
+        _CUSTOM_FONTS[family_name] = {}
+    _CUSTOM_FONTS[family_name][style_name] = str(p)
+
+    # Inject into registry cache as well
+    cache = get_font_cache()
+    if family_name not in cache:
+        cache[family_name] = {}
+    cache[family_name][style_name] = str(p)
+
+    # Invalidate system families list so it is re-queried with custom fonts included
+    _SYSTEM_FAMILIES_CACHE = None
+
+    return family_name, style_name
+
+
+def list_custom_fonts() -> List[str]:
+    """Return a list of registered custom font family names."""
+    return sorted(list(_CUSTOM_FONTS.keys()))
+
+
 def refresh_fonts() -> None:
-    """Clear and rebuild the font cache."""
+    """Clear and rebuild the font cache, re-applying registered custom fonts."""
     global _FONT_REGISTRY_CACHE, _SYSTEM_FAMILIES_CACHE
     _FONT_REGISTRY_CACHE = None
     _SYSTEM_FAMILIES_CACHE = None
@@ -132,11 +194,21 @@ def get_font_cache() -> Dict[str, Dict[str, str]]:
     global _FONT_REGISTRY_CACHE
     if _FONT_REGISTRY_CACHE is None:
         _FONT_REGISTRY_CACHE = _build_font_cache()
+        # Merge and validate custom fonts (prune deleted temp font files)
+        for fam in list(_CUSTOM_FONTS.keys()):
+            valid = {st: fp for st, fp in _CUSTOM_FONTS[fam].items() if Path(fp).is_file()}
+            if valid:
+                _CUSTOM_FONTS[fam] = valid
+                if fam not in _FONT_REGISTRY_CACHE:
+                    _FONT_REGISTRY_CACHE[fam] = {}
+                _FONT_REGISTRY_CACHE[fam].update(valid)
+            else:
+                _CUSTOM_FONTS.pop(fam, None)
     return _FONT_REGISTRY_CACHE
 
 
 def list_system_font_families() -> List[str]:
-    """Return a sorted list of unique font family names available on the system."""
+    """Return a sorted list of unique font family names available, with custom and preferred fonts first."""
     global _SYSTEM_FAMILIES_CACHE
     if _SYSTEM_FAMILIES_CACHE is not None:
         return _SYSTEM_FAMILIES_CACHE
@@ -153,10 +225,11 @@ def list_system_font_families() -> List[str]:
     except Exception:
         pass
 
-    # Order preferred families first, then alphabetical
-    preferred = [f for f in PREFERRED_DEFAULTS if f in families]
-    others = sorted([f for f in families if f not in preferred], key=lambda s: s.lower())
-    _SYSTEM_FAMILIES_CACHE = preferred + others
+    # Order custom fonts first, then preferred system fonts, then alphabetical others
+    custom = sorted(list(_CUSTOM_FONTS.keys()))
+    preferred = [f for f in PREFERRED_DEFAULTS if f in families and f not in custom]
+    others = sorted([f for f in families if f not in preferred and f not in custom], key=lambda s: s.lower())
+    _SYSTEM_FAMILIES_CACHE = custom + preferred + others
     return _SYSTEM_FAMILIES_CACHE
 
 
@@ -166,19 +239,25 @@ def list_family_styles(family: str) -> List[str]:
     styles = ["Regular", "Bold", "Italic", "Bold Italic"]
     if family in cache:
         available = list(cache[family].keys())
-        # Keep standard order, plus any non-standard styles
         result = [s for s in styles if s in available]
         extras = [s for s in available if s not in styles]
-        if result:
-            return result + extras
+        if result or extras:
+            return (result + extras) if result else extras
     return styles
 
 
 def resolve_font_path(family: str = "Segoe UI", style: str = "Regular") -> str:
     """
-    Resolve a font family and style to a concrete .ttf or .otf file path.
+    Resolve a font family and style to a concrete .ttf, .otf, or .ttc file path.
+    Also accepts a direct font file path as the family argument.
     Gracefully falls back to preferred system fonts if the specific family or style is unavailable.
     """
+    # 0. Direct file path check
+    if family:
+        candidate_p = Path(family)
+        if candidate_p.is_file() and candidate_p.suffix.lower() in (".ttf", ".otf", ".ttc"):
+            return str(candidate_p.resolve())
+
     cache = get_font_cache()
 
     # Normalize style
@@ -191,39 +270,41 @@ def resolve_font_path(family: str = "Segoe UI", style: str = "Regular") -> str:
     # 1. Exact family match
     if family in cache:
         family_styles = cache[family]
-        if norm_style in family_styles:
+        if norm_style in family_styles and Path(family_styles[norm_style]).is_file():
             return family_styles[norm_style]
         # Match Bold with Bold Italic or Regular
         if norm_style == "Bold":
             for fallback_style in ["Bold", "Regular", "Italic"]:
-                if fallback_style in family_styles:
+                if fallback_style in family_styles and Path(family_styles[fallback_style]).is_file():
                     return family_styles[fallback_style]
         # Fallback to any available style in family
-        if family_styles:
-            return next(iter(family_styles.values()))
+        for cand in family_styles.values():
+            if Path(cand).is_file():
+                return cand
 
     # 2. Case-insensitive family match
     lower_target = family.lower().strip()
     for fam, family_styles in cache.items():
         if fam.lower() == lower_target:
-            if norm_style in family_styles:
+            if norm_style in family_styles and Path(family_styles[norm_style]).is_file():
                 return family_styles[norm_style]
-            if "Regular" in family_styles:
+            if "Regular" in family_styles and Path(family_styles["Regular"]).is_file():
                 return family_styles["Regular"]
-            if family_styles:
-                return next(iter(family_styles.values()))
+            for cand in family_styles.values():
+                if Path(cand).is_file():
+                    return cand
 
     # 3. Preferred system fallbacks
     for fallback_family in PREFERRED_DEFAULTS:
         if fallback_family in cache:
             fam_styles = cache[fallback_family]
-            if norm_style in fam_styles:
+            if norm_style in fam_styles and Path(fam_styles[norm_style]).is_file():
                 return fam_styles[norm_style]
-            if "Regular" in fam_styles:
+            if "Regular" in fam_styles and Path(fam_styles["Regular"]).is_file():
                 return fam_styles["Regular"]
-            if fam_styles:
-                return next(iter(fam_styles.values()))
-
+            for cand in fam_styles.values():
+                if Path(cand).is_file():
+                    return cand
     # 4. Standard hardcoded paths
     win_dir = Path(os.environ.get("WINDIR", "C:\\Windows")) / "Fonts"
     hardcoded = [

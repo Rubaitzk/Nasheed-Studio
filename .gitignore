@@ -5,3 +5,13 @@ __pycache__/
 *_render_work/
 .DS_Store
 .pytest_cache/
+build/
+*.spec
+scratch/
+dist/
+screenshots/
+reference/
+tools/*.exe
+*.exe
+*.zip
+*.tar.gz

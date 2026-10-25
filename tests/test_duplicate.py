@@ -113,6 +113,7 @@ class TestDuplicateExportGuard(unittest.TestCase):
         self.win.tracks = [
             {"title": "T1", "path": __file__, "duration": 10.0}
         ]
+        self.win.output_edit.setText(str(pathlib.Path(tempfile.mktemp(suffix=".mp4"))))
         self.win.show()
         _get_app().processEvents()
         self.win.hide()

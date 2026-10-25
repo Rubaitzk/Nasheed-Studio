@@ -182,6 +182,7 @@ class ExportJob:
         staging_path: Optional[Path] = None,
         overwrite: bool = False,
         job_id: Optional[str] = None,
+        resource_profile: str = "Balanced",
         on_progress: Optional[Callable[[str], None]] = None,
         on_done: Optional[Callable[[str], None]] = None,
         on_failed: Optional[Callable[[str], None]] = None,
@@ -193,6 +194,7 @@ class ExportJob:
         self._staging_path = Path(staging_path) if staging_path is not None else None
         self._overwrite = overwrite
         self._job_id = job_id
+        self._resource_profile = resource_profile
         self._on_progress = on_progress or (lambda _: None)
         self._on_done = on_done or (lambda _: None)
         self._on_failed = on_failed or (lambda _: None)
@@ -253,15 +255,39 @@ class ExportJob:
                     self._finish(STATE_CANCELLED)
                     return
 
+            # Safety check: available disk space on destination directory
+            try:
+                dest_dir = self._output_path.parent
+                if dest_dir.exists():
+                    free_bytes = shutil.disk_usage(dest_dir).free
+                    if free_bytes < 200 * 1024 * 1024:  # 200 MB
+                        raise IOError(f"Insufficient disk space on {dest_dir}. At least 200MB free required.")
+            except Exception as d_exc:
+                if "Insufficient disk space" in str(d_exc):
+                    self._finish(STATE_FAILED, error=str(d_exc))
+                    return
+
             self._on_progress("Starting FFmpeg…")
+
+            # Check if this is an FFmpeg command configured with progress pipe
+            has_progress = any("pipe:1" in arg for arg in self._command)
+
             popen_kwargs: dict = {
-                "stdout": subprocess.DEVNULL,
+                "stdout": subprocess.PIPE if has_progress else subprocess.DEVNULL,
                 "stderr": subprocess.PIPE,
                 "text": True,
             }
             if sys.platform == "win32":
-                # Do NOT create a new console window.
-                popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+                # Do NOT create a new console window, and apply the resource profile process priority class.
+                flags = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+                prof = str(self._resource_profile or "Balanced").strip()
+                if prof == "Background-friendly":
+                    flags |= 0x00004000  # BELOW_NORMAL_PRIORITY_CLASS
+                elif prof == "Maximum-speed":
+                    flags |= 0x00008000  # ABOVE_NORMAL_PRIORITY_CLASS
+                else:
+                    flags |= 0x00000020  # NORMAL_PRIORITY_CLASS
+                popen_kwargs["creationflags"] = flags
 
             proc = subprocess.Popen(self._command, **popen_kwargs)
 
@@ -277,13 +303,37 @@ class ExportJob:
                 if self._state == STATE_CANCELLED:
                     self._kill_process_tree_locked()
 
-            # Stream stderr so we accumulate error output.
-            assert self._proc.stderr is not None
-            for line in self._proc.stderr:
-                stderr_buf.append(line)
+            # Concurrently drain stderr so buffer never deadlocks and we accumulate error output
+            def _drain_stderr() -> None:
+                if proc.stderr is not None:
+                    for line in proc.stderr:
+                        stderr_buf.append(line)
 
-            self._proc.wait()
-            returncode = self._proc.returncode
+            t_err = threading.Thread(target=_drain_stderr, daemon=True, name="ExportJobStderrDrain")
+            t_err.start()
+
+            # Stream progress telemetry if stdout was piped
+            if has_progress and proc.stdout is not None:
+                speed_str = ""
+                out_time_str = ""
+                for line in proc.stdout:
+                    line = line.strip()
+                    if line.startswith("speed="):
+                        speed_str = line.split("=", 1)[1].strip()
+                    elif line.startswith("out_time="):
+                        out_time_str = line.split("=", 1)[1].strip()
+                    elif line.startswith("progress="):
+                        status_parts = []
+                        if out_time_str and out_time_str != "N/A":
+                            status_parts.append(out_time_str[:8])
+                        if speed_str and speed_str != "N/A":
+                            status_parts.append(f"speed {speed_str}")
+                        detail = " · ".join(status_parts) if status_parts else "Rendering…"
+                        self._on_progress(f"Rendering MP4 · {detail}")
+
+            proc.wait()
+            t_err.join(timeout=3.0)
+            returncode = proc.returncode
 
         except Exception as exc:
             self._finish(STATE_FAILED, error=str(exc))

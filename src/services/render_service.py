@@ -16,6 +16,22 @@ RESOLUTIONS = {
 }
 
 
+def resolve_resolution(res: str) -> tuple[int, int]:
+    """Resolve resolution label or alias string to (width, height)."""
+    if res in RESOLUTIONS:
+        return RESOLUTIONS[res]
+    norm = str(res or "").lower().strip()
+    if "4k" in norm or "2160" in norm or "uhd" in norm:
+        return (3840, 2160)
+    if "1440" in norm or "2k" in norm or "qhd" in norm:
+        return (2560, 1440)
+    if "1080" in norm or "fhd" in norm:
+        return (1920, 1080)
+    if "720" in norm or "hd" in norm:
+        return (1280, 720)
+    return (1920, 1080)
+
+
 def validate_project(project: dict) -> None:
     """Raise ValueError/FileNotFoundError for any unusable project state."""
     tracks = project.get("tracks", [])
@@ -108,7 +124,7 @@ def build_render_command(
     if sfx_enabled and (not sfx_path or not Path(sfx_path).is_file()):
         sfx_enabled = False
 
-    width, height = RESOLUTIONS.get(project.get("resolution", "1080p · Full HD"), (1920, 1080))
+    width, height = resolve_resolution(project.get("resolution", "1080p · Full HD"))
     nominal_out = Path(project.get("output_path") or "nasheed_collection.mp4").expanduser().resolve()
     effective_out = Path(target_path).expanduser().resolve() if target_path is not None else nominal_out
     effective_out.parent.mkdir(parents=True, exist_ok=True)
@@ -119,6 +135,34 @@ def build_render_command(
 
     # Build timeline offset by intro duration
     timeline = build_timeline(tracks, intro_duration=intro_dur)
+
+    # Layout, typography, transparency, and styling
+    playlist_position = project.get("playlist_position", "Left")
+    playlist_x_offset = int(project.get("playlist_x_offset", 0) or 0)
+    playlist_y_offset = int(project.get("playlist_y_offset", 0) or 0)
+    playlist_width_ratio = float(project.get("playlist_width_ratio", 0.47) or 0.47)
+    playlist_columns = int(project.get("playlist_columns", 1) or 1)
+    playlist_row_spacing = float(project.get("playlist_row_spacing", 1.85) or 1.85)
+    playlist_bg_opacity = float(project.get("playlist_bg_opacity", 0.0) if project.get("playlist_bg_opacity") is not None else 0.0)
+    playlist_bg_color = project.get("playlist_bg_color", (0, 0, 0))
+    playlist_bg_radius = int(project.get("playlist_bg_radius", 6) or 6)
+    track_wrap_text = bool(project.get("track_wrap_text", False))
+    title_position = project.get("title_position", "Top-Center")
+    title_margin = int(project.get("title_margin", 12) or 12)
+    title_show = bool(project.get("title_show", True) if "title_show" in project else True)
+    title_color = project.get("title_color", (255, 255, 248))
+    title_outline_color = project.get("title_outline_color", (0, 0, 0))
+    title_outline_width = int(project.get("title_outline_width", 2) if "title_outline_width" in project else 2)
+    title_shadow = bool(project.get("title_shadow", True) if "title_shadow" in project else True)
+    track_color = project.get("track_color", (242, 243, 231))
+    track_outline_color = project.get("track_outline_color", (0, 0, 0))
+    track_outline_width = int(project.get("track_outline_width", 1) if "track_outline_width" in project else 1)
+    track_shadow = bool(project.get("track_shadow", True) if "track_shadow" in project else True)
+    highlight_style = project.get("highlight_style", "Pill")
+    highlight_color = project.get("highlight_color", (248, 220, 139))
+    highlight_bg_opacity = float(project.get("highlight_bg_opacity", 0.25) if "highlight_bg_opacity" in project else 0.25)
+    logo_cleanup_mode = project.get("logo_cleanup_mode", "auto")
+    logo_scale = float(project.get("logo_scale", 1.0) or 1.0)
 
     base, overlays = create_composition(
         width=width,
@@ -142,10 +186,37 @@ def build_render_command(
         website_text=website_text,
         website_position=website_position,
         website_font_size=website_font_size,
+        playlist_position=playlist_position,
+        playlist_x_offset=playlist_x_offset,
+        playlist_y_offset=playlist_y_offset,
+        playlist_width_ratio=playlist_width_ratio,
+        playlist_columns=playlist_columns,
+        playlist_row_spacing=playlist_row_spacing,
+        playlist_bg_opacity=playlist_bg_opacity,
+        playlist_bg_color=playlist_bg_color,
+        playlist_bg_radius=playlist_bg_radius,
+        track_wrap_text=track_wrap_text,
+        title_position=title_position,
+        title_margin=title_margin,
+        title_show=title_show,
+        title_color=title_color,
+        title_outline_color=title_outline_color,
+        title_outline_width=title_outline_width,
+        title_shadow=title_shadow,
+        track_color=track_color,
+        track_outline_color=track_outline_color,
+        track_outline_width=track_outline_width,
+        track_shadow=track_shadow,
+        highlight_style=highlight_style,
+        highlight_color=highlight_color,
+        highlight_bg_opacity=highlight_bg_opacity,
+        logo_cleanup_mode=logo_cleanup_mode,
+        logo_scale=logo_scale,
     )
 
     ffmpeg = find_tool("ffmpeg")
     command = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+               "-progress", "pipe:1", "-nostats",
                "-loop", "1", "-framerate", "30", "-i", base]
     current_input_idx = 1
 
@@ -153,7 +224,7 @@ def build_render_command(
     overlay_input_indices = []
     if overlays:
         for overlay in overlays:
-            command += ["-loop", "1", "-framerate", "30", "-i", overlay]
+            command += ["-loop", "1", "-framerate", "1", "-i", overlay]
             overlay_input_indices.append(current_input_idx)
             current_input_idx += 1
 
@@ -247,10 +318,13 @@ def build_render_command(
     # ------------------------------------------------------------------
     # 2. Audio Filter Graph Construction
     # ------------------------------------------------------------------
-    # Normalize each track to 44.1kHz stereo
+    # Normalize each track to 44.1kHz stereo with exact presentation timestamps and boundary padding/trimming
     for i, in_idx in enumerate(track_input_indices):
+        track_dur = float(tracks[i].get("duration", 0) or 0.0)
+        dur_clause = f",apad=whole_dur={track_dur:.3f},atrim=0:{track_dur:.3f}" if track_dur > 0 else ""
         filters.append(
-            f"[{in_idx}:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a_norm_{i}]"
+            f"[{in_idx}:a:0]asetpts=PTS-STARTPTS{dur_clause},"
+            f"aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a_norm_{i}]"
         )
 
     concat_inputs = []
@@ -272,8 +346,10 @@ def build_render_command(
     final_audio = f"[{concat_label}]"
     if sfx_enabled and sfx_input_idx is not None:
         num_transitions = len(tracks) - 1
+        # Trim SFX to maximum 2.5s with a 0.5s fade-out so it never bleeds across subsequent track audio
         filters.append(
-            f"[{sfx_input_idx}:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,volume={sfx_vol:.2f}[sfx_prep]"
+            f"[{sfx_input_idx}:a:0]atrim=0:2.5,afade=t=out:st=2.0:d=0.5,"
+            f"aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,volume={sfx_vol:.2f}[sfx_prep]"
         )
         if num_transitions > 1:
             split_labels = "".join(f"[sfx_{k}]" for k in range(num_transitions))
@@ -297,10 +373,32 @@ def build_render_command(
         )
         final_audio = "[aout]"
 
+    # Resource Profile Configuration
+    resource_profile = str(project.get("resource_profile") or "Balanced").strip()
+    cpu_cores = __import__("os").cpu_count() or 4
+    if resource_profile == "Background-friendly":
+        profile_threads = 2
+        profile_preset = "faster"
+    elif resource_profile == "Maximum-speed":
+        profile_threads = max(4, cpu_cores)
+        profile_preset = "veryfast"
+    else:  # "Balanced" (default)
+        profile_threads = max(2, cpu_cores // 2)
+        profile_preset = "veryfast"
+
+    # Resolution-tuned CRF
+    res_str = str(project.get("resolution", "")).lower()
+    if "4k" in res_str:
+        crf_val = "18"
+    elif "1440" in res_str:
+        crf_val = "19"
+    else:
+        crf_val = "20"
+
     command += [
         "-filter_complex", ";".join(filters),
         "-map", video_out, "-map", final_audio,
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-c:v", "libx264", "-preset", profile_preset, "-threads", str(profile_threads), "-crf", crf_val,
         "-pix_fmt", "yuv420p", "-r", "30",
         "-c:a", "aac", "-b:a", "192k",
         "-movflags", "+faststart", "-shortest",
