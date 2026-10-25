@@ -67,12 +67,14 @@ def build_render_command(
     project: dict,
     work_dir: Path,
     progress_callback=None,
+    target_path: Path | None = None,
 ) -> tuple[list[str], Path]:
     """
     Prepare assets and return ``(ffmpeg_command, output_path)``.
 
     The work_dir is owned by the caller; this function writes intermediate
     PNG files there. The caller is responsible for cleanup.
+    If target_path is specified, FFmpeg writes to target_path (e.g. staging file).
     """
     validate_project(project)
 
@@ -107,8 +109,9 @@ def build_render_command(
         sfx_enabled = False
 
     width, height = RESOLUTIONS.get(project.get("resolution", "1080p · Full HD"), (1920, 1080))
-    out_path = Path(project.get("output_path") or "nasheed_collection.mp4").expanduser().resolve()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    nominal_out = Path(project.get("output_path") or "nasheed_collection.mp4").expanduser().resolve()
+    effective_out = Path(target_path).expanduser().resolve() if target_path is not None else nominal_out
+    effective_out.parent.mkdir(parents=True, exist_ok=True)
     work_dir.mkdir(parents=True, exist_ok=True)
 
     if progress_callback:
@@ -301,9 +304,9 @@ def build_render_command(
         "-pix_fmt", "yuv420p", "-r", "30",
         "-c:a", "aac", "-b:a", "192k",
         "-movflags", "+faststart", "-shortest",
-        str(out_path),
+        str(effective_out),
     ]
-    return command, out_path
+    return command, effective_out
 
 
 # ---------------------------------------------------------------------------

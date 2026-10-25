@@ -46,6 +46,18 @@ from src.services.render_service import build_render_command, RESOLUTIONS
 from src.services.export_job import ExportJob, STATE_RUNNING
 from src.services.font_service import list_system_font_families, list_family_styles, refresh_fonts
 from src.services.compositor import create_composition, create_intro_card, CORNER_POSITIONS
+from src.services.workspace_service import (
+    get_workspace_root, get_projects_dir, get_templates_dir,
+    get_exports_dir, get_temp_dir, create_job_work_dir,
+    cleanup_job_work_dir, clean_stale_temp_dirs,
+)
+from src.services.export_service import (
+    generate_job_id, get_staging_path, cleanup_staging,
+)
+from src.services.project_service import (
+    save_project_atomic, extract_template, save_template_atomic,
+    load_template, apply_template_to_project, check_missing_assets,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +241,7 @@ class MainWindow(QMainWindow):
         self._bridge.done.connect(self._render_complete)
         self._bridge.failed.connect(self._render_failed)
         self._bridge.cancelled.connect(self._render_cancelled)
+        clean_stale_temp_dirs()
         self._build_ui()
         self._refresh_preview()
 
@@ -588,7 +601,7 @@ class MainWindow(QMainWindow):
         # 7. Export Destination
         output_box = QGroupBox("EXPORT DESTINATION")
         ol = QVBoxLayout(output_box)
-        self.output_edit = QLineEdit(str(Path.home() / "Videos" / "nasheed_collection.mp4"))
+        self.output_edit = QLineEdit(str(get_exports_dir() / "nasheed_collection.mp4"))
         self.output_edit.setPlaceholderText("Choose output MP4 path")
         self.output_edit.textChanged.connect(self._mark_dirty)
         browse = QPushButton("Choose output file…")
@@ -665,6 +678,15 @@ class MainWindow(QMainWindow):
         save_as_act = QAction("Save project as…", self)
         save_as_act.triggered.connect(self.save_project_as)
         file_menu.addAction(save_as_act)
+
+        file_menu.addSeparator()
+        save_tmpl_act = QAction("Save as Reusable Template…", self)
+        save_tmpl_act.triggered.connect(self.save_as_template)
+        file_menu.addAction(save_tmpl_act)
+
+        apply_tmpl_act = QAction("Apply Reusable Template…", self)
+        apply_tmpl_act.triggered.connect(self.apply_template)
+        file_menu.addAction(apply_tmpl_act)
 
         help_menu = self.menuBar().addMenu("Help")
         about = QAction("About Nasheed Studio", self)
@@ -1284,18 +1306,63 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No output path", "Choose where to save the MP4.")
             return
 
+        # Collision & Overwrite Guard
+        out_path = Path(self.output_edit.text().strip()).expanduser().resolve()
+        overwrite = False
+
+        while out_path.exists():
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Question)
+            box.setWindowTitle("File already exists")
+            box.setText(f"The export file already exists:\n\n{out_path.name}\n\nWhat would you like to do?")
+            btn_overwrite = box.addButton("Overwrite", QMessageBox.ButtonRole.AcceptRole)
+            btn_rename = box.addButton("Choose Another Name", QMessageBox.ButtonRole.ActionRole)
+            btn_cancel = box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+            box.setDefaultButton(btn_rename)
+
+            box.exec()
+            clicked = box.clickedButton()
+
+            if clicked == btn_cancel or clicked is None:
+                return  # Safe abort: existing file left untouched
+            elif clicked == btn_overwrite:
+                overwrite = True
+                break
+            elif clicked == btn_rename:
+                new_path, _ = QFileDialog.getSaveFileName(
+                    self, "Choose another export name", str(out_path), "MP4 video (*.mp4)"
+                )
+                if not new_path:
+                    return
+                if not new_path.lower().endswith(".mp4"):
+                    new_path += ".mp4"
+                self.output_edit.setText(new_path)
+                out_path = Path(new_path).expanduser().resolve()
+
+        job_id = generate_job_id()
+        # Isolate work_dir in workspace temp/ (never pollute user's video folder)
+        work_dir = create_job_work_dir(job_id=job_id)
+        # Staging file in destination directory with valid .mp4 extension for FFmpeg
+        staging_path = get_staging_path(out_path, job_id=job_id)
+
         project = self._project()
+        project["output_path"] = str(out_path)
+
         try:
-            out_path = Path(project["output_path"]).expanduser().resolve()
-            work_dir = out_path.parent / f".{out_path.stem}_render_work"
-            command, resolved_out = build_render_command(project, work_dir,
-                                                         self._bridge.progress.emit)
+            command, resolved_out = build_render_command(
+                project, work_dir, self._bridge.progress.emit, target_path=staging_path
+            )
         except Exception as exc:
+            cleanup_job_work_dir(work_dir)
+            cleanup_staging(staging_path)
             QMessageBox.critical(self, "Cannot start export", str(exc))
             return
 
         self._job = ExportJob(
-            command, work_dir, resolved_out,
+            command, work_dir, out_path,
+            staging_path=staging_path,
+            overwrite=overwrite,
+            job_id=job_id,
             on_progress=self._bridge.progress.emit,
             on_done=self._bridge.done.emit,
             on_failed=self._bridge.failed.emit,
@@ -1562,7 +1629,7 @@ class MainWindow(QMainWindow):
             if hasattr(self, "sfx_check"):
                 self.sfx_check.setChecked(False)
                 self.sfx_vol_slider.setValue(70)
-            self.output_edit.setText(str(Path.home() / "Videos" / "nasheed_collection.mp4"))
+            self.output_edit.setText(str(get_exports_dir() / "nasheed_collection.mp4"))
             self._refresh_tracks()
             self._refresh_preview()
             self._is_dirty = False
@@ -1577,9 +1644,10 @@ class MainWindow(QMainWindow):
         return self._write_project(self.project_path)
 
     def save_project_as(self) -> bool:
+        default_path = self.project_path or str(get_projects_dir() / "nasheed_project.json")
         path, _ = QFileDialog.getSaveFileName(
             self, "Save project",
-            self.project_path or str(Path.home() / "nasheed_project.json"),
+            default_path,
             "Nasheed Studio project (*.json)"
         )
         if path:
@@ -1590,8 +1658,7 @@ class MainWindow(QMainWindow):
 
     def _write_project(self, path: str) -> bool:
         try:
-            payload = json.dumps(self._project(), indent=2)
-            Path(path).write_text(payload, encoding="utf-8")
+            save_project_atomic(self._project(), path)
             self.project_path = path
             self._is_dirty = False
             self._last_saved_snapshot = self._project()
@@ -1602,6 +1669,86 @@ class MainWindow(QMainWindow):
             # Failed save preserves dirty state
             QMessageBox.critical(self, "Save failed", str(exc))
             return False
+
+    def save_as_template(self) -> None:
+        """Save reusable visual design and styling settings independently of tracks and titles."""
+        name, ok = QInputDialog.getText(
+            self, "Save Reusable Template", "Template name:",
+            text=self.template_combo.currentText() + " Preset"
+        )
+        if not ok or not name.strip():
+            return
+        clean_name = name.strip()
+        templates_dir = get_templates_dir()
+        target_path = templates_dir / f"{clean_name}.json"
+        try:
+            tmpl_data = extract_template(self._project(), template_name=clean_name)
+            save_template_atomic(tmpl_data, target_path)
+            QMessageBox.information(
+                self, "Template Saved",
+                f"Design template saved successfully:\n\n{target_path.name}\n\n"
+                "You can apply this styling to any project without affecting its tracks or titles."
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Save Template Failed", str(exc))
+
+    def apply_template(self) -> None:
+        """Apply reusable styling settings from a template onto current project."""
+        templates_dir = get_templates_dir()
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Apply Reusable Template", str(templates_dir),
+            "Nasheed Studio Template (*.json);;All files (*.*)"
+        )
+        if not path:
+            return
+        try:
+            tmpl = load_template(path)
+            self._apply_template_data(tmpl)
+            self._mark_dirty()
+            self._refresh_preview()
+            self.status_label.setText(f"Applied template: {Path(path).stem}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Apply Template Failed", str(exc))
+
+    def _apply_template_data(self, tmpl: dict) -> None:
+        """Update visual controls from a template without modifying tracks or titles."""
+        if "template" in tmpl:
+            self.template_combo.setCurrentText(tmpl["template"])
+        if "resolution" in tmpl:
+            self.resolution_combo.setCurrentText(tmpl["resolution"])
+        if "indicator_mode" in tmpl:
+            self._set_combo_from_mode(tmpl["indicator_mode"])
+        if "cursor_size" in tmpl:
+            self.cursor_size_spin.setValue(int(tmpl["cursor_size"]))
+        if "title_font_family" in tmpl:
+            self.title_font_combo.setCurrentText(tmpl["title_font_family"])
+            self._update_title_styles()
+        if "title_font_style" in tmpl:
+            self.title_style_combo.setCurrentText(tmpl["title_font_style"])
+        if "title_font_size" in tmpl:
+            self.title_size_spin.setValue(int(tmpl["title_font_size"]))
+        if "track_font_family" in tmpl:
+            self.track_font_combo.setCurrentText(tmpl["track_font_family"])
+            self._update_track_styles()
+        if "track_font_style" in tmpl:
+            self.track_style_combo.setCurrentText(tmpl["track_font_style"])
+        if "track_font_size" in tmpl:
+            self.track_size_spin.setValue(int(tmpl["track_font_size"]))
+        if "logo_position" in tmpl:
+            self.logo_pos_combo.setCurrentText(tmpl["logo_position"])
+        if "website_position" in tmpl:
+            self.website_pos_combo.setCurrentText(tmpl["website_position"])
+        if "website_font_size" in tmpl:
+            self.website_size_spin.setValue(int(tmpl["website_font_size"]))
+        if "intro_enabled" in tmpl:
+            self.intro_check.setChecked(bool(tmpl["intro_enabled"]))
+        if "intro_duration" in tmpl:
+            self.intro_dur_spin.setValue(float(tmpl["intro_duration"]))
+        if "intro_animation" in tmpl:
+            self.intro_anim_combo.setCurrentText(tmpl["intro_animation"])
+        if "transition_sfx_volume" in tmpl:
+            vol = int(float(tmpl["transition_sfx_volume"]) * 100)
+            self.sfx_vol_slider.setValue(vol)
 
     def open_project(self) -> None:
         if self.has_unsaved_changes():
@@ -1621,6 +1768,7 @@ class MainWindow(QMainWindow):
     def _load_project_file(self, path: str) -> None:
         try:
             data = json.loads(Path(path).read_text(encoding="utf-8"))
+            self.missing_assets = check_missing_assets(data)
             self._loading_project = True
             try:
                 if hasattr(self, "_title_timer") and self._title_timer.isActive():

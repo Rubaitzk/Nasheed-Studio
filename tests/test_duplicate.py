@@ -35,7 +35,8 @@ class _FakeExportJob:
     """A synchronous, controllable stand-in for ExportJob."""
 
     def __init__(self, command, work_dir, output_path, *,
-                 on_progress=None, on_done=None, on_failed=None, on_cancelled=None):
+                 on_progress=None, on_done=None, on_failed=None, on_cancelled=None,
+                 **kwargs):
         from src.services.export_job import STATE_IDLE
         self.state = STATE_IDLE
         self.is_running = False

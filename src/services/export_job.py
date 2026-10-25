@@ -179,14 +179,20 @@ class ExportJob:
         work_dir: Path,
         output_path: Path,
         *,
+        staging_path: Optional[Path] = None,
+        overwrite: bool = False,
+        job_id: Optional[str] = None,
         on_progress: Optional[Callable[[str], None]] = None,
         on_done: Optional[Callable[[str], None]] = None,
         on_failed: Optional[Callable[[str], None]] = None,
         on_cancelled: Optional[Callable[[], None]] = None,
     ) -> None:
         self._command = command
-        self._work_dir = work_dir
-        self._output_path = output_path
+        self._work_dir = Path(work_dir)
+        self._output_path = Path(output_path)
+        self._staging_path = Path(staging_path) if staging_path is not None else None
+        self._overwrite = overwrite
+        self._job_id = job_id
         self._on_progress = on_progress or (lambda _: None)
         self._on_done = on_done or (lambda _: None)
         self._on_failed = on_failed or (lambda _: None)
@@ -319,6 +325,12 @@ class ExportJob:
 
     def _finish(self, terminal_state: str, *, error: str = "") -> None:
         """Clean up and fire the appropriate callback. Called exactly once."""
+        from .export_service import (
+            validate_rendered_output,
+            publish_staged_export,
+            cleanup_staging,
+        )
+
         # Ensure the Job Object is closed (kills any surviving children).
         with self._lock:
             self._kill_process_tree_locked()
@@ -330,23 +342,57 @@ class ExportJob:
         except Exception:
             pass
 
-        with self._lock:
-            self._state = terminal_state
-
         if terminal_state == STATE_DONE:
+            if self._staging_path is not None:
+                is_valid, val_err = validate_rendered_output(self._staging_path)
+                if not is_valid:
+                    cleanup_staging(self._staging_path)
+                    with self._lock:
+                        self._state = STATE_FAILED
+                    self._on_failed(f"Render output validation failed: {val_err}")
+                    return
+                try:
+                    publish_staged_export(
+                        self._staging_path,
+                        self._output_path,
+                        overwrite=self._overwrite,
+                        job_id=self._job_id,
+                    )
+                except Exception as exc:
+                    cleanup_staging(self._staging_path)
+                    with self._lock:
+                        self._state = STATE_FAILED
+                    self._on_failed(f"Could not publish rendered video: {exc}")
+                    return
+
+            with self._lock:
+                self._state = STATE_DONE
             self._on_done(str(self._output_path))
+
         elif terminal_state == STATE_CANCELLED:
-            # Remove a partial output file.
-            try:
-                if self._output_path.exists():
-                    self._output_path.unlink(missing_ok=True)
-            except Exception:
-                pass
+            # If staged: delete ONLY the staging file. Pre-existing target remains untouched!
+            if self._staging_path is not None:
+                cleanup_staging(self._staging_path)
+            else:
+                try:
+                    if self._output_path.exists():
+                        self._output_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            with self._lock:
+                self._state = STATE_CANCELLED
             self._on_cancelled()
+
         else:  # FAILED
-            try:
-                if self._output_path.exists():
-                    self._output_path.unlink(missing_ok=True)
-            except Exception:
-                pass
+            # If staged: delete ONLY the staging file. Pre-existing target remains untouched!
+            if self._staging_path is not None:
+                cleanup_staging(self._staging_path)
+            else:
+                try:
+                    if self._output_path.exists():
+                        self._output_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            with self._lock:
+                self._state = STATE_FAILED
             self._on_failed(error)
