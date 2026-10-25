@@ -1,13 +1,13 @@
 """FFmpeg rendering pipeline for the current MVP.
 
-``render_project`` now returns the FFmpeg command list and the work directory
+``render_project`` returns the FFmpeg command list and the work directory
 path so that the caller (``ExportJob``) owns process creation and cleanup.
 ``build_render_command`` is a pure function and is independently testable.
 """
 from pathlib import Path
 from .media_probe import find_tool
 from .timeline import build_timeline
-from .compositor import create_composition
+from .compositor import create_composition, INDICATOR_MODES
 
 RESOLUTIONS = {
     "1080p · Full HD": (1920, 1080),
@@ -35,6 +35,15 @@ def validate_project(project: dict) -> None:
     if logo and not Path(logo).is_file():
         raise FileNotFoundError(f"Logo file not found: {logo}")
 
+    cursor = project.get("cursor_path", "") or None
+    if cursor:
+        p = Path(cursor)
+        if not p.is_file():
+            raise FileNotFoundError(f"Custom cursor file not found: {cursor}")
+        supported = {".svg", ".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+        if p.suffix.lower() not in supported:
+            raise ValueError(f"Unsupported cursor format: {p.suffix}. Supported: SVG, PNG, JPG, WEBP, BMP.")
+
 
 def build_render_command(
     project: dict,
@@ -45,13 +54,17 @@ def build_render_command(
     Prepare assets and return ``(ffmpeg_command, output_path)``.
 
     The work_dir is owned by the caller; this function writes intermediate
-    PNG files there.  The caller is responsible for cleanup.
+    PNG files there. The caller is responsible for cleanup.
     """
     validate_project(project)
 
     tracks = project["tracks"]
     bg = project["background"]
     logo = project.get("logo") or None
+    indicator_mode = project.get("indicator_mode", "both")
+    cursor_path = project.get("cursor_path") or None
+    cursor_size = int(project.get("cursor_size", 32) or 32)
+
     width, height = RESOLUTIONS.get(project.get("resolution", "1080p · Full HD"), (1920, 1080))
     out_path = Path(project.get("output_path") or "nasheed_collection.mp4").expanduser().resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -62,38 +75,61 @@ def build_render_command(
 
     timeline = build_timeline(tracks)
     base, overlays = create_composition(
-        width, height, bg, logo,
-        project.get("collection_title") or "Nasheed Collection",
-        [t.title for t in timeline],
-        project.get("template", "Cinematic"),
-        str(work_dir),
+        width=width,
+        height=height,
+        background_path=bg,
+        logo_path=logo,
+        collection_title=project.get("collection_title") or "Nasheed Collection",
+        track_titles=[t.title for t in timeline],
+        template=project.get("template", "Cinematic"),
+        out_dir=str(work_dir),
+        indicator_mode=indicator_mode,
+        cursor_path=cursor_path,
+        cursor_size=cursor_size,
     )
 
     ffmpeg = find_tool("ffmpeg")
     command = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
                "-loop", "1", "-framerate", "30", "-i", base]
-    for overlay in overlays:
-        command += ["-loop", "1", "-framerate", "30", "-i", overlay]
-    audio_start = 1 + len(overlays)
+
+    if overlays:
+        for overlay in overlays:
+            command += ["-loop", "1", "-framerate", "30", "-i", overlay]
+        audio_start = 1 + len(overlays)
+    else:
+        audio_start = 1
+
     for track in tracks:
         command += ["-i", track["path"]]
 
     filters: list[str] = []
-    current = "0:v"
-    for i, entry in enumerate(timeline):
-        next_label = f"v{i + 1}"
-        start = f"{entry.start:.3f}".rstrip("0").rstrip(".") or "0"
-        end = f"{entry.end:.3f}".rstrip("0").rstrip(".") or "0"
-        filters.append(
-            f"[{current}][{1 + i}:v]overlay=0:0:enable='between(t\\,{start}\\,{end})'[{next_label}]"
-        )
-        current = next_label
 
-    audio_inputs = "".join(f"[{audio_start + i}:a]" for i in range(len(tracks)))
+    # 1. Video stream chain
+    if overlays:
+        current = "0:v"
+        for i, entry in enumerate(timeline):
+            next_label = f"v{i + 1}"
+            start = f"{entry.start:.3f}".rstrip("0").rstrip(".") or "0"
+            end = f"{entry.end:.3f}".rstrip("0").rstrip(".") or "0"
+            filters.append(
+                f"[{current}][{1 + i}:v]overlay=0:0:enable='between(t\\,{start}\\,{end})'[{next_label}]"
+            )
+            current = next_label
+        video_out = f"[{current}]"
+    else:
+        video_out = "0:v"
+
+    # 2. Audio stream chain: normalize sample rate & channels before concat
+    for i in range(len(tracks)):
+        filters.append(
+            f"[{audio_start + i}:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a{i}]"
+        )
+    audio_inputs = "".join(f"[a{i}]" for i in range(len(tracks)))
     filters.append(f"{audio_inputs}concat=n={len(tracks)}:v=0:a=1[aout]")
+
     command += [
         "-filter_complex", ";".join(filters),
-        "-map", f"[{current}]", "-map", "[aout]",
+        "-map", video_out, "-map", "[aout]",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
         "-pix_fmt", "yuv420p", "-r", "30",
         "-c:a", "aac", "-b:a", "192k",
@@ -109,7 +145,7 @@ def build_render_command(
 # ---------------------------------------------------------------------------
 
 def render_project(project: dict, progress_callback=None) -> str:
-    """Synchronous, blocking render.  Deprecated in favour of ExportJob."""
+    """Synchronous, blocking render. Deprecated in favour of ExportJob."""
     import tempfile, subprocess
     with tempfile.TemporaryDirectory(prefix="nasheed_render_") as tmp:
         work_dir = Path(tmp)

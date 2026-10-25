@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFileDialog, QListWidget, QListWidgetItem, QLineEdit, QComboBox, QGroupBox,
     QFormLayout, QSplitter, QMessageBox, QProgressBar, QFrame, QAbstractItemView,
-    QToolButton, QInputDialog, QSizePolicy,
+    QToolButton, QInputDialog, QSizePolicy, QSpinBox,
 )
 from PIL import Image
 
@@ -180,6 +180,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1120, 720)
         self.background_path = ""
         self.logo_path = ""
+        self.cursor_path = ""
         self.tracks: list[dict] = []
         self.project_path = ""
         self._is_dirty = False
@@ -357,6 +358,42 @@ class MainWindow(QMainWindow):
         tf.addRow("Encoding", self.fps_label)
         rl.addWidget(template_box)
 
+        indicator_box = QGroupBox("ACTIVE TRACK INDICATOR")
+        inf = QFormLayout(indicator_box)
+
+        self.indicator_combo = QComboBox()
+        self.indicator_combo.addItems([
+            "Both (Cursor & Highlight)",
+            "Cursor only",
+            "Highlight only",
+            "Neither (Clean)"
+        ])
+        self.indicator_combo.currentTextChanged.connect(self._on_indicator_changed)
+        inf.addRow("Mode", self.indicator_combo)
+
+        self.cursor_label = self._make_asset_label("Default arrow cursor")
+        cursor_btn_row = QHBoxLayout()
+        self.cursor_btn = QPushButton("Upload cursor (SVG/PNG)…")
+        self.cursor_btn.clicked.connect(self.choose_cursor)
+        self.cursor_reset_btn = QPushButton("Reset")
+        self.cursor_reset_btn.clicked.connect(self.reset_cursor)
+        cursor_btn_row.addWidget(self.cursor_btn, 1)
+        cursor_btn_row.addWidget(self.cursor_reset_btn)
+
+        cursor_col = QVBoxLayout()
+        cursor_col.addWidget(self.cursor_label)
+        cursor_col.addLayout(cursor_btn_row)
+        inf.addRow("Cursor asset", cursor_col)
+
+        self.cursor_size_spin = QSpinBox()
+        self.cursor_size_spin.setRange(16, 96)
+        self.cursor_size_spin.setValue(32)
+        self.cursor_size_spin.setSuffix(" px")
+        self.cursor_size_spin.valueChanged.connect(self._on_cursor_size_changed)
+        inf.addRow("Cursor size", self.cursor_size_spin)
+
+        rl.addWidget(indicator_box)
+
         output_box = QGroupBox("EXPORT DESTINATION")
         ol = QVBoxLayout(output_box)
         self.output_edit = QLineEdit(str(Path.home() / "Videos" / "nasheed_collection.mp4"))
@@ -478,6 +515,52 @@ class MainWindow(QMainWindow):
     # Project helper
     # ------------------------------------------------------------------
 
+    def _mode_from_combo(self) -> str:
+        text = self.indicator_combo.currentText()
+        if "Cursor only" in text:
+            return "cursor_only"
+        if "Highlight only" in text:
+            return "highlight_only"
+        if "Neither" in text:
+            return "neither"
+        return "both"
+
+    def _set_combo_from_mode(self, mode: str) -> None:
+        mapping = {
+            "both": "Both (Cursor & Highlight)",
+            "cursor_only": "Cursor only",
+            "highlight_only": "Highlight only",
+            "neither": "Neither (Clean)",
+        }
+        self.indicator_combo.setCurrentText(mapping.get(str(mode).lower(), "Both (Cursor & Highlight)"))
+
+    def _on_indicator_changed(self, text: str) -> None:
+        self._mark_dirty()
+        self._refresh_preview()
+
+    def _on_cursor_size_changed(self, val: int) -> None:
+        self._mark_dirty()
+        self._schedule_preview(200)
+
+    def choose_cursor(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose custom cursor", "",
+            "Vector & Images (*.svg *.png *.jpg *.jpeg *.webp *.bmp);;SVG Vector (*.svg);;PNG Image (*.png);;All files (*.*)"
+        )
+        if path:
+            self.cursor_path = path
+            self._set_asset_label(self.cursor_label, path)
+            self._mark_dirty()
+            self._refresh_preview()
+
+    def reset_cursor(self) -> None:
+        if self.cursor_path:
+            self.cursor_path = ""
+            self._set_asset_label(self.cursor_label, "")
+            self.cursor_label.setText("Default arrow cursor")
+            self._mark_dirty()
+            self._refresh_preview()
+
     def _project(self) -> dict:
         return {
             "version": 1,
@@ -487,6 +570,9 @@ class MainWindow(QMainWindow):
             "tracks": self.tracks,
             "template": self.template_combo.currentText(),
             "resolution": self.resolution_combo.currentText(),
+            "indicator_mode": self._mode_from_combo(),
+            "cursor_path": self.cursor_path,
+            "cursor_size": self.cursor_size_spin.value(),
             "output_path": self.output_edit.text().strip(),
         }
 
@@ -665,9 +751,18 @@ class MainWindow(QMainWindow):
                     or ["Example Nasheed One", "Example Nasheed Two", "Example Nasheed Three"]
                 )
                 base, overlays = create_composition(
-                    1280, 720, self.background_path, self.logo_path or None,
-                    self.collection_title.text().strip() or "Nasheed Collection",
-                    titles, self.template_combo.currentText(), tmp
+                    width=1280,
+                    height=720,
+                    background_path=self.background_path,
+                    logo_path=self.logo_path or None,
+                    collection_title=self.collection_title.text().strip() or "Nasheed Collection",
+                    track_titles=titles,
+                    template=self.template_combo.currentText(),
+                    out_dir=tmp,
+                    indicator_mode=self._mode_from_combo(),
+                    cursor_path=self.cursor_path or None,
+                    cursor_size=self.cursor_size_spin.value(),
+                    preview_only_first_overlay=True,
                 )
                 img = Image.open(base).convert("RGBA")
                 if overlays:
@@ -900,15 +995,20 @@ class MainWindow(QMainWindow):
         try:
             self.background_path = ""
             self.logo_path = ""
+            self.cursor_path = ""
             self.tracks = []
             self.project_path = ""
             self._set_asset_label(self.background_label, "")
             self.background_label.setText("No background selected")
             self._set_asset_label(self.logo_label, "")
             self.logo_label.setText("No logo selected")
+            self._set_asset_label(self.cursor_label, "")
+            self.cursor_label.setText("Default arrow cursor")
             self.collection_title.setText("Abu Ali Nasheeds Collection")
             self.template_combo.setCurrentText("Cinematic")
             self.resolution_combo.setCurrentIndex(0)
+            self._set_combo_from_mode("both")
+            self.cursor_size_spin.setValue(32)
             self.output_edit.setText(str(Path.home() / "Videos" / "nasheed_collection.mp4"))
             self._refresh_tracks()
             self._refresh_preview()
@@ -969,10 +1069,13 @@ class MainWindow(QMainWindow):
             try:
                 self.background_path = data.get("background", "")
                 self.logo_path = data.get("logo", "")
+                self.cursor_path = data.get("cursor_path", "")
                 self.tracks = data.get("tracks", [])
                 self.collection_title.setText(data.get("collection_title", "Nasheed Collection"))
                 self.template_combo.setCurrentText(data.get("template", "Cinematic"))
                 self.resolution_combo.setCurrentText(data.get("resolution", "1080p · Full HD"))
+                self._set_combo_from_mode(data.get("indicator_mode", "both"))
+                self.cursor_size_spin.setValue(int(data.get("cursor_size", 32) or 32))
                 self.output_edit.setText(
                     data.get("output_path", str(Path.home() / "Videos" / "nasheed_collection.mp4"))
                 )
@@ -983,6 +1086,11 @@ class MainWindow(QMainWindow):
                 self._set_asset_label(self.logo_label, self.logo_path)
                 if not self.logo_path:
                     self.logo_label.setText("No logo selected")
+                if self.cursor_path:
+                    self._set_asset_label(self.cursor_label, self.cursor_path)
+                else:
+                    self._set_asset_label(self.cursor_label, "")
+                    self.cursor_label.setText("Default arrow cursor")
                 self._refresh_tracks()
                 self._refresh_preview()
                 self._is_dirty = False
