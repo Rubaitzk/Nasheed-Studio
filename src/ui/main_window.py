@@ -30,7 +30,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QThread, Signal, QObject, QTimer, QSettings
+from PySide6.QtCore import Qt, QThread, Signal, QObject, QTimer, QSettings, QEvent
 from PySide6.QtGui import QPixmap, QAction
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -125,6 +125,11 @@ QPushButton, QToolButton {
     padding: 8px 10px;
 }
 QPushButton:hover, QToolButton:hover { background: #354239; }
+QPushButton:disabled, QToolButton:disabled {
+    background: #1e2420;
+    color: #5c6e62;
+    border: 1px solid #2d3630;
+}
 QPushButton#primary {
     background: #c0e4c9;
     color: #15261b;
@@ -187,6 +192,11 @@ class MainWindow(QMainWindow):
         self._last_saved_snapshot: Optional[dict] = None
         self._loading_project = False
         self._recent_menu = None
+        self._committed_title = "Abu Ali Nasheeds Collection"
+        self._title_timer = QTimer(self)
+        self._title_timer.setSingleShot(True)
+        self._title_timer.setInterval(1500)
+        self._title_timer.timeout.connect(self._apply_title)
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
         self._preview_timer.setInterval(300)
@@ -263,10 +273,21 @@ class MainWindow(QMainWindow):
         playlist_box = QGroupBox("PLAYLIST")
         pl = QVBoxLayout(playlist_box)
         title_form = QFormLayout()
-        self.collection_title = QLineEdit("Abu Ali Nasheeds Collection")
-        self.collection_title.textChanged.connect(self._on_title_changed)
-        self.collection_title.editingFinished.connect(self._flush_preview)
-        title_form.addRow("Collection title", self.collection_title)
+
+        title_row = QHBoxLayout()
+        self.collection_title = QLineEdit(self._committed_title)
+        self.collection_title.textChanged.connect(self._on_title_draft_changed)
+        self.collection_title.returnPressed.connect(self._apply_title)
+        self.collection_title.installEventFilter(self)
+
+        self.title_apply_btn = QPushButton("Apply")
+        self.title_apply_btn.setEnabled(False)
+        self.title_apply_btn.setToolTip("Apply title changes (Enter)")
+        self.title_apply_btn.clicked.connect(self._apply_title)
+
+        title_row.addWidget(self.collection_title, 1)
+        title_row.addWidget(self.title_apply_btn)
+        title_form.addRow("Collection title", title_row)
         pl.addLayout(title_form)
 
         self.track_list = QListWidget()
@@ -562,9 +583,11 @@ class MainWindow(QMainWindow):
             self._refresh_preview()
 
     def _project(self) -> dict:
+        if self.collection_title.text().strip() != self._committed_title:
+            self._apply_title()
         return {
             "version": 1,
-            "collection_title": self.collection_title.text().strip() or "Nasheed Collection",
+            "collection_title": self._committed_title or "Nasheed Collection",
             "background": self.background_path,
             "logo": self.logo_path,
             "tracks": self.tracks,
@@ -706,12 +729,44 @@ class MainWindow(QMainWindow):
             self.output_edit.setText(path)
 
     # ------------------------------------------------------------------
-    # Preview
+    # Preview & Title Draft Handling
     # ------------------------------------------------------------------
 
+    def _on_title_draft_changed(self, text: str) -> None:
+        if self._loading_project:
+            return
+        has_diff = (text.strip() != self._committed_title)
+        self.title_apply_btn.setEnabled(has_diff)
+        if has_diff:
+            self._title_timer.start(1500)
+        else:
+            self._title_timer.stop()
+
     def _on_title_changed(self, text: str) -> None:
-        self._mark_dirty()
-        self._schedule_preview(300)
+        """Backward compatibility helper."""
+        self._on_title_draft_changed(text)
+
+    def _apply_title(self) -> None:
+        """Commit the draft title to the project and refresh preview."""
+        if hasattr(self, "_title_timer") and self._title_timer.isActive():
+            self._title_timer.stop()
+        if hasattr(self, "_preview_timer") and self._preview_timer.isActive():
+            self._preview_timer.stop()
+        if self._loading_project:
+            return
+        text = self.collection_title.text().strip()
+        if text != self._committed_title:
+            self._committed_title = text
+            self._mark_dirty()
+            self._refresh_preview()
+        self.title_apply_btn.setEnabled(False)
+
+    def _cancel_title_draft(self) -> None:
+        """Discard draft changes and revert to committed title without dirtying."""
+        if hasattr(self, "_title_timer") and self._title_timer.isActive():
+            self._title_timer.stop()
+        self.collection_title.setText(self._committed_title)
+        self.title_apply_btn.setEnabled(False)
 
     def _on_template_changed(self, text: str) -> None:
         self._mark_dirty()
@@ -727,7 +782,10 @@ class MainWindow(QMainWindow):
 
     def _flush_preview(self) -> None:
         """Immediately update preview if an update is pending."""
-        if self._preview_timer.isActive():
+        if hasattr(self, "_title_timer") and self._title_timer.isActive():
+            self._title_timer.stop()
+            self._apply_title()
+        elif self._preview_timer.isActive():
             self._preview_timer.stop()
             self._refresh_preview()
 
@@ -755,7 +813,7 @@ class MainWindow(QMainWindow):
                     height=720,
                     background_path=self.background_path,
                     logo_path=self.logo_path or None,
-                    collection_title=self.collection_title.text().strip() or "Nasheed Collection",
+                    collection_title=self._committed_title or "Nasheed Collection",
                     track_titles=titles,
                     template=self.template_combo.currentText(),
                     out_dir=tmp,
@@ -785,6 +843,13 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._schedule_preview(150)
+
+    def eventFilter(self, obj, event):
+        if obj == getattr(self, "collection_title", None) and event.type() == QEvent.Type.KeyPress:
+            if event.key() == Qt.Key.Key_Escape:
+                self._cancel_title_draft()
+                return True
+        return super().eventFilter(obj, event)
 
     # ------------------------------------------------------------------
     # Bug C: Export lifecycle
@@ -882,6 +947,10 @@ class MainWindow(QMainWindow):
             self._job.cancel()
             # Wait briefly for the worker thread to clean up.
             self._job.join(timeout=5.0)
+        if hasattr(self, "_title_timer") and self._title_timer.isActive():
+            self._title_timer.stop()
+        if hasattr(self, "_preview_timer") and self._preview_timer.isActive():
+            self._preview_timer.stop()
         event.accept()
 
     # ------------------------------------------------------------------
@@ -895,6 +964,8 @@ class MainWindow(QMainWindow):
     def has_unsaved_changes(self) -> bool:
         if self._is_dirty:
             return True
+        if self.collection_title.text().strip() != self._committed_title:
+            return True
         if self.project_path:
             if self._last_saved_snapshot is not None:
                 return self._project() != self._last_saved_snapshot
@@ -904,7 +975,7 @@ class MainWindow(QMainWindow):
             self.tracks
             or self.background_path
             or self.logo_path
-            or (self.collection_title.text().strip() != default_title)
+            or (self._committed_title != default_title)
         )
 
     def _get_recent_projects(self) -> list[str]:
@@ -993,6 +1064,9 @@ class MainWindow(QMainWindow):
                 return
         self._loading_project = True
         try:
+            if hasattr(self, "_title_timer") and self._title_timer.isActive():
+                self._title_timer.stop()
+            self._committed_title = "Abu Ali Nasheeds Collection"
             self.background_path = ""
             self.logo_path = ""
             self.cursor_path = ""
@@ -1004,7 +1078,8 @@ class MainWindow(QMainWindow):
             self.logo_label.setText("No logo selected")
             self._set_asset_label(self.cursor_label, "")
             self.cursor_label.setText("Default arrow cursor")
-            self.collection_title.setText("Abu Ali Nasheeds Collection")
+            self.collection_title.setText(self._committed_title)
+            self.title_apply_btn.setEnabled(False)
             self.template_combo.setCurrentText("Cinematic")
             self.resolution_combo.setCurrentIndex(0)
             self._set_combo_from_mode("both")
@@ -1067,11 +1142,15 @@ class MainWindow(QMainWindow):
             data = json.loads(Path(path).read_text(encoding="utf-8"))
             self._loading_project = True
             try:
+                if hasattr(self, "_title_timer") and self._title_timer.isActive():
+                    self._title_timer.stop()
+                self._committed_title = data.get("collection_title", "Nasheed Collection")
                 self.background_path = data.get("background", "")
                 self.logo_path = data.get("logo", "")
                 self.cursor_path = data.get("cursor_path", "")
                 self.tracks = data.get("tracks", [])
-                self.collection_title.setText(data.get("collection_title", "Nasheed Collection"))
+                self.collection_title.setText(self._committed_title)
+                self.title_apply_btn.setEnabled(False)
                 self.template_combo.setCurrentText(data.get("template", "Cinematic"))
                 self.resolution_combo.setCurrentText(data.get("resolution", "1080p · Full HD"))
                 self._set_combo_from_mode(data.get("indicator_mode", "both"))
