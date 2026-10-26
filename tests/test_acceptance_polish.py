@@ -118,6 +118,67 @@ class TestAcceptanceFixes(unittest.TestCase):
             win.closeEvent = lambda e: e.accept()
             win.close()
 
+    def test_highlight_color_cache_invalidation_and_preview_update(self):
+        """Changing only the highlight color invalidates the preview cache and updates rendered pixels."""
+        win = MainWindow()
+        try:
+            win.background_path = str(self.bg_path)
+            win.tracks = list(self.tracks)
+            win.indicator_combo.setCurrentText("Highlight only")
+            win._refresh_preview()
+
+            key1 = win._cached_preview_key
+            pix1 = win._cached_preview_pixmap
+            self.assertIsNotNone(key1)
+            self.assertIsNotNone(pix1)
+            qimg1 = pix1.toImage()
+
+            # Change ONLY the highlight color to crimson red (255, 30, 30)
+            win.set_highlight_color((255, 30, 30))
+            win._flush_preview()
+
+            key2 = win._cached_preview_key
+            pix2 = win._cached_preview_pixmap
+            self.assertIsNotNone(key2)
+            self.assertIsNotNone(pix2)
+
+            # 1. Assert cache key invalidated
+            self.assertNotEqual(key1, key2, "Changing highlight color must invalidate the preview cache key")
+            # 2. Assert new QPixmap was generated (not stale cached object)
+            self.assertIsNot(pix1, pix2, "A fresh preview pixmap must be generated on highlight color change")
+
+            # 3. Assert rendered preview pixels actually updated with new highlight color
+            qimg2 = pix2.toImage()
+            w, h = qimg1.width(), qimg1.height()
+            diff_count = 0
+            red_highlight_pixels = 0
+            for x in range(0, w, 2):
+                for y in range(0, h, 2):
+                    c1 = qimg1.pixelColor(x, y)
+                    c2 = qimg2.pixelColor(x, y)
+                    if (c1.red(), c1.green(), c1.blue()) != (c2.red(), c2.green(), c2.blue()):
+                        diff_count += 1
+                        if c2.red() > 180 and c2.red() > c2.blue() + 50 and c2.red() > c2.green() + 50:
+                            red_highlight_pixels += 1
+
+            self.assertGreater(diff_count, 0, "Rendered preview pixels must change when highlight color changes")
+            self.assertGreater(red_highlight_pixels, 0, "Updated preview must render with red highlight pixels")
+
+            # 4. Test setting hex color string "#00E060" (green)
+            win.set_highlight_color("#00E060")
+            win._flush_preview()
+            key3 = win._cached_preview_key
+            self.assertNotEqual(key2, key3, "Hex highlight color string must produce a distinct cache key")
+            self.assertNotEqual(key1, key3)
+
+            # 5. Switching back to original default color restores original cache key
+            win.highlight_color = (248, 220, 139)
+            win._refresh_preview()
+            self.assertEqual(win._cached_preview_key, key1, "Reverting to initial highlight color must reproduce initial key")
+        finally:
+            win.closeEvent = lambda e: e.accept()
+            win.close()
+
     # ------------------------------------------------------------------
     # B. Website URL Opacity Slider Tests
     # ------------------------------------------------------------------

@@ -35,6 +35,7 @@ TEMPLATE_DESIGN_KEYS = [
     "website_show",
     "website_opacity",
     "highlight_style",
+    "highlight_color",
     "highlight_bg_opacity",
     "intro_enabled",
     "intro_duration",

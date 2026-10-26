@@ -47,7 +47,7 @@ from src.services.media_probe import get_duration
 from src.services.render_service import build_render_command, RESOLUTIONS
 from src.services.export_job import ExportJob, STATE_RUNNING
 from src.services.font_service import list_system_font_families, list_family_styles, refresh_fonts
-from src.services.compositor import create_composition, create_intro_card, CORNER_POSITIONS
+from src.services.compositor import create_composition, create_intro_card, CORNER_POSITIONS, _hex_to_rgb
 from src.services.workspace_service import (
     get_workspace_root, get_projects_dir, get_templates_dir,
     get_exports_dir, get_temp_dir, create_job_work_dir,
@@ -173,6 +173,7 @@ class MainWindow(QMainWindow):
         self.logo_path = ""
         self.cursor_path = ""
         self.sfx_path = ""
+        self.highlight_color = (248, 220, 139)
         self.custom_title_font_path = ""
         self.custom_track_font_path = ""
         self._previewing_intro = False
@@ -1330,6 +1331,7 @@ class MainWindow(QMainWindow):
             "title_position": self.title_pos_combo.currentText() if hasattr(self, "title_pos_combo") else "Top-Center",
             "title_show": self.title_show_check.isChecked() if hasattr(self, "title_show_check") else True,
             "highlight_style": self.highlight_style_combo.currentText() if hasattr(self, "highlight_style_combo") else "Pill",
+            "highlight_color": getattr(self, "highlight_color", (248, 220, 139)),
             "highlight_bg_opacity": round(self.highlight_opacity_slider.value() / 100.0, 2) if hasattr(self, "highlight_opacity_slider") else 0.25,
             "output_path": self.output_edit.text().strip(),
         }
@@ -1719,6 +1721,11 @@ class MainWindow(QMainWindow):
             self.highlight_opacity_val.setText(f"{val}%")
         self._on_layout_param_changed()
 
+    def set_highlight_color(self, color: Union[str, tuple, list]) -> None:
+        """Update highlight color, marking dirty state and scheduling preview update."""
+        self.highlight_color = color
+        self._on_layout_param_changed()
+
     def choose_sfx(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self, "Choose transition sound effect", "",
@@ -1819,6 +1826,8 @@ class MainWindow(QMainWindow):
         cur_mode = self._mode_from_combo()
         cur_cursor_size = self.cursor_size_spin.value() if hasattr(self, "cursor_size_spin") else 32
         cur_track_row = max(0, self.track_list.currentRow()) if (hasattr(self, "track_list") and self.track_list.currentRow() >= 0) else 0
+        hl_color = getattr(self, "highlight_color", (248, 220, 139))
+        hl_rgb = _hex_to_rgb(hl_color, (248, 220, 139))
 
         cache_key = (
             self.background_path, self.logo_path, self.cursor_path,
@@ -1833,6 +1842,7 @@ class MainWindow(QMainWindow):
             round(self.track_spacing_spin.value(), 2) if hasattr(self, "track_spacing_spin") else 1.85,
             round(self.playlist_bg_slider.value() / 100.0, 2) if hasattr(self, "playlist_bg_slider") else 0.0,
             self.highlight_style_combo.currentText() if hasattr(self, "highlight_style_combo") else "Pill",
+            hl_rgb,
             round(self.highlight_opacity_slider.value() / 100.0, 2) if hasattr(self, "highlight_opacity_slider") else 0.25,
             (hasattr(self, "logo_cleanup_check") and self.logo_cleanup_check.isChecked()),
             self.title_pos_combo.currentText() if hasattr(self, "title_pos_combo") else "Top-Center",
@@ -1924,6 +1934,7 @@ class MainWindow(QMainWindow):
                     title_position=self.title_pos_combo.currentText() if hasattr(self, "title_pos_combo") else "Top-Center",
                     title_show=self.title_show_check.isChecked() if hasattr(self, "title_show_check") else True,
                     highlight_style=self.highlight_style_combo.currentText() if hasattr(self, "highlight_style_combo") else "Pill",
+                    highlight_color=hl_rgb,
                     highlight_bg_opacity=round(self.highlight_opacity_slider.value() / 100.0, 2) if hasattr(self, "highlight_opacity_slider") else 0.25,
                 )
                 img = Image.open(base).convert("RGBA")
@@ -2324,6 +2335,11 @@ class MainWindow(QMainWindow):
             if hasattr(self, "sfx_check"):
                 self.sfx_check.setChecked(False)
                 self.sfx_vol_slider.setValue(70)
+            self.highlight_color = (248, 220, 139)
+            if hasattr(self, "highlight_style_combo"):
+                self.highlight_style_combo.setCurrentText("Pill")
+            if hasattr(self, "highlight_opacity_slider"):
+                self.highlight_opacity_slider.setValue(25)
             self.output_edit.setText(str(get_exports_dir() / "nasheed_collection.mp4"))
             self._refresh_tracks()
             self._refresh_preview()
@@ -2464,6 +2480,8 @@ class MainWindow(QMainWindow):
             self.title_show_check.setChecked(bool(tmpl["title_show"]))
         if "highlight_style" in tmpl and hasattr(self, "highlight_style_combo"):
             self.highlight_style_combo.setCurrentText(tmpl["highlight_style"])
+        if "highlight_color" in tmpl:
+            self.highlight_color = tmpl["highlight_color"]
         if "highlight_bg_opacity" in tmpl and hasattr(self, "highlight_opacity_slider"):
             self.highlight_opacity_slider.setValue(int(float(tmpl["highlight_bg_opacity"]) * 100))
         if "logo_cleanup_mode" in tmpl and hasattr(self, "logo_cleanup_check"):
@@ -2569,6 +2587,8 @@ class MainWindow(QMainWindow):
                     self.title_show_check.setChecked(bool(data["title_show"]))
                 if hasattr(self, "highlight_style_combo") and "highlight_style" in data:
                     self.highlight_style_combo.setCurrentText(data["highlight_style"])
+                if "highlight_color" in data:
+                    self.highlight_color = data["highlight_color"]
                 if hasattr(self, "highlight_opacity_slider") and "highlight_bg_opacity" in data:
                     self.highlight_opacity_slider.setValue(int(float(data["highlight_bg_opacity"]) * 100))
                 if hasattr(self, "logo_cleanup_check") and "logo_cleanup_mode" in data:
