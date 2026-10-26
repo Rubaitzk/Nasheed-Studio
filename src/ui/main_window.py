@@ -1868,6 +1868,22 @@ class MainWindow(QMainWindow):
 
     def _on_template_changed(self, text: str) -> None:
         self._mark_dirty()
+        norm = str(text or "").strip().lower()
+        if norm == "cinematic":
+            if hasattr(self, "playlist_pos_combo"):
+                _set_combo_case_insensitive(self.playlist_pos_combo, "Left")
+            if hasattr(self, "playlist_cols_spin"):
+                self.playlist_cols_spin.setValue(1)
+        elif norm == "minimal":
+            if hasattr(self, "playlist_pos_combo"):
+                _set_combo_case_insensitive(self.playlist_pos_combo, "Right")
+            if hasattr(self, "playlist_cols_spin"):
+                self.playlist_cols_spin.setValue(1)
+        elif norm in ("two-column", "two column", "2-column"):
+            if hasattr(self, "playlist_pos_combo"):
+                _set_combo_case_insensitive(self.playlist_pos_combo, "Left")
+            if hasattr(self, "playlist_cols_spin"):
+                self.playlist_cols_spin.setValue(2)
         self._refresh_preview()
 
     def _on_resolution_changed(self, text: str) -> None:

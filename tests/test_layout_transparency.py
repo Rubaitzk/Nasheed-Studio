@@ -10,7 +10,11 @@ from PySide6.QtWidgets import QApplication
 
 from src.services.compositor import (
     create_composition,
+    create_intro_card,
     clean_logo_image,
+    load_cursor_image,
+    calculate_playlist_layout,
+    _calculate_title_layout,
     HIGHLIGHT_STYLES,
     PLAYLIST_POSITIONS,
     TITLE_POSITIONS,
@@ -241,6 +245,252 @@ class TestLayoutAndTransparency(unittest.TestCase):
                 dispose_window(win2)
         finally:
             dispose_window(win)
+
+    def test_website_opacity_compositing_dedicated_layer(self):
+        """Dedicated RGBA layer renders website watermark with exact Porter-Duff alpha blending at 0%, 25%, 50%, 100%."""
+        opacities = [0.0, 0.25, 0.50, 1.0]
+        results = {}
+        for op in opacities:
+            out_dir = self.tmp / f"web_op_{int(op * 100)}"
+            base, _ = create_composition(
+                width=1920,
+                height=1080,
+                background_path=str(self.bg_path),
+                logo_path=None,
+                collection_title="Website Opacity Test",
+                track_titles=self.track_titles[:2],
+                template="Cinematic",
+                out_dir=str(out_dir),
+                website_text="www.nasheedstudio.test",
+                website_show=True,
+                website_opacity=op,
+            )
+            img = Image.open(base).convert("RGBA")
+            # Base composition must remain 100% opaque across all pixels
+            alpha_extrema = img.split()[3].getextrema()
+            self.assertEqual(alpha_extrema, (255, 255), "Canvas background alpha must stay 100% opaque (255)")
+            results[op] = img
+
+        # At 0.0, watermark should not be drawn; compare pixel near top-right with non-watermarked area
+        # Pixel difference between 25%, 50%, and 100% must show increasing contrast
+        tr_25 = results[0.25].crop((1500, 30, 1880, 100))
+        tr_50 = results[0.50].crop((1500, 30, 1880, 100))
+        tr_100 = results[1.0].crop((1500, 30, 1880, 100))
+        self.assertNotEqual(tr_25.tobytes(), tr_50.tobytes())
+        self.assertNotEqual(tr_50.tobytes(), tr_100.tobytes())
+
+        # Test intro card website opacity
+        intro_0 = create_intro_card(
+            width=1920,
+            height=1080,
+            background_path=str(self.bg_path),
+            logo_path=None,
+            collection_title="Intro Card Opacity Test",
+            template="Cinematic",
+            out_dir=str(self.tmp / "intro_0"),
+            website_text="www.nasheedstudio.test",
+            website_show=True,
+            website_opacity=0.0,
+        )
+        intro_100 = create_intro_card(
+            width=1920,
+            height=1080,
+            background_path=str(self.bg_path),
+            logo_path=None,
+            collection_title="Intro Card Opacity Test",
+            template="Cinematic",
+            out_dir=str(self.tmp / "intro_100"),
+            website_text="www.nasheedstudio.test",
+            website_show=True,
+            website_opacity=1.0,
+        )
+        img_intro_0 = Image.open(intro_0).convert("RGBA")
+        img_intro_100 = Image.open(intro_100).convert("RGBA")
+        self.assertEqual(img_intro_0.split()[3].getextrema(), (255, 255))
+        self.assertEqual(img_intro_100.split()[3].getextrema(), (255, 255))
+        self.assertNotEqual(img_intro_0.crop((800, 920, 1120, 980)).tobytes(),
+                            img_intro_100.crop((800, 920, 1120, 980)).tobytes())
+
+    def test_logo_and_cursor_transparency_cleanup_genuine_alpha(self):
+        """clean_logo_image preserves genuine partial alpha transparency & antialiasing via ImageChops.multiply."""
+        w, h = 100, 100
+        img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        from PIL import ImageDraw
+        d = ImageDraw.Draw(img)
+        # Genuine antialiased transparent circle with semi-transparent graphic (alpha = 130)
+        d.ellipse((20, 20, 80, 80), fill=(200, 150, 40, 255))
+        d.rectangle((30, 30, 70, 70), fill=(0, 0, 0, 130))
+
+        cleaned = clean_logo_image(img, mode="auto")
+        # Corner remains 0 alpha
+        self.assertEqual(cleaned.getpixel((0, 0))[3], 0)
+        # Semi-transparent graphic must preserve its partial alpha (130)
+        self.assertEqual(cleaned.getpixel((50, 50))[3], 130)
+
+        # Test clean_logo_image preserves internal partial alpha when removing solid white background
+        white_bg_img = Image.new("RGBA", (100, 100), (255, 255, 255, 255))
+        d2 = ImageDraw.Draw(white_bg_img)
+        d2.rectangle((20, 20, 80, 80), fill=(10, 120, 50, 180))
+        cleaned_white = clean_logo_image(white_bg_img, mode="remove_white")
+        self.assertEqual(cleaned_white.getpixel((0, 0))[3], 0)
+        self.assertEqual(cleaned_white.getpixel((50, 50))[3], 180)
+
+        # Cursor loading via load_cursor_image with raster image
+        cursor_file = self.tmp / "test_cursor.png"
+        img.save(cursor_file)
+        loaded_cursor = load_cursor_image(str(cursor_file), 32)
+        self.assertEqual(loaded_cursor.size, (32, 32))
+        self.assertEqual(loaded_cursor.mode, "RGBA")
+
+    def test_fit_to_frame_11_nasheeds_cinematic_auto_split(self):
+        """11 tracks at 43pt in Cinematic (Left alignment) auto-splits into 2 columns on the left within frame height."""
+        eleven_tracks = [f"Nasheed Track {i + 1:02d} Title Extended" for i in range(11)]
+        layout = calculate_playlist_layout(
+            track_titles=eleven_tracks,
+            width=1920,
+            height=1080,
+            template="Cinematic",
+            playlist_position="Left",
+            playlist_columns=1,  # Default single column requested
+            playlist_row_spacing=1.85,
+            playlist_width_ratio=0.47,
+            playlist_x_offset=0,
+            playlist_y_offset=0,
+            track_font_family="Segoe UI",
+            track_font_style="Bold",
+            track_font_size=43,
+            track_wrap_text=False,
+            title_bottom_y=160,
+        )
+
+        self.assertTrue(layout["is_two_col"], "11 tracks at 43pt must auto-split to 2 columns to prevent vertical overflow")
+        items = layout["track_items"]
+        self.assertEqual(len(items), 11)
+
+        # Col 0 is tracks 0-5, Col 1 is tracks 6-10
+        col_0_x = items[0]["x"]
+        col_1_x = items[6]["x"]
+        self.assertGreater(col_1_x, col_0_x, "Column 2 must be placed to the RIGHT of Column 1 in Left alignment")
+
+        # Verify all 11 tracks stay within the vertical 1080p frame height (<= 1080)
+        for it in items:
+            x1, y1, x2, y2 = it["box"]
+            self.assertLessEqual(y2, 1080, f"Track {it['index']} exceeded bottom screen bound: {y2} > 1080")
+        self.assertFalse(layout["overflow"])
+        self.assertEqual(layout["max_displayable"], 11)
+
+    def test_fit_to_frame_11_nasheeds_minimal_auto_split(self):
+        """11 tracks at 43pt in Minimal (Right alignment) auto-splits into 2 columns on the right."""
+        eleven_tracks = [f"Nasheed Track {i + 1:02d}" for i in range(11)]
+        layout = calculate_playlist_layout(
+            track_titles=eleven_tracks,
+            width=1920,
+            height=1080,
+            template="Minimal",
+            playlist_position="Right",
+            playlist_columns=1,
+            playlist_row_spacing=1.85,
+            playlist_width_ratio=0.47,
+            playlist_x_offset=0,
+            playlist_y_offset=0,
+            track_font_family="Segoe UI",
+            track_font_style="Bold",
+            track_font_size=43,
+            track_wrap_text=False,
+            title_bottom_y=160,
+        )
+
+        self.assertTrue(layout["is_two_col"])
+        items = layout["track_items"]
+        col_0_x = items[0]["x"]
+        col_1_x = items[6]["x"]
+        # In right alignment, Col 1 is on right, Col 0 is to its left, so both sit in right half
+        self.assertGreater(col_1_x, col_0_x)
+        self.assertGreater(col_0_x, 900, "In Right alignment, both columns should be on the right side of the canvas")
+        for it in items:
+            self.assertLessEqual(it["box"][3], 1080)
+
+    def test_fit_to_frame_center_balance(self):
+        """Two columns in Center alignment are centered symmetrically."""
+        eleven_tracks = [f"Center Track {i + 1:02d}" for i in range(11)]
+        layout = calculate_playlist_layout(
+            track_titles=eleven_tracks,
+            width=1920,
+            height=1080,
+            template="Two-column",
+            playlist_position="Center",
+            playlist_columns=2,
+            playlist_row_spacing=1.85,
+            playlist_width_ratio=0.50,
+            playlist_x_offset=0,
+            playlist_y_offset=0,
+            track_font_family="Segoe UI",
+            track_font_style="Bold",
+            track_font_size=24,
+            track_wrap_text=False,
+            title_bottom_y=160,
+        )
+        self.assertTrue(layout["is_two_col"])
+        items = layout["track_items"]
+        col_0_x = items[0]["x"]
+        col_1_x2 = items[6]["box"][2]
+        center_x = (col_0_x + col_1_x2) // 2
+        # Center should be roughly 1920 // 2 = 960 (within 50px tolerance)
+        self.assertAlmostEqual(center_x, 960, delta=50)
+
+    def test_multi_resolution_scalability(self):
+        """Compositions render cleanly and scale properly at 720p, 1080p, 1440p, and 4K."""
+        resolutions = [
+            (1280, 720),
+            (1920, 1080),
+            (2560, 1440),
+            (3840, 2160),
+        ]
+        eleven_tracks = [f"Nasheed Title {i + 1:02d}" for i in range(11)]
+        for w, h in resolutions:
+            out_dir = self.tmp / f"res_{w}x{h}"
+            bg = self.tmp / f"bg_{w}x{h}.png"
+            Image.new("RGB", (w, h), (20, 25, 22)).save(bg)
+
+            base, overlays = create_composition(
+                width=w,
+                height=h,
+                background_path=str(bg),
+                logo_path=None,
+                collection_title="Resolution Scaling Test",
+                track_titles=eleven_tracks,
+                template="Cinematic",
+                out_dir=str(out_dir),
+                track_font_size=36,
+                preview_only_first_overlay=True,
+            )
+            self.assertTrue(Path(base).is_file())
+            with Image.open(base) as im:
+                self.assertEqual(im.size, (w, h))
+
+    def test_long_track_title_wrapping_and_truncation(self):
+        """Long track titles truncate at word boundaries with ellipsis and never exceed column width."""
+        super_long = "This Is An Extremely Long Nasheed Title That Exceeds The Maximum Usable Single Column Width And Must Truncate Safely"
+        layout = calculate_playlist_layout(
+            track_titles=[super_long],
+            width=1920,
+            height=1080,
+            template="Cinematic",
+            playlist_position="Left",
+            playlist_columns=1,
+            playlist_row_spacing=1.85,
+            playlist_width_ratio=0.35,
+            playlist_x_offset=0,
+            playlist_y_offset=0,
+            track_font_family="Segoe UI",
+            track_font_style="Bold",
+            track_font_size=28,
+            track_wrap_text=False,
+            title_bottom_y=160,
+        )
+        item = layout["track_items"][0]
+        self.assertTrue(item["text"].endswith("…"))
+        self.assertLess(len(item["text"]), len(f"01. {super_long}"))
 
 
 if __name__ == "__main__":

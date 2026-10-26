@@ -4,8 +4,8 @@ from __future__ import annotations
 from collections import deque
 import os
 from pathlib import Path
-from typing import Optional, Tuple, Union
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from typing import Optional, Tuple, Union, List, Dict, Any
+from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageChops
 
 from src.services.font_service import resolve_font_path
 
@@ -61,8 +61,9 @@ def _draw_text_with_outline_and_shadow(
 
 def clean_logo_image(img: Image.Image, mode: str = "auto") -> Image.Image:
     """
-    Remove solid white or checkerboard backgrounds from logo images while preserving inner graphics.
-    Uses edge-connected flood-fill so white text or internal highlights are never erased.
+    Remove solid white or checkerboard backgrounds from logo and cursor images while preserving inner graphics.
+    Combines edge-connected flood-fill mask with the image's original alpha to preserve genuine transparency
+    and antialiased contours.
     """
     mode = str(mode or "auto").lower()
     if mode == "none":
@@ -75,24 +76,30 @@ def clean_logo_image(img: Image.Image, mode: str = "auto") -> Image.Image:
     # Check corners for transparency or background color
     corners = [px[0, 0], px[w - 1, 0], px[0, h - 1], px[w - 1, h - 1]]
     if any(c[3] < 30 for c in corners) and mode == "auto":
-        # Already has transparent corners
+        # Already has transparent corners in auto mode
         return rgba
 
-    def is_white_bg(r: int, g: int, b: int) -> bool:
-        return r >= 232 and g >= 232 and b >= 232 and abs(r - g) <= 14 and abs(g - b) <= 14
+    def is_white_bg(r: int, g: int, b: int, a: int = 255) -> bool:
+        if a < 30:
+            return False
+        return r >= 230 and g >= 230 and b >= 230 and abs(r - g) <= 15 and abs(g - b) <= 15
 
-    def is_checker_bg(r: int, g: int, b: int) -> bool:
-        is_grey = (180 <= r <= 222 and 180 <= g <= 222 and 180 <= b <= 222 and abs(r - g) <= 8 and abs(g - b) <= 8)
-        is_white = (r >= 232 and g >= 232 and b >= 232 and abs(r - g) <= 12 and abs(g - b) <= 12)
+    def is_checker_bg(r: int, g: int, b: int, a: int = 255) -> bool:
+        if a < 30:
+            return False
+        is_grey = (175 <= r <= 225 and 175 <= g <= 225 and 175 <= b <= 225 and abs(r - g) <= 10 and abs(g - b) <= 10)
+        is_white = (r >= 230 and g >= 230 and b >= 230 and abs(r - g) <= 15 and abs(g - b) <= 15)
         return is_white or is_grey
 
     is_bg_fn = is_white_bg
     if mode == "remove_checkerboard":
         is_bg_fn = is_checker_bg
+    elif mode == "remove_white":
+        is_bg_fn = is_white_bg
     elif mode == "auto":
         # Detect if corners alternate as checkerboard or solid white
-        grey_corners = sum(1 for r, g, b, _ in corners if 180 <= r <= 222 and abs(r - g) <= 8)
-        white_corners = sum(1 for r, g, b, _ in corners if is_white_bg(r, g, b))
+        grey_corners = sum(1 for r, g, b, a in corners if 175 <= r <= 225 and abs(r - g) <= 10 and a >= 30)
+        white_corners = sum(1 for r, g, b, a in corners if is_white_bg(r, g, b, a))
         if grey_corners >= 1 and (grey_corners + white_corners == 4):
             is_bg_fn = is_checker_bg
         elif white_corners >= 3:
@@ -109,7 +116,7 @@ def clean_logo_image(img: Image.Image, mode: str = "auto") -> Image.Image:
     for x in range(w):
         for y in (0, h - 1):
             r, g, b, a = px[x, y]
-            if is_bg_fn(r, g, b) and (x, y) not in visited:
+            if is_bg_fn(r, g, b, a) and (x, y) not in visited:
                 q.append((x, y))
                 visited.add((x, y))
 
@@ -117,7 +124,7 @@ def clean_logo_image(img: Image.Image, mode: str = "auto") -> Image.Image:
         for x in (0, w - 1):
             if (x, y) not in visited:
                 r, g, b, a = px[x, y]
-                if is_bg_fn(r, g, b):
+                if is_bg_fn(r, g, b, a):
                     q.append((x, y))
                     visited.add((x, y))
 
@@ -128,11 +135,14 @@ def clean_logo_image(img: Image.Image, mode: str = "auto") -> Image.Image:
             nx, ny = cx + dx, cy + dy
             if 0 <= nx < w and 0 <= ny < h and (nx, ny) not in visited:
                 r, g, b, a = px[nx, ny]
-                if is_bg_fn(r, g, b):
+                if is_bg_fn(r, g, b, a):
                     visited.add((nx, ny))
                     q.append((nx, ny))
 
-    rgba.putalpha(mask)
+    # Combine cleanup mask with existing alpha channel to preserve real transparency and antialiased contours
+    orig_alpha = rgba.split()[3]
+    combined_alpha = ImageChops.multiply(orig_alpha, mask)
+    rgba.putalpha(combined_alpha)
     return rgba
 
 
@@ -171,8 +181,8 @@ def render_svg_to_image(svg_path: str, target_w: int, target_h: int) -> Image.Im
     return Image.frombuffer("RGBA", (target_w, target_h), raw, "raw", "BGRA", 0, 1).convert("RGBA")
 
 
-def load_cursor_image(cursor_path: str, target_dim: int) -> Image.Image:
-    """Load, validate, and resize a custom SVG or raster cursor into an RGBA PIL Image."""
+def load_cursor_image(cursor_path: str, target_dim: int, mode: str = "auto") -> Image.Image:
+    """Load, validate, clean, and resize a custom SVG or raster cursor into an RGBA PIL Image."""
     p = Path(cursor_path)
     if not p.is_file():
         raise FileNotFoundError(f"Cursor file not found: {cursor_path}")
@@ -185,8 +195,8 @@ def load_cursor_image(cursor_path: str, target_dim: int) -> Image.Image:
     if suffix in supported_raster:
         try:
             with Image.open(str(p)) as src:
-                src_rgba = src.convert("RGBA")
-                return ImageOps.contain(src_rgba, (target_dim, target_dim), method=Image.Resampling.LANCZOS)
+                cleaned = clean_logo_image(src, mode=mode)
+                return ImageOps.contain(cleaned, (target_dim, target_dim), method=Image.Resampling.LANCZOS)
         except Exception as exc:
             raise ValueError(f"Could not decode cursor image {cursor_path}: {exc}")
 
@@ -212,6 +222,304 @@ def _calculate_corner_position(
         return margin_x, canvas_h - margin_y - elem_h
     # Default to Bottom-Right
     return canvas_w - margin_x - elem_w, canvas_h - margin_y - elem_h
+
+
+def _calculate_title_layout(
+    collection_title: str,
+    title_font_family: str,
+    title_font_style: str,
+    title_font_size: int,
+    norm_title_pos: str,
+    width: int,
+    height: int,
+    margin: int,
+    res_scale: float,
+    logo_placed: bool,
+    logo_rect: Optional[Tuple[int, int, int, int]],
+    usable_width: int,
+    playlist_x: int,
+) -> Tuple[List[str], ImageFont.ImageFont, int, List[Tuple[int, int]], int]:
+    """
+    Calculate multiline text wrapping, font scaling, line coordinates, and bounding limit
+    for the collection title. Scales down smoothly if title is long to prevent truncation or overlap.
+    """
+    clean_title = collection_title.strip()
+    base_font_sz = max(18, int(title_font_size * res_scale))
+
+    if norm_title_pos == "Above Playlist":
+        max_w = max(int(width * 0.25), usable_width)
+        start_y = int(height * 0.07)
+    elif norm_title_pos == "Top-Left":
+        max_w = int(width * 0.45)
+        start_y = int(height * 0.06)
+    else:  # Top-Center
+        max_w = int(width * 0.70)
+        if logo_placed and logo_rect is not None:
+            lx1, ly1, lx2, ly2 = logo_rect
+            if ly1 < int(height * 0.22):
+                # Avoid colliding horizontally with top logos
+                clearance = min(lx1, width - lx2) * 2 - int(width * 0.04)
+                if clearance > int(width * 0.30):
+                    max_w = min(max_w, clearance)
+        start_y = int(height * 0.06)
+
+    curr_sz = base_font_sz
+    title_font = _get_font(title_font_family, title_font_style, curr_sz)
+    lines = [clean_title]
+
+    # Test if single line fits within max_w
+    tb = title_font.getbbox(clean_title)
+    if (tb[2] - tb[0]) > max_w:
+        words = clean_title.split()
+        min_sz = max(14, int(base_font_sz * 0.70))
+        while curr_sz >= min_sz:
+            title_font = _get_font(title_font_family, title_font_style, curr_sz)
+            lines_cand: List[str] = []
+            cur_line: List[str] = []
+            for w in words:
+                cand_text = " ".join(cur_line + [w])
+                bb = title_font.getbbox(cand_text)
+                if (bb[2] - bb[0]) <= max_w or not cur_line:
+                    cur_line.append(w)
+                else:
+                    lines_cand.append(" ".join(cur_line))
+                    cur_line = [w]
+            if cur_line:
+                lines_cand.append(" ".join(cur_line))
+
+            if len(lines_cand) <= 2 and all((title_font.getbbox(l)[2] - title_font.getbbox(l)[0]) <= max_w for l in lines_cand):
+                lines = lines_cand
+                break
+            curr_sz -= 2
+            lines = lines_cand
+
+        # Enforce max 2 lines with graceful word-boundary ellipsis if needed
+        if len(lines) > 2:
+            l1 = lines[0]
+            rem_words = clean_title[len(l1):].split()
+            l2 = " ".join(rem_words)
+            while len(rem_words) > 1 and (title_font.getbbox(l2 + "…")[2] - title_font.getbbox(l2 + "…")[0]) > max_w:
+                rem_words.pop()
+                l2 = " ".join(rem_words)
+            lines = [l1, l2.rstrip() + "…"]
+
+    line_h = int(curr_sz * 1.25)
+    line_coords: List[Tuple[int, int]] = []
+    for idx, line_text in enumerate(lines):
+        bb = title_font.getbbox(line_text)
+        lw = bb[2] - bb[0]
+        ly = start_y + idx * line_h
+        if norm_title_pos == "Above Playlist":
+            lx = playlist_x
+        elif norm_title_pos == "Top-Left":
+            lx = margin
+        else:  # Top-Center
+            lx = (width - lw) // 2
+        line_coords.append((lx, ly))
+
+    total_th = len(lines) * line_h
+    title_bottom_y = start_y + total_th
+    return lines, title_font, total_th, line_coords, title_bottom_y
+
+
+def calculate_playlist_layout(
+    track_titles: list[str],
+    width: int,
+    height: int,
+    template: str,
+    playlist_position: str,
+    playlist_columns: int,
+    playlist_row_spacing: float,
+    playlist_width_ratio: float,
+    playlist_x_offset: int,
+    playlist_y_offset: int,
+    track_font_family: str,
+    track_font_style: str,
+    track_font_size: int,
+    track_wrap_text: bool,
+    title_bottom_y: int = 0,
+    website_rect: Optional[Tuple[int, int, int, int]] = None,
+) -> Dict[str, Any]:
+    """
+    Calculate dynamic playlist geometry with fit-to-frame auto-compaction and multi-column splitting.
+    If tracks or font size exceed the vertical limit, compacts row spacing and splits remaining
+    tracks across columns (to the right for Left alignment, to the left for Right alignment).
+    """
+    res_scale = height / 1080.0
+    margin = int(width * 0.055)
+    bottom_limit = int(height * 0.93)
+
+    if website_rect is not None and website_rect[1] > int(height * 0.70):
+        bottom_limit = min(bottom_limit, website_rect[1] - int(height * 0.015))
+
+    base_y = int(height * (0.16 if template == "Minimal" else 0.17))
+    if title_bottom_y > 0:
+        base_y = max(base_y, title_bottom_y + int(height * 0.035))
+    playlist_y = base_y + int(playlist_y_offset * res_scale)
+    avail_h = max(80, bottom_limit - playlist_y)
+
+    n_tracks = len(track_titles)
+    if n_tracks == 0:
+        row_font = _get_font(track_font_family, track_font_style, max(12, int(track_font_size * res_scale)))
+        return {
+            "track_items": [],
+            "positions": [],
+            "is_two_col": False,
+            "row_font": row_font,
+            "eff_track_size": max(12, int(track_font_size * res_scale)),
+            "row_gap": int(max(12, int(track_font_size * res_scale)) * 1.85),
+            "row_height": int(max(12, int(track_font_size * res_scale)) * 1.45),
+            "overflow": False,
+            "max_displayable": 0,
+        }
+
+    # Decide 1-col vs 2-col layout
+    norm_template = str(template or "").lower()
+    if playlist_columns >= 2 or norm_template in ("two-column", "two column", "2-column"):
+        is_two_col = True
+    else:
+        base_eff_sz = max(12, int(track_font_size * res_scale))
+        init_spacing = max(1.0, float(playlist_row_spacing or 1.85))
+        init_gap = int(base_eff_sz * init_spacing)
+        init_row_h = int(base_eff_sz * 1.45)
+        needed_h = (n_tracks - 1) * init_gap + init_row_h
+
+        if needed_h <= avail_h:
+            is_two_col = False
+        else:
+            # Check if gentle compaction (spacing >= 1.25) can fit single column for small playlists
+            compact_gap = int(base_eff_sz * 1.25)
+            compact_h = (n_tracks - 1) * compact_gap + init_row_h
+            if n_tracks <= 8 and compact_h <= avail_h:
+                is_two_col = False
+            else:
+                # Exceeds comfortable single-column capacity: auto-split to 2 columns
+                is_two_col = True
+
+    # Compute optimal font size and row spacing for the chosen column configuration
+    per_col = (n_tracks + 1) // 2 if is_two_col else n_tracks
+    eff_track_size = max(12, int(track_font_size * res_scale))
+    spacing = float(playlist_row_spacing or 1.85)
+    min_readable_sz = max(11, int(track_font_size * 0.70 * res_scale))
+
+    # Progressively compact spacing if needed
+    while spacing > 1.25:
+        rg = int(eff_track_size * spacing)
+        rh = int(eff_track_size * 1.45)
+        if (per_col - 1) * rg + rh <= avail_h:
+            break
+        spacing -= 0.05
+
+    # If still overflowing, scale down font size and spacing
+    while eff_track_size > min_readable_sz:
+        rg = int(eff_track_size * max(1.18, spacing))
+        rh = int(eff_track_size * 1.45)
+        if (per_col - 1) * rg + rh <= avail_h:
+            break
+        eff_track_size -= 1
+        spacing = max(1.18, spacing - 0.03)
+
+    row_font = _get_font(track_font_family, track_font_style, eff_track_size)
+    row_gap = int(eff_track_size * max(1.18, spacing))
+    row_height = int(eff_track_size * 1.45)
+
+    # Column positioning
+    eff_width_ratio = max(0.25, min(0.90, float(playlist_width_ratio or 0.47)))
+    usable_width = int(width * eff_width_ratio)
+    if template == "Minimal":
+        usable_width = int(width * 0.39)
+
+    norm_pos = playlist_position.strip().capitalize()
+    if not is_two_col:
+        if norm_pos == "Center":
+            col_x = (width - usable_width) // 2 + int(playlist_x_offset * res_scale)
+        elif norm_pos == "Right":
+            col_x = width - usable_width - margin + int(playlist_x_offset * res_scale)
+        else:  # Left
+            base_left = int(width * (0.56 if template == "Minimal" else 0.065))
+            col_x = base_left + int(playlist_x_offset * res_scale)
+        col_w = usable_width
+        col_0_x = col_x
+        col_1_x = col_x
+    else:
+        col_gap = int(width * 0.035)
+        col_w = max(int(width * 0.20), (usable_width - col_gap) // 2)
+        if norm_pos == "Left":
+            base_left = int(width * (0.50 if template == "Minimal" else 0.065)) + int(playlist_x_offset * res_scale)
+            col_0_x = base_left
+            col_1_x = base_left + col_w + col_gap
+        elif norm_pos == "Right":
+            right_edge = width - margin + int(playlist_x_offset * res_scale)
+            col_1_x = right_edge - col_w
+            col_0_x = col_1_x - col_gap - col_w
+        else:  # Center
+            total_w = col_w * 2 + col_gap
+            center_start = (width - total_w) // 2 + int(playlist_x_offset * res_scale)
+            col_0_x = center_start
+            col_1_x = center_start + col_w + col_gap
+
+    track_items = []
+    positions: List[Tuple[int, int, int, int]] = []
+
+    for i, title in enumerate(track_titles):
+        if is_two_col:
+            col, row = divmod(i, per_col)
+            x = col_0_x if col == 0 else col_1_x
+            curr_w = col_w
+        else:
+            col, row = 0, i
+            x = col_0_x
+            curr_w = col_w
+
+        y = playlist_y + row * row_gap
+        box = (x, y - int(eff_track_size * 0.15), x + curr_w, y + row_height)
+        positions.append(box)
+
+        raw_text = f"{i + 1:02d}. {title}"
+        display_text = raw_text
+        if not track_wrap_text:
+            max_text_w = curr_w - int(width * 0.02)
+            bb = row_font.getbbox(display_text)
+            if (bb[2] - bb[0]) > max_text_w:
+                words = raw_text.split()
+                candidate = raw_text
+                while len(words) > 1:
+                    words.pop()
+                    candidate = " ".join(words) + "…"
+                    bb = row_font.getbbox(candidate)
+                    if (bb[2] - bb[0]) <= max_text_w:
+                        break
+                if (bb[2] - bb[0]) > max_text_w:
+                    while len(candidate) > 4:
+                        candidate = candidate[:-2].rstrip() + "…"
+                        bb = row_font.getbbox(candidate)
+                        if (bb[2] - bb[0]) <= max_text_w:
+                            break
+                display_text = candidate
+
+        track_items.append({
+            "index": i,
+            "box": box,
+            "x": x,
+            "y": y,
+            "text": display_text,
+        })
+
+    max_y2 = max((b[3] for b in positions), default=0)
+    overflow = max_y2 > (height - int(height * 0.02))
+    max_disp = sum(1 for b in positions if b[3] <= height)
+
+    return {
+        "track_items": track_items,
+        "positions": positions,
+        "is_two_col": is_two_col,
+        "row_font": row_font,
+        "eff_track_size": eff_track_size,
+        "row_gap": row_gap,
+        "row_height": row_height,
+        "overflow": overflow,
+        "max_displayable": max_disp,
+    }
 
 
 def create_intro_card(
@@ -255,7 +563,7 @@ def create_intro_card(
     if logo_path and Path(logo_path).is_file():
         try:
             with Image.open(logo_path) as logo_src:
-                logo = logo_src.convert("RGBA")
+                logo = clean_logo_image(logo_src).convert("RGBA")
                 max_w, max_h = int(width * 0.24), int(height * 0.22)
                 logo.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
                 lx = (width - logo.width) // 2
@@ -265,13 +573,16 @@ def create_intro_card(
         except Exception:
             pass
 
-    # Decorative Rule / Header Backing
+    # Decorative Rule / Header Backing & Title on Dedicated Alpha Layer
     card_w = int(width * 0.72)
     card_h = int(height * 0.22)
     card_x = (width - card_w) // 2
     card_y = logo_bottom + int(height * 0.04)
 
-    draw.rounded_rectangle(
+    card_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    c_draw = ImageDraw.Draw(card_layer, "RGBA")
+
+    c_draw.rounded_rectangle(
         (card_x, card_y, card_x + card_w, card_y + card_h),
         radius=int(height * 0.015),
         fill=(0, 0, 0, 80),
@@ -280,13 +591,13 @@ def create_intro_card(
     )
 
     # Centered Collection Title
-    title_bbox = draw.textbbox((0, 0), collection_title, font=title_font)
+    title_bbox = c_draw.textbbox((0, 0), collection_title, font=title_font)
     title_w = title_bbox[2] - title_bbox[0]
     title_h = title_bbox[3] - title_bbox[1]
     tx = (width - title_w) // 2
     ty = card_y + (card_h - title_h) // 2
     _draw_text_with_outline_and_shadow(
-        draw=draw,
+        draw=c_draw,
         xy=(tx, ty),
         text=collection_title,
         font=title_font,
@@ -297,6 +608,7 @@ def create_intro_card(
         shadow_offset=(max(1, int(2 * res_scale)), max(1, int(2 * res_scale))),
         shadow_fill=(0, 0, 0, 140),
     )
+    bg = Image.alpha_composite(bg, card_layer)
 
     # Optional Website Address at bottom center
     web_op = max(0.0, min(1.0, float(website_opacity if website_opacity is not None else 1.0)))
@@ -307,7 +619,10 @@ def create_intro_card(
         ww = wb[2] - wb[0]
         wx = (width - ww) // 2
         wy = int(height * 0.88)
-        draw.text((wx, wy), website_text.strip(), font=web_font, fill=(220, 228, 222, int(200 * web_op)))
+        web_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        w_draw = ImageDraw.Draw(web_layer, "RGBA")
+        w_draw.text((wx, wy), website_text.strip(), font=web_font, fill=(220, 228, 222, int(200 * web_op)))
+        bg = Image.alpha_composite(bg, web_layer)
 
     intro_path = str(out / "intro_card.png")
     bg.save(intro_path)
@@ -396,91 +711,21 @@ def create_composition(
     res_scale = height / 1080.0
     margin = int(width * 0.055)
 
-    eff_title_size = max(14, int(title_font_size * res_scale))
-    eff_track_size = max(10, int(track_font_size * res_scale))
-
-    title_font = _get_font(title_font_family, title_font_style, eff_title_size)
-    row_font = _get_font(track_font_family, track_font_style, eff_track_size)
-
-    # Dynamic row geometry based on track font size
-    spacing_mult = max(1.2, float(playlist_row_spacing or 1.85))
-    row_gap = int(eff_track_size * spacing_mult)
-    row_height = int(eff_track_size * 1.50)
-
-    # 2. Determine Columns and Playlist Geometry
-    is_two_col = (template == "Two-column") or (playlist_columns == 2)
     eff_width_ratio = max(0.25, min(0.90, float(playlist_width_ratio or 0.47)))
     usable_width = int(width * eff_width_ratio)
     if template == "Minimal":
         usable_width = int(width * 0.39)
 
-    # Playlist X / Y Placement
     norm_pos = playlist_position.strip().capitalize()
     if norm_pos == "Center":
         base_px = (width - usable_width) // 2
     elif norm_pos == "Right":
         base_px = width - usable_width - margin
     else:  # Left
-        base_px = int(width * (0.56 if template == "Minimal" else 0.075))
-
+        base_px = int(width * (0.56 if template == "Minimal" else 0.065))
     playlist_x = base_px + int(playlist_x_offset * res_scale)
-    playlist_y = int(height * (0.25 if template == "Minimal" else 0.19)) + int(playlist_y_offset * res_scale)
 
-    if is_two_col:
-        col_gap = int(width * 0.04)
-        single_col_w = (usable_width - col_gap) // 2
-    else:
-        single_col_w = usable_width
-
-    # 3. Collection Title Placement & Typography
-    col_title_clean = collection_title.strip()
-    norm_title_pos = title_position.strip()
-    render_title = title_show and bool(col_title_clean) and (norm_title_pos != "Hidden")
-
-    if render_title:
-        title_rgb = _hex_to_rgb(title_color, (255, 255, 248))
-        title_stroke_rgb = _hex_to_rgb(title_outline_color, (0, 0, 0))
-        t_stroke_w = max(0, int(title_outline_width * res_scale)) if title_outline_width else 0
-
-        tb = draw.textbbox((0, 0), col_title_clean, font=title_font)
-        tw = tb[2] - tb[0]
-        th = tb[3] - tb[1]
-
-        if norm_title_pos == "Above Playlist":
-            tx = playlist_x
-            ty = max(int(height * 0.03), playlist_y - th - int(title_margin * res_scale) - 15)
-        elif norm_title_pos == "Top-Left":
-            tx = margin
-            ty = int(height * 0.045)
-        else:  # "Top-Center" (default)
-            tx = (width - tw) // 2
-            ty = int(height * 0.045)
-
-        # Header backing: draw only if not completely transparent
-        if playlist_bg_opacity > 0.1:
-            header_h = max(int(height * 0.08), th + 16)
-            bg_rgb = _hex_to_rgb(playlist_bg_color, (0, 0, 0))
-            bg_alpha = int(255 * min(1.0, playlist_bg_opacity * 0.7))
-            draw.rounded_rectangle(
-                (tx - 16, ty - 6, tx + tw + 16, ty + th + 10),
-                radius=max(3, int(playlist_bg_radius * res_scale)),
-                fill=(*bg_rgb, bg_alpha),
-            )
-
-        _draw_text_with_outline_and_shadow(
-            draw=draw,
-            xy=(tx, ty),
-            text=col_title_clean,
-            font=title_font,
-            fill=(*title_rgb, 255),
-            stroke_width=t_stroke_w,
-            stroke_fill=(*title_stroke_rgb, 120),
-            shadow=title_shadow,
-            shadow_offset=(max(1, int(2 * res_scale)), max(1, int(2 * res_scale))),
-            shadow_fill=(0, 0, 0, 140),
-        )
-
-    # 4. Logo Placement & Background Cleanup
+    # 2. Logo Placement & Background Cleanup (Positioned first for collision avoidance)
     logo_placed = False
     logo_rect: Optional[Tuple[int, int, int, int]] = None
     if logo_path and Path(logo_path).is_file():
@@ -500,9 +745,10 @@ def create_composition(
         except Exception:
             pass
 
-    # 5. Website Address Placement & Overlap Prevention
+    # 3. Website Address Placement on Dedicated RGBA Layer (True Porter-Duff Alpha Blend)
     web_text_clean = website_text.strip()
     web_op = max(0.0, min(1.0, float(website_opacity if website_opacity is not None else 1.0)))
+    web_rect: Optional[Tuple[int, int, int, int]] = None
     if web_text_clean and website_show and web_op > 0.0:
         eff_web_size = max(10, int(website_font_size * res_scale))
         web_font = _get_font("Segoe UI", "Regular", eff_web_size)
@@ -518,7 +764,7 @@ def create_composition(
             website_position, total_w, total_h, width, height, margin, int(height * 0.045)
         )
 
-        # Overlap Prevention: Check collision with logo
+        # Overlap Prevention: avoid collision with logo in same corner
         if logo_placed and logo_rect is not None:
             norm_logo_pos = logo_position.strip().lower()
             norm_web_pos = website_position.strip().lower()
@@ -529,21 +775,119 @@ def create_composition(
                 else:
                     wy = ly2 + int(height * 0.015)
 
-        draw.rounded_rectangle(
-            (wx, wy, wx + total_w, wy + total_h),
+        web_rect = (wx, wy, wx + total_w, wy + total_h)
+
+        web_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        w_draw = ImageDraw.Draw(web_layer, "RGBA")
+        pill_fill_a = int(120 * web_op)
+        pill_outline_a = int(35 * web_op)
+        w_draw.rounded_rectangle(
+            web_rect,
             radius=max(3, int(eff_web_size * 0.3)),
-            fill=(0, 0, 0, int(110 * web_op)),
-            outline=(255, 255, 255, int(25 * web_op)),
+            fill=(0, 0, 0, pill_fill_a),
+            outline=(255, 255, 255, pill_outline_a),
             width=1,
         )
-        draw.text(
-            (wx + pill_pad_x, wy + pill_pad_y),
-            web_text_clean,
+        _draw_text_with_outline_and_shadow(
+            draw=w_draw,
+            xy=(wx + pill_pad_x, wy + pill_pad_y),
+            text=web_text_clean,
             font=web_font,
-            fill=(238, 244, 239, int(235 * web_op)),
+            fill=(238, 244, 239, int(245 * web_op)),
             stroke_width=1,
             stroke_fill=(0, 0, 0, int(140 * web_op)),
+            shadow=True,
+            shadow_offset=(1, 1),
+            shadow_fill=(0, 0, 0, int(150 * web_op)),
         )
+        bg = Image.alpha_composite(bg, web_layer)
+        draw = ImageDraw.Draw(bg, "RGBA")
+
+    # 4. Collection Title Placement & Safe Frame Fitting
+    col_title_clean = collection_title.strip()
+    norm_title_pos = title_position.strip()
+    render_title = title_show and bool(col_title_clean) and (norm_title_pos != "Hidden")
+    title_bottom_y = int(height * 0.08)
+
+    if render_title:
+        title_rgb = _hex_to_rgb(title_color, (255, 255, 248))
+        title_stroke_rgb = _hex_to_rgb(title_outline_color, (0, 0, 0))
+        t_stroke_w = max(0, int(title_outline_width * res_scale)) if title_outline_width else 0
+
+        title_lines, title_font, total_th, line_coords, title_bottom_y = _calculate_title_layout(
+            collection_title=col_title_clean,
+            title_font_family=title_font_family,
+            title_font_style=title_font_style,
+            title_font_size=title_font_size,
+            norm_title_pos=norm_title_pos,
+            width=width,
+            height=height,
+            margin=margin,
+            res_scale=res_scale,
+            logo_placed=logo_placed,
+            logo_rect=logo_rect,
+            usable_width=usable_width,
+            playlist_x=playlist_x,
+        )
+
+        title_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        t_draw = ImageDraw.Draw(title_layer, "RGBA")
+
+        if playlist_bg_opacity > 0.1 and line_coords:
+            min_tx = min(c[0] for c in line_coords)
+            min_ty = min(c[1] for c in line_coords)
+            max_tx = max(c[0] + title_font.getbbox(l)[2] for c, l in zip(line_coords, title_lines))
+            max_ty = min_ty + total_th
+            bg_rgb = _hex_to_rgb(playlist_bg_color, (0, 0, 0))
+            bg_alpha = int(255 * min(1.0, playlist_bg_opacity * 0.7))
+            t_draw.rounded_rectangle(
+                (min_tx - 16, min_ty - 6, max_tx + 16, max_ty + 10),
+                radius=max(3, int(playlist_bg_radius * res_scale)),
+                fill=(*bg_rgb, bg_alpha),
+            )
+
+        for (lx, ly), line_txt in zip(line_coords, title_lines):
+            _draw_text_with_outline_and_shadow(
+                draw=t_draw,
+                xy=(lx, ly),
+                text=line_txt,
+                font=title_font,
+                fill=(*title_rgb, 255),
+                stroke_width=t_stroke_w,
+                stroke_fill=(*title_stroke_rgb, 120),
+                shadow=title_shadow,
+                shadow_offset=(max(1, int(2 * res_scale)), max(1, int(2 * res_scale))),
+                shadow_fill=(0, 0, 0, 140),
+            )
+
+        bg = Image.alpha_composite(bg, title_layer)
+        draw = ImageDraw.Draw(bg, "RGBA")
+
+    # 5. Dynamic Playlist Geometry & Fit-to-Frame Auto-Column Placement
+    layout_info = calculate_playlist_layout(
+        track_titles=track_titles,
+        width=width,
+        height=height,
+        template=template,
+        playlist_position=playlist_position,
+        playlist_columns=playlist_columns,
+        playlist_row_spacing=playlist_row_spacing,
+        playlist_width_ratio=playlist_width_ratio,
+        playlist_x_offset=playlist_x_offset,
+        playlist_y_offset=playlist_y_offset,
+        track_font_family=track_font_family,
+        track_font_style=track_font_style,
+        track_font_size=track_font_size,
+        track_wrap_text=track_wrap_text,
+        title_bottom_y=title_bottom_y if (render_title and norm_title_pos == "Above Playlist") else 0,
+        website_rect=web_rect,
+    )
+
+    track_items = layout_info["track_items"]
+    positions = layout_info["positions"]
+    is_two_col = layout_info["is_two_col"]
+    row_font = layout_info["row_font"]
+    eff_track_size = layout_info["eff_track_size"]
 
     # 6. Playlist Track Layout & Base Rendering
     base = bg.copy()
@@ -555,65 +899,30 @@ def create_composition(
     bg_panel_rgb = _hex_to_rgb(playlist_bg_color, (0, 0, 0))
     bg_panel_alpha = int(255 * max(0.0, min(1.0, float(playlist_bg_opacity or 0.0))))
 
-    per_col = (len(track_titles) + 1) // 2 if is_two_col else len(track_titles)
-    track_items = []
-    positions: list[tuple[int, int, int, int]] = []
-
-    for i, title in enumerate(track_titles):
-        if is_two_col:
-            col, row = divmod(i, per_col)
-            x = playlist_x + col * (single_col_w + int(width * 0.04))
-            w_col = single_col_w
-        else:
-            col, row = 0, i
-            x = playlist_x
-            w_col = usable_width
-
-        y = playlist_y + row * row_gap
-        box = (x, y - int(eff_track_size * 0.15), x + w_col, y + row_height)
-        positions.append(box)
-
-        # Track text formatting & ellipsis
-        raw_text = f"{i + 1:02d}. {title}"
-        display_text = raw_text
-        if not track_wrap_text:
-            max_text_w = w_col - int(width * 0.02)
-            bb = base_draw.textbbox((0, 0), display_text, font=row_font)
-            if (bb[2] - bb[0]) > max_text_w:
-                while len(display_text) > 4:
-                    display_text = display_text[:-1]
-                    candidate = display_text.rstrip() + "…"
-                    bb = base_draw.textbbox((0, 0), candidate, font=row_font)
-                    if (bb[2] - bb[0]) <= max_text_w:
-                        display_text = candidate
-                        break
-
-        track_items.append({
-            "index": i,
-            "box": box,
-            "x": x,
-            "y": y,
-            "text": display_text,
-        })
-
     # Draw translucent panel/row backing if requested
     if bg_panel_alpha > 0:
+        panel_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        p_draw = ImageDraw.Draw(panel_layer, "RGBA")
         for item in track_items:
-            base_draw.rounded_rectangle(
+            p_draw.rounded_rectangle(
                 item["box"],
                 radius=max(2, int(playlist_bg_radius * res_scale)),
                 fill=(*bg_panel_rgb, bg_panel_alpha),
                 outline=(255, 255, 255, 18) if bg_panel_alpha > 80 else None,
                 width=1,
             )
+        base = Image.alpha_composite(base, panel_layer)
+        base_draw = ImageDraw.Draw(base, "RGBA")
 
     has_overlays = (mode != "neither") and (show_highlight or show_cursor) and bool(track_items)
 
     # If neither cursor nor highlight is requested, render tracks on base and return 0 overlays
     if not has_overlays:
+        tracks_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        tr_draw = ImageDraw.Draw(tracks_layer, "RGBA")
         for item in track_items:
             _draw_text_with_outline_and_shadow(
-                draw=base_draw,
+                draw=tr_draw,
                 xy=(item["x"] + int(width * 0.006), item["y"]),
                 text=item["text"],
                 font=row_font,
@@ -624,6 +933,7 @@ def create_composition(
                 shadow_offset=(max(1, int(1 * res_scale)), max(1, int(1 * res_scale))),
                 shadow_fill=(0, 0, 0, 140),
             )
+        base = Image.alpha_composite(base, tracks_layer)
         base_path = str(out / "composition.png")
         base.save(base_path)
         return base_path, []
