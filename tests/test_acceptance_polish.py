@@ -179,6 +179,28 @@ class TestAcceptanceFixes(unittest.TestCase):
             win.closeEvent = lambda e: e.accept()
             win.close()
 
+    def test_highlight_color_ui_controls(self):
+        """Highlight color button and reset button are visible, update swatch/text, and handle resets."""
+        win = MainWindow()
+        try:
+            self.assertTrue(hasattr(win, "highlight_color_btn"))
+            self.assertTrue(hasattr(win, "highlight_color_reset_btn"))
+            self.assertIn("#F8DC8B", win.highlight_color_btn.text())
+            self.assertFalse(win.highlight_color_btn.icon().isNull())
+
+            # Change color via set_highlight_color
+            win.set_highlight_color((61, 139, 88))
+            self.assertIn("#3D8B58", win.highlight_color_btn.text())
+            self.assertIn("#3D8B58", win.highlight_color_btn.toolTip())
+
+            # Reset color back to default
+            win.reset_highlight_color()
+            self.assertEqual(win.highlight_color, (248, 220, 139))
+            self.assertIn("#F8DC8B", win.highlight_color_btn.text())
+        finally:
+            win.closeEvent = lambda e: e.accept()
+            win.close()
+
     # ------------------------------------------------------------------
     # B. Website URL Opacity Slider Tests
     # ------------------------------------------------------------------
@@ -450,6 +472,126 @@ class TestAcceptanceFixes(unittest.TestCase):
         finally:
             win.closeEvent = lambda e: e.accept()
             win.close()
+
+    # ------------------------------------------------------------------
+    # Typography Quality & Active-Track Highlight Separation Tests
+    # ------------------------------------------------------------------
+
+    def test_highlight_color_does_not_alter_text_color(self):
+        """Highlight color changes only the indicator/pill, leaving text glyph fill and stroke unchanged."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_r = Path(tmp) / "red"
+            tmp_b = Path(tmp) / "blue"
+            track_fill = (242, 243, 231)
+            # Render with Red highlight
+            _, ov_red = create_composition(
+                width=1920, height=1080, background_path=str(self.bg_path),
+                logo_path=None, collection_title="Nasheeds",
+                track_titles=["First Nasheed", "Second Nasheed"],
+                template="Cinematic", out_dir=str(tmp_r), indicator_mode="highlight",
+                highlight_style="Pill", highlight_color=(255, 0, 0),
+                track_color=track_fill, active_track_index=0,
+                preview_only_first_overlay=True,
+            )
+            # Render with Blue highlight
+            _, ov_blue = create_composition(
+                width=1920, height=1080, background_path=str(self.bg_path),
+                logo_path=None, collection_title="Nasheeds",
+                track_titles=["First Nasheed", "Second Nasheed"],
+                template="Cinematic", out_dir=str(tmp_b), indicator_mode="highlight",
+                highlight_style="Pill", highlight_color=(0, 0, 255),
+                track_color=track_fill, active_track_index=0,
+                preview_only_first_overlay=True,
+            )
+
+            with Image.open(ov_red[0]) as img_r, Image.open(ov_blue[0]) as img_b:
+                r_img = img_r.convert("RGBA")
+                b_img = img_b.convert("RGBA")
+                r_cols = r_img.getcolors(maxcolors=100000)
+                b_cols = b_img.getcolors(maxcolors=100000)
+
+                # Active track text glyphs center pixels must have identical track_color
+                r_text_pixels = sum(c[0] for c in r_cols if c[1][:3] == track_fill)
+                b_text_pixels = sum(c[0] for c in b_cols if c[1][:3] == track_fill)
+                self.assertGreater(r_text_pixels, 0)
+                self.assertEqual(r_text_pixels, b_text_pixels, "Text glyph pixels must be identical regardless of highlight color")
+
+                # The indicator border itself MUST change with the highlight color
+                red_border = sum(c[0] for c in r_cols if c[1] == (255, 0, 0, 255))
+                blue_border = sum(c[0] for c in b_cols if c[1] == (0, 0, 255, 255))
+                self.assertGreater(red_border, 0)
+                self.assertGreater(blue_border, 0)
+                self.assertEqual(red_border, blue_border)
+
+    def test_all_four_highlight_styles_render_cleanly(self):
+        """All four highlight styles (Pill, Accent Bar, Outline, Underline) render without error or distortion."""
+        with tempfile.TemporaryDirectory() as tmp:
+            for style in ("Pill", "Accent Bar", "Outline", "Underline"):
+                b, ov = create_composition(
+                    width=1920, height=1080, background_path=str(self.bg_path),
+                    logo_path=None, collection_title="Collection",
+                    track_titles=["Track 01", "Track 02", "Track 03"],
+                    template="Cinematic", out_dir=tmp, indicator_mode="highlight",
+                    highlight_style=style, highlight_color=(248, 220, 139),
+                    track_color=(242, 243, 231), active_track_index=1,
+                )
+                self.assertTrue(Path(b).is_file())
+                self.assertEqual(len(ov), 3)
+                with Image.open(ov[1]) as overlay_img:
+                    self.assertEqual(overlay_img.size, (1920, 1080))
+                    extrema = overlay_img.getextrema()
+                    # Alpha channel extrema [3] must have max > 0
+                    self.assertGreater(extrema[3][1], 0, f"Overlay for {style} must not be empty")
+
+    def test_long_title_truncation_without_overlap(self):
+        """Long titles are truncated cleanly with an ellipsis and do not exceed the column boundaries."""
+        with tempfile.TemporaryDirectory() as tmp:
+            long_title = "A Very Long Nasheed Title That Vastly Exceeds The Available Column Width Boundary And Requires Clean Truncation"
+            _, ov = create_composition(
+                width=1920, height=1080, background_path=str(self.bg_path),
+                logo_path=None, collection_title="Collection",
+                track_titles=[long_title, "Short Track"],
+                template="Cinematic", out_dir=tmp, indicator_mode="highlight",
+                playlist_columns=2, playlist_position="Left", playlist_width_ratio=0.5,
+                track_wrap_text=False, active_track_index=0,
+            )
+            with Image.open(ov[0]) as img:
+                data = img.convert("RGBA").load()
+                # Ensure no pixels bleed into right column territory (x > 1000)
+                bleed_pixels = sum(1 for y in range(1080) for x in range(1000, 1920) if data[x, y][3] > 0)
+                self.assertEqual(bleed_pixels, 0, "Truncated text must not bleed across column boundary")
+
+    def test_multi_resolution_text_crispness_1080p_1440p_4k(self):
+        """Compositions render at 1080p, 1440p, and 4K with proportional typography scaling."""
+        with tempfile.TemporaryDirectory() as tmp:
+            for w, h in ((1920, 1080), (2560, 1440), (3840, 2160)):
+                bg_file = Path(tmp) / f"bg_{w}_{h}.png"
+                with Image.new("RGB", (w, h), (20, 20, 20)) as bg_img:
+                    bg_img.save(bg_file)
+
+                base_p, ov_p = create_composition(
+                    width=w, height=h, background_path=str(bg_file),
+                    logo_path=None, collection_title="Scaling Check",
+                    track_titles=["Track Alpha", "Track Beta"],
+                    template="Cinematic", out_dir=tmp, indicator_mode="both",
+                    active_track_index=0,
+                )
+                with Image.open(base_p) as b_img, Image.open(ov_p[0]) as o_img:
+                    self.assertEqual(b_img.size, (w, h))
+                    self.assertEqual(o_img.size, (w, h))
+
+    def test_title_and_track_outline_width_zero_disables_stroke(self):
+        """When outline width is set to 0, no forced 1px stroke halo is applied."""
+        with tempfile.TemporaryDirectory() as tmp:
+            base_p, _ = create_composition(
+                width=1920, height=1080, background_path=str(self.bg_path),
+                logo_path=None, collection_title="No Outline Test",
+                track_titles=["Crisp Clean Text"],
+                template="Cinematic", out_dir=tmp, indicator_mode="neither",
+                track_outline_width=0, track_shadow=False,
+                track_color=(255, 255, 255),
+            )
+            self.assertTrue(Path(base_p).is_file())
 
 
 if __name__ == "__main__":

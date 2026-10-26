@@ -38,17 +38,25 @@ def _draw_text_with_outline_and_shadow(
     font: ImageFont.ImageFont,
     fill: tuple,
     stroke_width: int = 0,
-    stroke_fill: tuple = (0, 0, 0, 180),
+    stroke_fill: tuple = (0, 0, 0, 120),
     shadow: bool = False,
     shadow_offset: tuple[int, int] = (2, 2),
-    shadow_fill: tuple = (0, 0, 0, 160),
+    shadow_fill: tuple = (0, 0, 0, 140),
 ) -> None:
-    """Draw text with optional subtle drop-shadow and crisp outline stroke for legibility."""
+    """Draw text with optional soft drop-shadow and restrained outline for cinematic legibility."""
     x, y = int(round(xy[0])), int(round(xy[1]))
     if shadow:
         sx, sy = int(round(shadow_offset[0])), int(round(shadow_offset[1]))
-        draw.text((x + sx, y + sy), text, font=font, fill=shadow_fill)
-    draw.text((x, y), text, font=font, fill=fill, stroke_width=stroke_width, stroke_fill=stroke_fill)
+        s_alpha = shadow_fill[3] if len(shadow_fill) > 3 else 140
+        s_rgb = shadow_fill[:3]
+        # Soft two-stage shadow falloff eliminates harsh jagged step-edges while ensuring background separation
+        if sx > 1 or sy > 1:
+            draw.text((x + sx, y + sy), text, font=font, fill=(*s_rgb, int(s_alpha * 0.40)))
+        draw.text((x + max(1, sx // 2), y + max(1, sy // 2)), text, font=font, fill=(*s_rgb, int(s_alpha * 0.70)))
+    if stroke_width > 0:
+        draw.text((x, y), text, font=font, fill=fill, stroke_width=stroke_width, stroke_fill=stroke_fill)
+    else:
+        draw.text((x, y), text, font=font, fill=fill)
 
 
 def clean_logo_image(img: Image.Image, mode: str = "auto") -> Image.Image:
@@ -277,13 +285,17 @@ def create_intro_card(
     title_h = title_bbox[3] - title_bbox[1]
     tx = (width - title_w) // 2
     ty = card_y + (card_h - title_h) // 2
-    draw.text(
-        (tx, ty),
-        collection_title,
+    _draw_text_with_outline_and_shadow(
+        draw=draw,
+        xy=(tx, ty),
+        text=collection_title,
         font=title_font,
         fill=(255, 255, 250, 255),
-        stroke_width=max(1, int(height * 0.002)),
-        stroke_fill=(0, 0, 0, 210),
+        stroke_width=max(0, int(height * 0.0015)),
+        stroke_fill=(0, 0, 0, 120),
+        shadow=True,
+        shadow_offset=(max(1, int(2 * res_scale)), max(1, int(2 * res_scale))),
+        shadow_fill=(0, 0, 0, 140),
     )
 
     # Optional Website Address at bottom center
@@ -350,6 +362,7 @@ def create_composition(
     track_outline_color: Union[str, tuple, list] = (0, 0, 0),
     track_outline_width: int = 1,
     track_shadow: bool = True,
+    active_track_color: Optional[Union[str, tuple, list]] = None,
     highlight_style: str = "Pill",
     highlight_color: Union[str, tuple, list] = (248, 220, 139),
     highlight_bg_opacity: float = 0.25,
@@ -460,11 +473,11 @@ def create_composition(
             text=col_title_clean,
             font=title_font,
             fill=(*title_rgb, 255),
-            stroke_width=t_stroke_w if t_stroke_w > 0 else max(1, int(height * 0.0015)),
-            stroke_fill=(*title_stroke_rgb, 180),
+            stroke_width=t_stroke_w,
+            stroke_fill=(*title_stroke_rgb, 120),
             shadow=title_shadow,
             shadow_offset=(max(1, int(2 * res_scale)), max(1, int(2 * res_scale))),
-            shadow_fill=(0, 0, 0, 160),
+            shadow_fill=(0, 0, 0, 140),
         )
 
     # 4. Logo Placement & Background Cleanup
@@ -564,14 +577,15 @@ def create_composition(
         raw_text = f"{i + 1:02d}. {title}"
         display_text = raw_text
         if not track_wrap_text:
-            max_text_w = w_col - int(width * 0.015)
+            max_text_w = w_col - int(width * 0.02)
             bb = base_draw.textbbox((0, 0), display_text, font=row_font)
             if (bb[2] - bb[0]) > max_text_w:
-                while len(display_text) > 5:
-                    display_text = display_text[:-2]
-                    bb = base_draw.textbbox((0, 0), display_text + "…", font=row_font)
+                while len(display_text) > 4:
+                    display_text = display_text[:-1]
+                    candidate = display_text.rstrip() + "…"
+                    bb = base_draw.textbbox((0, 0), candidate, font=row_font)
                     if (bb[2] - bb[0]) <= max_text_w:
-                        display_text += "…"
+                        display_text = candidate
                         break
 
         track_items.append({
@@ -604,11 +618,11 @@ def create_composition(
                 text=item["text"],
                 font=row_font,
                 fill=(*track_rgb, 245),
-                stroke_width=t_outline_w if t_outline_w > 0 else 1,
-                stroke_fill=(*track_stroke_rgb, 220),
+                stroke_width=t_outline_w,
+                stroke_fill=(*track_stroke_rgb, 120),
                 shadow=track_shadow,
                 shadow_offset=(max(1, int(1 * res_scale)), max(1, int(1 * res_scale))),
-                shadow_fill=(0, 0, 0, 160),
+                shadow_fill=(0, 0, 0, 140),
             )
         base_path = str(out / "composition.png")
         base.save(base_path)
@@ -707,27 +721,25 @@ def create_composition(
                 ]
                 od.polygon(arrow, fill=(*hl_rgb, 255))
 
-        # Render full tracklist on overlay in a single crisp pass (active track in highlight color, others in track color)
+        # Render full tracklist on overlay in a single crisp pass
+        active_rgb = _hex_to_rgb(active_track_color, track_rgb) if active_track_color else track_rgb
         for j, item in enumerate(track_items):
             is_active = (j == i)
-            if is_active and show_highlight:
-                fill_color = (*hl_rgb, 255)
-                stroke_color = (0, 0, 0, 240)
-            else:
-                fill_color = (*track_rgb, 245)
-                stroke_color = (*track_stroke_rgb, 220)
+            # Active track glyph fill is visually consistent with inactive tracks unless active_track_color is explicitly configured.
+            # Highlight color styles the row indicator (Pill/Accent Bar/Outline/Underline) and cursor, never the text font.
+            text_fill = (*active_rgb, 255) if is_active else (*track_rgb, 245)
 
             _draw_text_with_outline_and_shadow(
                 draw=od,
                 xy=(item["x"] + int(width * 0.006), item["y"]),
                 text=item["text"],
                 font=row_font,
-                fill=fill_color,
-                stroke_width=t_outline_w if t_outline_w > 0 else 1,
-                stroke_fill=stroke_color,
+                fill=text_fill,
+                stroke_width=t_outline_w,
+                stroke_fill=(*track_stroke_rgb, 120),
                 shadow=track_shadow,
                 shadow_offset=(max(1, int(1 * res_scale)), max(1, int(1 * res_scale))),
-                shadow_fill=(0, 0, 0, 160),
+                shadow_fill=(0, 0, 0, 140),
             )
 
         op = str(out / f"cursor_{i:03d}.png")

@@ -211,6 +211,7 @@ def build_render_command(
         track_outline_color=track_outline_color,
         track_outline_width=track_outline_width,
         track_shadow=track_shadow,
+        active_track_color=project.get("active_track_color", None),
         highlight_style=highlight_style,
         highlight_color=highlight_color,
         highlight_bg_opacity=highlight_bg_opacity,

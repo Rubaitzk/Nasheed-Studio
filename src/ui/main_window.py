@@ -30,16 +30,17 @@ import sys
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 from PySide6.QtCore import Qt, Signal, QObject, QTimer, QSettings, QEvent, QSize
-from PySide6.QtGui import QPixmap, QAction, QIcon, QDragEnterEvent, QDropEvent
+from PySide6.QtGui import QPixmap, QAction, QIcon, QDragEnterEvent, QDropEvent, QColor
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFileDialog, QListWidget, QListWidgetItem, QLineEdit, QComboBox,
     QFormLayout, QSplitter, QMessageBox, QProgressBar, QFrame, QAbstractItemView,
     QToolButton, QInputDialog, QSizePolicy, QSpinBox, QScrollArea, QCheckBox,
     QDoubleSpinBox, QSlider, QTabWidget, QMenu, QStyledItemDelegate, QStyleOptionViewItem, QStyle,
+    QColorDialog,
 )
 from PIL import Image
 
@@ -213,6 +214,7 @@ class MainWindow(QMainWindow):
 
         clean_stale_temp_dirs()
         self._build_ui()
+        self._update_highlight_color_btn()
         self._update_project_ui_indicators()
         self._refresh_preview()
 
@@ -993,6 +995,20 @@ class MainWindow(QMainWindow):
         hl_style_row.addWidget(self.highlight_style_combo, 1)
         layout.addLayout(hl_style_row)
 
+        hl_col_row = QHBoxLayout()
+        hl_col_row.setSpacing(6)
+        hl_col_lbl = QLabel("Highlight Color:")
+        hl_col_lbl.setObjectName("muted")
+        self.highlight_color_btn = QPushButton("Choose color…")
+        self.highlight_color_btn.clicked.connect(self.choose_highlight_color)
+        self.highlight_color_reset_btn = QPushButton("Reset")
+        self.highlight_color_reset_btn.setToolTip("Reset highlight color to default amber gold (#F8DC8B)")
+        self.highlight_color_reset_btn.clicked.connect(self.reset_highlight_color)
+        hl_col_row.addWidget(hl_col_lbl)
+        hl_col_row.addWidget(self.highlight_color_btn, 1)
+        hl_col_row.addWidget(self.highlight_color_reset_btn)
+        layout.addLayout(hl_col_row)
+
         hl_op_row = QHBoxLayout()
         hl_op_row.setSpacing(6)
         hl_op_lbl = QLabel("Highlight Tint:")
@@ -1721,9 +1737,32 @@ class MainWindow(QMainWindow):
             self.highlight_opacity_val.setText(f"{val}%")
         self._on_layout_param_changed()
 
+    def _update_highlight_color_btn(self) -> None:
+        if not hasattr(self, "highlight_color_btn"):
+            return
+        rgb = _hex_to_rgb(getattr(self, "highlight_color", (248, 220, 139)))
+        hex_code = f"#{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"
+        pix = QPixmap(14, 14)
+        pix.fill(QColor(rgb[0], rgb[1], rgb[2]))
+        self.highlight_color_btn.setIcon(QIcon(pix))
+        self.highlight_color_btn.setText(f" {hex_code}")
+        self.highlight_color_btn.setToolTip(f"Click to change highlight color ({hex_code})")
+
+    def choose_highlight_color(self) -> None:
+        rgb = _hex_to_rgb(getattr(self, "highlight_color", (248, 220, 139)))
+        init_color = QColor(rgb[0], rgb[1], rgb[2])
+        col = QColorDialog.getColor(init_color, self, "Choose Highlight Color")
+        if col.isValid():
+            new_rgb = (col.red(), col.green(), col.blue())
+            self.set_highlight_color(new_rgb)
+
+    def reset_highlight_color(self) -> None:
+        self.set_highlight_color((248, 220, 139))
+
     def set_highlight_color(self, color: Union[str, tuple, list]) -> None:
         """Update highlight color, marking dirty state and scheduling preview update."""
         self.highlight_color = color
+        self._update_highlight_color_btn()
         self._on_layout_param_changed()
 
     def choose_sfx(self) -> None:
@@ -1933,6 +1972,7 @@ class MainWindow(QMainWindow):
                     logo_cleanup_mode="auto" if (hasattr(self, "logo_cleanup_check") and self.logo_cleanup_check.isChecked()) else "none",
                     title_position=self.title_pos_combo.currentText() if hasattr(self, "title_pos_combo") else "Top-Center",
                     title_show=self.title_show_check.isChecked() if hasattr(self, "title_show_check") else True,
+                    active_track_color=getattr(self, "active_track_color", None),
                     highlight_style=self.highlight_style_combo.currentText() if hasattr(self, "highlight_style_combo") else "Pill",
                     highlight_color=hl_rgb,
                     highlight_bg_opacity=round(self.highlight_opacity_slider.value() / 100.0, 2) if hasattr(self, "highlight_opacity_slider") else 0.25,
@@ -2336,6 +2376,7 @@ class MainWindow(QMainWindow):
                 self.sfx_check.setChecked(False)
                 self.sfx_vol_slider.setValue(70)
             self.highlight_color = (248, 220, 139)
+            self._update_highlight_color_btn()
             if hasattr(self, "highlight_style_combo"):
                 self.highlight_style_combo.setCurrentText("Pill")
             if hasattr(self, "highlight_opacity_slider"):
@@ -2482,6 +2523,7 @@ class MainWindow(QMainWindow):
             self.highlight_style_combo.setCurrentText(tmpl["highlight_style"])
         if "highlight_color" in tmpl:
             self.highlight_color = tmpl["highlight_color"]
+            self._update_highlight_color_btn()
         if "highlight_bg_opacity" in tmpl and hasattr(self, "highlight_opacity_slider"):
             self.highlight_opacity_slider.setValue(int(float(tmpl["highlight_bg_opacity"]) * 100))
         if "logo_cleanup_mode" in tmpl and hasattr(self, "logo_cleanup_check"):
@@ -2589,6 +2631,7 @@ class MainWindow(QMainWindow):
                     self.highlight_style_combo.setCurrentText(data["highlight_style"])
                 if "highlight_color" in data:
                     self.highlight_color = data["highlight_color"]
+                    self._update_highlight_color_btn()
                 if hasattr(self, "highlight_opacity_slider") and "highlight_bg_opacity" in data:
                     self.highlight_opacity_slider.setValue(int(float(data["highlight_bg_opacity"]) * 100))
                 if hasattr(self, "logo_cleanup_check") and "logo_cleanup_mode" in data:
