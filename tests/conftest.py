@@ -49,3 +49,20 @@ def guard_unexpected_modal_dialogs(monkeypatch):
     monkeypatch.setattr(QMessageBox, "question", lambda *a, **kw: _fail_on_unexpected_dialog("question", *a, **kw))
     monkeypatch.setattr(QMessageBox, "critical", lambda *a, **kw: _fail_on_unexpected_dialog("critical", *a, **kw))
     monkeypatch.setattr(QMessageBox, "exec", lambda self, *a, **kw: _fail_on_unexpected_dialog("exec", self.windowTitle(), self.text()))
+
+
+@pytest.fixture(autouse=True)
+def guard_workspace_qsettings():
+    """Ensure no test leaks a temporary directory into persistent QSettings."""
+    from PySide6.QtCore import QSettings
+    from src.services.workspace_service import is_temp_or_obsolete_path
+    settings = QSettings("NasheedStudio", "NasheedStudio")
+    orig_ws = settings.value("workspace_root", None)
+    orig_has_ws = settings.contains("workspace_root")
+    yield
+    cur_ws = settings.value("workspace_root", None)
+    if is_temp_or_obsolete_path(cur_ws):
+        if orig_has_ws and orig_ws and not is_temp_or_obsolete_path(orig_ws):
+            settings.setValue("workspace_root", orig_ws)
+        else:
+            settings.remove("workspace_root")

@@ -41,11 +41,18 @@ class TestRecentProjects(unittest.TestCase):
         self.win.hide()
         self.temp_dir = tempfile.TemporaryDirectory()
         self.tmp_path = Path(self.temp_dir.name)
-        # Clear recent projects for tests
+        # Preserve original recent projects and clear for test run
+        settings = QSettings("NasheedStudio", "NasheedStudio")
+        self._had_recents = settings.contains("recent_projects")
+        self._orig_recents = settings.value("recent_projects", None)
         self.win._clear_recent_projects()
 
     def tearDown(self):
-        self.win._clear_recent_projects()
+        settings = QSettings("NasheedStudio", "NasheedStudio")
+        if self._had_recents and self._orig_recents is not None:
+            settings.setValue("recent_projects", self._orig_recents)
+        else:
+            settings.remove("recent_projects")
         from tests.conftest import dispose_window
         dispose_window(self.win)
         self.temp_dir.cleanup()

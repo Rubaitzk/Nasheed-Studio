@@ -17,6 +17,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton
 
 from src.services.workspace_service import (
@@ -51,12 +52,20 @@ def _get_app():
 class TestExportSafety(unittest.TestCase):
     def setUp(self):
         _get_app()
+        settings = QSettings("NasheedStudio", "NasheedStudio")
+        self._had_workspace = settings.contains("workspace_root")
+        self._orig_workspace = settings.value("workspace_root", None)
         self.temp_dir = tempfile.TemporaryDirectory()
         self.tmp = Path(self.temp_dir.name)
         self.workspace_dir = self.tmp / "test_workspace"
         set_workspace_root(self.workspace_dir)
 
     def tearDown(self):
+        settings = QSettings("NasheedStudio", "NasheedStudio")
+        if self._had_workspace and self._orig_workspace is not None:
+            settings.setValue("workspace_root", self._orig_workspace)
+        else:
+            settings.remove("workspace_root")
         self.temp_dir.cleanup()
 
     # ------------------------------------------------------------------

@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import os
 import shutil
+import tempfile
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -22,13 +24,68 @@ from PySide6.QtCore import QSettings
 
 DEFAULT_WORKSPACE_NAME = "NasheedStudio"
 
+# In-memory tracking of temporary workspaces explicitly configured during the active process (e.g. tests)
+_session_authorized_temp_workspaces: set[str] = set()
+
+
+def is_temp_path(path: str | Path | None) -> bool:
+    """Return True if path resides inside the operating system's temporary directory."""
+    if not path:
+        return False
+    try:
+        p = Path(path).expanduser().resolve()
+        temp_dir = Path(tempfile.gettempdir()).resolve()
+        try:
+            if p.is_relative_to(temp_dir):
+                return True
+        except AttributeError:
+            pass
+
+        # Case-insensitive comparison for Windows drives/casing
+        p_str = str(p).lower()
+        td_str = str(temp_dir).lower()
+        return p_str.startswith(td_str)
+    except Exception:
+        return False
+
+
+def is_temp_or_obsolete_path(path: str | Path | None) -> bool:
+    """
+    Return True if path is None, empty, does not exist, or is an unauthorized
+    ephemeral temporary path left behind by an old/crashed process.
+    Never deletes any user files.
+    """
+    if not path:
+        return True
+    try:
+        p = Path(path).expanduser().resolve()
+        if not p.exists():
+            return True
+        if is_temp_path(p):
+            # If in system temp and was not authorized during this active process, it is a leak
+            if str(p) not in _session_authorized_temp_workspaces:
+                return True
+        return False
+    except Exception:
+        return True
+
 
 def get_workspace_root() -> Path:
-    """Return the active workspace root directory, configured via QSettings or default."""
+    """
+    Return the active workspace root directory.
+    If the persistent QSettings setting points to an obsolete or leaked system temporary directory,
+    or a non-existent path, it automatically purges that setting and safely resets to the
+    durable default (Path.home() / "NasheedStudio"), preserving any existing user data.
+    """
     settings = QSettings("NasheedStudio", "NasheedStudio")
     val = settings.value("workspace_root", "")
     if val and isinstance(val, str) and val.strip():
-        return Path(val).expanduser().resolve()
+        candidate = Path(val).expanduser().resolve()
+        if not is_temp_or_obsolete_path(candidate):
+            return candidate
+        # Obsolete or temporary workspace path detected from an old session: purge the stale setting
+        settings.remove("workspace_root")
+
     return (Path.home() / DEFAULT_WORKSPACE_NAME).resolve()
 
 
@@ -36,10 +93,45 @@ def set_workspace_root(path: str | Path) -> Path:
     """Set the workspace root directory in user settings."""
     resolved = Path(path).expanduser().resolve()
     resolved.mkdir(parents=True, exist_ok=True)
+    if is_temp_path(resolved):
+        _session_authorized_temp_workspaces.add(str(resolved))
     settings = QSettings("NasheedStudio", "NasheedStudio")
     settings.setValue("workspace_root", str(resolved))
     ensure_workspace(resolved)
     return resolved
+
+
+def reset_workspace_root() -> Path:
+    """
+    Explicitly reset the workspace root to the default durable home directory
+    (Path.home() / "NasheedStudio"), purge any obsolete setting, and ensure
+    standard subdirectories exist. Existing user files are never deleted.
+    """
+    settings = QSettings("NasheedStudio", "NasheedStudio")
+    settings.remove("workspace_root")
+    default_root = (Path.home() / DEFAULT_WORKSPACE_NAME).resolve()
+    ensure_workspace(default_root)
+    return default_root
+
+
+@contextmanager
+def temporary_workspace(path: str | Path):
+    """
+    Context manager for tests to isolate workspace configuration.
+    Saves the exact prior QSettings state (including whether the key existed)
+    and guarantees restoration in finally block before cleanup.
+    """
+    settings = QSettings("NasheedStudio", "NasheedStudio")
+    had_key = settings.contains("workspace_root")
+    old_val = settings.value("workspace_root", None)
+    try:
+        set_workspace_root(path)
+        yield Path(path).expanduser().resolve()
+    finally:
+        if had_key and old_val is not None:
+            settings.setValue("workspace_root", old_val)
+        else:
+            settings.remove("workspace_root")
 
 
 def get_projects_dir(root: Optional[Path] = None) -> Path:
