@@ -44,9 +44,9 @@ def _draw_text_with_outline_and_shadow(
     shadow_fill: tuple = (0, 0, 0, 160),
 ) -> None:
     """Draw text with optional subtle drop-shadow and crisp outline stroke for legibility."""
-    x, y = xy
+    x, y = int(round(xy[0])), int(round(xy[1]))
     if shadow:
-        sx, sy = shadow_offset
+        sx, sy = int(round(shadow_offset[0])), int(round(shadow_offset[1]))
         draw.text((x + sx, y + sy), text, font=font, fill=shadow_fill)
     draw.text((x, y), text, font=font, fill=fill, stroke_width=stroke_width, stroke_fill=stroke_fill)
 
@@ -218,6 +218,8 @@ def create_intro_card(
     title_font_style: str = "Bold",
     title_font_size: int = 56,
     website_text: str = "",
+    website_show: bool = True,
+    website_opacity: float = 1.0,
 ) -> str:
     """
     Generate an intro title card image featuring the collection title and logo presentation.
@@ -285,14 +287,15 @@ def create_intro_card(
     )
 
     # Optional Website Address at bottom center
-    if website_text.strip():
+    web_op = max(0.0, min(1.0, float(website_opacity if website_opacity is not None else 1.0)))
+    if website_text.strip() and website_show and web_op > 0.0:
         web_size = max(12, int(20 * res_scale))
         web_font = _get_font("Segoe UI", "Regular", web_size)
         wb = draw.textbbox((0, 0), website_text.strip(), font=web_font)
         ww = wb[2] - wb[0]
         wx = (width - ww) // 2
         wy = int(height * 0.88)
-        draw.text((wx, wy), website_text.strip(), font=web_font, fill=(220, 228, 222, 200))
+        draw.text((wx, wy), website_text.strip(), font=web_font, fill=(220, 228, 222, int(200 * web_op)))
 
     intro_path = str(out / "intro_card.png")
     bg.save(intro_path)
@@ -312,6 +315,7 @@ def create_composition(
     cursor_path: str | None = None,
     cursor_size: int = 32,
     preview_only_first_overlay: bool = False,
+    active_track_index: int = 0,
     title_font_family: str = "Segoe UI",
     title_font_style: str = "Bold",
     title_font_size: int = 46,
@@ -322,6 +326,8 @@ def create_composition(
     website_text: str = "",
     website_position: str = "Top-Right",
     website_font_size: int = 18,
+    website_show: bool = True,
+    website_opacity: float = 1.0,
     playlist_position: str = "Left",
     playlist_x_offset: int = 0,
     playlist_y_offset: int = 0,
@@ -483,7 +489,8 @@ def create_composition(
 
     # 5. Website Address Placement & Overlap Prevention
     web_text_clean = website_text.strip()
-    if web_text_clean:
+    web_op = max(0.0, min(1.0, float(website_opacity if website_opacity is not None else 1.0)))
+    if web_text_clean and website_show and web_op > 0.0:
         eff_web_size = max(10, int(website_font_size * res_scale))
         web_font = _get_font("Segoe UI", "Regular", eff_web_size)
         wb = draw.textbbox((0, 0), web_text_clean, font=web_font)
@@ -512,23 +519,22 @@ def create_composition(
         draw.rounded_rectangle(
             (wx, wy, wx + total_w, wy + total_h),
             radius=max(3, int(eff_web_size * 0.3)),
-            fill=(0, 0, 0, 110),
-            outline=(255, 255, 255, 25),
+            fill=(0, 0, 0, int(110 * web_op)),
+            outline=(255, 255, 255, int(25 * web_op)),
             width=1,
         )
         draw.text(
             (wx + pill_pad_x, wy + pill_pad_y),
             web_text_clean,
             font=web_font,
-            fill=(238, 244, 239, 235),
+            fill=(238, 244, 239, int(235 * web_op)),
             stroke_width=1,
-            stroke_fill=(0, 0, 0, 140),
+            stroke_fill=(0, 0, 0, int(140 * web_op)),
         )
 
     # 6. Playlist Track Layout & Base Rendering
     base = bg.copy()
     base_draw = ImageDraw.Draw(base, "RGBA")
-    positions: list[tuple[int, int, int, int]] = []
 
     track_rgb = _hex_to_rgb(track_color, (242, 243, 231))
     track_stroke_rgb = _hex_to_rgb(track_outline_color, (0, 0, 0))
@@ -537,6 +543,8 @@ def create_composition(
     bg_panel_alpha = int(255 * max(0.0, min(1.0, float(playlist_bg_opacity or 0.0))))
 
     per_col = (len(track_titles) + 1) // 2 if is_two_col else len(track_titles)
+    track_items = []
+    positions: list[tuple[int, int, int, int]] = []
 
     for i, title in enumerate(track_titles):
         if is_two_col:
@@ -552,21 +560,10 @@ def create_composition(
         box = (x, y - int(eff_track_size * 0.15), x + w_col, y + row_height)
         positions.append(box)
 
-        # Draw translucent panel/row backing if requested
-        if bg_panel_alpha > 0:
-            base_draw.rounded_rectangle(
-                box,
-                radius=max(2, int(playlist_bg_radius * res_scale)),
-                fill=(*bg_panel_rgb, bg_panel_alpha),
-                outline=(255, 255, 255, 18) if bg_panel_alpha > 80 else None,
-                width=1,
-            )
-
-        # Track text formatting
+        # Track text formatting & ellipsis
         raw_text = f"{i + 1:02d}. {title}"
         display_text = raw_text
         if not track_wrap_text:
-            # Ellipsize if text exceeds available column width
             max_text_w = w_col - int(width * 0.015)
             bb = base_draw.textbbox((0, 0), display_text, font=row_font)
             if (bb[2] - bb[0]) > max_text_w:
@@ -577,25 +574,49 @@ def create_composition(
                         display_text += "…"
                         break
 
-        _draw_text_with_outline_and_shadow(
-            draw=base_draw,
-            xy=(x + int(width * 0.006), y),
-            text=display_text,
-            font=row_font,
-            fill=(*track_rgb, 245),
-            stroke_width=t_outline_w if t_outline_w > 0 else 1,
-            stroke_fill=(*track_stroke_rgb, 140),
-            shadow=track_shadow,
-            shadow_offset=(max(1, int(1 * res_scale)), max(1, int(1 * res_scale))),
-            shadow_fill=(0, 0, 0, 160),
-        )
+        track_items.append({
+            "index": i,
+            "box": box,
+            "x": x,
+            "y": y,
+            "text": display_text,
+        })
 
+    # Draw translucent panel/row backing if requested
+    if bg_panel_alpha > 0:
+        for item in track_items:
+            base_draw.rounded_rectangle(
+                item["box"],
+                radius=max(2, int(playlist_bg_radius * res_scale)),
+                fill=(*bg_panel_rgb, bg_panel_alpha),
+                outline=(255, 255, 255, 18) if bg_panel_alpha > 80 else None,
+                width=1,
+            )
+
+    has_overlays = (mode != "neither") and (show_highlight or show_cursor) and bool(track_items)
+
+    # If neither cursor nor highlight is requested, render tracks on base and return 0 overlays
+    if not has_overlays:
+        for item in track_items:
+            _draw_text_with_outline_and_shadow(
+                draw=base_draw,
+                xy=(item["x"] + int(width * 0.006), item["y"]),
+                text=item["text"],
+                font=row_font,
+                fill=(*track_rgb, 245),
+                stroke_width=t_outline_w if t_outline_w > 0 else 1,
+                stroke_fill=(*track_stroke_rgb, 220),
+                shadow=track_shadow,
+                shadow_offset=(max(1, int(1 * res_scale)), max(1, int(1 * res_scale))),
+                shadow_fill=(0, 0, 0, 160),
+            )
+        base_path = str(out / "composition.png")
+        base.save(base_path)
+        return base_path, []
+
+    # When overlays are enabled, save base without playlist text to avoid duplicate/ghosted rendering
     base_path = str(out / "composition.png")
     base.save(base_path)
-
-    # If neither cursor nor highlight is requested, return base with 0 overlays
-    if mode == "neither" or (not show_highlight and not show_cursor):
-        return base_path, []
 
     # 7. Prepare Custom Cursor asset if enabled
     custom_cursor_img: Optional[Image.Image] = None
@@ -607,35 +628,36 @@ def create_composition(
         except Exception:
             custom_cursor_img = None
 
-    # 8. Generate Per-Track Overlays (Highlight & Cursor)
+    # 8. Generate Per-Track Overlays (Highlight, Cursor & Razor-Sharp Typography)
     overlays: list[str] = []
-    indices_to_render = [0] if (preview_only_first_overlay and positions) else range(len(positions))
+    active_idx = max(0, min(len(track_items) - 1, active_track_index)) if track_items else 0
+    indices_to_render = [active_idx] if (preview_only_first_overlay and track_items) else range(len(track_items))
 
     hl_rgb = _hex_to_rgb(highlight_color, (248, 220, 139))
     hl_alpha = int(255 * max(0.05, min(1.0, float(highlight_bg_opacity or 0.25))))
     norm_hl_style = highlight_style.strip().title()
 
     for i in indices_to_render:
-        box = positions[i]
         overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         od = ImageDraw.Draw(overlay, "RGBA")
-        x1, y1, x2, y2 = box
+        active_item = track_items[i]
+        x1, y1, x2, y2 = active_item["box"]
 
         # Moving highlight
         if show_highlight:
             pad_x = int(width * 0.006)
-            hl_box = (x1 - pad_x, y1 - int(eff_track_size * 0.2), x2, y2 + int(eff_track_size * 0.1))
+            hl_box = (x1 - pad_x, y1, x2, y2)
 
             if norm_hl_style == "Accent Bar":
                 # Clean vertical bar on left edge
                 bar_w = max(4, int(width * 0.0035))
                 od.rounded_rectangle(
-                    (x1 - pad_x, y1 - int(eff_track_size * 0.1), x1 - pad_x + bar_w, y2 + int(eff_track_size * 0.05)),
+                    (x1 - pad_x, y1, x1 - pad_x + bar_w, y2),
                     radius=max(1, bar_w // 2),
                     fill=(*hl_rgb, 255),
                 )
                 # Subtle row tint
-                od.rounded_rectangle(hl_box, radius=max(2, int(eff_track_size * 0.18)), fill=(*hl_rgb, hl_alpha // 2))
+                od.rounded_rectangle(hl_box, radius=max(2, int(eff_track_size * 0.18)), fill=(*hl_rgb, max(15, hl_alpha // 2)))
 
             elif norm_hl_style == "Outline":
                 # Crisp border outline only
@@ -648,10 +670,12 @@ def create_composition(
                 )
 
             elif norm_hl_style == "Underline":
-                # Bottom indicator line
-                line_h = max(2, int(height * 0.003))
+                # Bottom indicator line positioned cleanly under active track baseline
+                tb = od.textbbox((active_item["x"] + int(width * 0.006), active_item["y"]), active_item["text"], font=row_font)
+                line_y = tb[3] + max(3, int(4 * res_scale))
+                line_h = max(2, int(height * 0.0025))
                 od.rounded_rectangle(
-                    (x1 - pad_x, y2, x2, y2 + line_h),
+                    (x1, line_y, min(x2, tb[2] + int(width * 0.015)), line_y + line_h),
                     radius=1,
                     fill=(*hl_rgb, 255),
                 )
@@ -662,53 +686,49 @@ def create_composition(
                     radius=max(2, int(eff_track_size * 0.18)),
                     outline=(*hl_rgb, 255),
                     fill=(*hl_rgb, hl_alpha),
-                    width=max(2, int(width * 0.0015)),
+                    width=max(1, int(width * 0.0015)),
                 )
-
-            # Re-draw the active track title in high-contrast active color on the overlay
-            # so active title stands out prominently even with a 100% transparent background!
-            raw_title = f"{i + 1:02d}. {track_titles[i]}"
-            disp_title = raw_title
-            w_avail = (x2 - x1) - int(width * 0.015)
-            bb = od.textbbox((0, 0), disp_title, font=row_font)
-            if (bb[2] - bb[0]) > w_avail:
-                while len(disp_title) > 5:
-                    disp_title = disp_title[:-2]
-                    bb = od.textbbox((0, 0), disp_title + "…", font=row_font)
-                    if (bb[2] - bb[0]) <= w_avail:
-                        disp_title += "…"
-                        break
-
-            _draw_text_with_outline_and_shadow(
-                draw=od,
-                xy=(x1 + int(width * 0.006), (y1 + y2 - row_height) // 2 + int(eff_track_size * 0.15)),
-                text=disp_title,
-                font=row_font,
-                fill=(*hl_rgb, 255),
-                stroke_width=max(1, t_outline_w),
-                stroke_fill=(0, 0, 0, 200),
-                shadow=True,
-                shadow_offset=(max(1, int(1 * res_scale)), max(1, int(1 * res_scale))),
-                shadow_fill=(0, 0, 0, 180),
-            )
 
         # Cursor
         if show_cursor:
             cy = (y1 + y2) // 2
             if custom_cursor_img is not None:
                 cw, ch = custom_cursor_img.size
-                cx = max(4, x1 - cw - int(width * 0.006))
+                cx = max(4, x1 - cw - int(width * 0.008))
                 overlay.alpha_composite(custom_cursor_img, (cx, cy - ch // 2))
             else:
                 arrow_w = target_cursor_dim
                 arrow_h = target_cursor_dim
-                arrow_x = max(4, x1 - int(width * 0.018))
+                arrow_x = max(4, x1 - int(width * 0.016) - arrow_w)
                 arrow = [
                     (arrow_x, cy - arrow_h // 2),
                     (arrow_x + arrow_w, cy),
                     (arrow_x, cy + arrow_h // 2),
                 ]
                 od.polygon(arrow, fill=(*hl_rgb, 255))
+
+        # Render full tracklist on overlay in a single crisp pass (active track in highlight color, others in track color)
+        for j, item in enumerate(track_items):
+            is_active = (j == i)
+            if is_active and show_highlight:
+                fill_color = (*hl_rgb, 255)
+                stroke_color = (0, 0, 0, 240)
+            else:
+                fill_color = (*track_rgb, 245)
+                stroke_color = (*track_stroke_rgb, 220)
+
+            _draw_text_with_outline_and_shadow(
+                draw=od,
+                xy=(item["x"] + int(width * 0.006), item["y"]),
+                text=item["text"],
+                font=row_font,
+                fill=fill_color,
+                stroke_width=t_outline_w if t_outline_w > 0 else 1,
+                stroke_fill=stroke_color,
+                shadow=track_shadow,
+                shadow_offset=(max(1, int(1 * res_scale)), max(1, int(1 * res_scale))),
+                shadow_fill=(0, 0, 0, 160),
+            )
 
         op = str(out / f"cursor_{i:03d}.png")
         overlay.save(op)

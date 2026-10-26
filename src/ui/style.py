@@ -310,38 +310,92 @@ QListWidget {
     border-radius: 6px;
     padding: 3px;
     outline: none;
+    selection-background-color: #2e5c3e;
+    selection-color: #e8f5ec;
 }
 QListWidget::item {
     padding: 7px 8px;
     border-bottom: 1px solid #252e27;
+    border-top: none;
+    border-left: none;
+    border-right: none;
     color: #edf2ee;
     background: #1b211d;
     border-radius: 4px;
     margin-bottom: 2px;
+    outline: none;
 }
 QListWidget::item:hover {
     background: #253029;
     color: #edf2ee;
+    padding: 7px 8px;
+    border-bottom: 1px solid #252e27;
+    border-top: none;
+    border-left: none;
+    border-right: none;
+    border-radius: 4px;
+    margin-bottom: 2px;
+    outline: none;
 }
 QListWidget::item:selected {
     background: #2e5c3e;
     color: #e8f5ec;
+    padding: 7px 8px;
+    border-bottom: 1px solid #252e27;
+    border-top: none;
+    border-left: none;
+    border-right: none;
+    border-radius: 4px;
+    margin-bottom: 2px;
+    outline: none;
 }
 QListWidget::item:selected:active {
     background: #2e5c3e;
     color: #e8f5ec;
+    padding: 7px 8px;
+    border-bottom: 1px solid #252e27;
+    border-top: none;
+    border-left: none;
+    border-right: none;
+    border-radius: 4px;
+    margin-bottom: 2px;
+    outline: none;
 }
 QListWidget::item:selected:!active {
     background: #264a35;
     color: #ddeee3;
+    padding: 7px 8px;
+    border-bottom: 1px solid #252e27;
+    border-top: none;
+    border-left: none;
+    border-right: none;
+    border-radius: 4px;
+    margin-bottom: 2px;
+    outline: none;
 }
 QListWidget::item:focus {
     background: #2e5c3e;
     color: #e8f5ec;
+    padding: 7px 8px;
+    border-bottom: 1px solid #252e27;
+    border-top: none;
+    border-left: none;
+    border-right: none;
+    border-radius: 4px;
+    margin-bottom: 2px;
+    outline: none;
 }
 QListWidget::item:disabled {
     color: #8da194;
     background: #1a1f1c;
+    padding: 7px 8px;
+    border-bottom: 1px solid #252e27;
+    border-top: none;
+    border-left: none;
+    border-right: none;
+    border-radius: 4px;
+    margin-bottom: 2px;
+    outline: none;
 }
 
 /* ---- Inspector QTabWidget ---- */

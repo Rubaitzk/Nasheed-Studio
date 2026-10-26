@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (
     QFileDialog, QListWidget, QListWidgetItem, QLineEdit, QComboBox,
     QFormLayout, QSplitter, QMessageBox, QProgressBar, QFrame, QAbstractItemView,
     QToolButton, QInputDialog, QSizePolicy, QSpinBox, QScrollArea, QCheckBox,
-    QDoubleSpinBox, QSlider, QTabWidget, QMenu,
+    QDoubleSpinBox, QSlider, QTabWidget, QMenu, QStyledItemDelegate, QStyleOptionViewItem, QStyle,
 )
 from PIL import Image
 
@@ -107,8 +107,17 @@ class AspectRatioContainer(QWidget):
 
 
 # ---------------------------------------------------------------------------
-# Drag & Drop Aware Track List
+# Drag & Drop Aware Track List with Crisp Rendering
 # ---------------------------------------------------------------------------
+
+class PlaylistDelegate(QStyledItemDelegate):
+    """Item delegate that removes State_HasFocus to prevent dotted focus rects or white artifacts."""
+
+    def paint(self, painter, option, index):
+        opt = QStyleOptionViewItem(option)
+        opt.state &= ~QStyle.StateFlag.State_HasFocus
+        super().paint(painter, opt, index)
+
 
 class PlaylistListWidget(QListWidget):
     """QListWidget that supports internal reordering and external audio file drops."""
@@ -116,6 +125,7 @@ class PlaylistListWidget(QListWidget):
     def __init__(self, main_window: MainWindow, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.main_window = main_window
+        self.setItemDelegate(PlaylistDelegate(self))
         self.setAcceptDrops(True)
         self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
 
@@ -357,6 +367,7 @@ class MainWindow(QMainWindow):
         self.track_list = PlaylistListWidget(self)
         self.track_list.model().rowsMoved.connect(self._on_rows_moved)
         self.track_list.itemDoubleClicked.connect(self.rename_track)
+        self.track_list.currentRowChanged.connect(self._on_track_row_changed)
         pl_layout.addWidget(self.track_list, 1)
 
         # Action Buttons: Add, Remove, Move Up, Move Down
@@ -1008,6 +1019,11 @@ class MainWindow(QMainWindow):
         web_sec.setObjectName("section")
         layout.addWidget(web_sec)
 
+        self.website_show_check = QCheckBox("Show Website Watermark")
+        self.website_show_check.setChecked(True)
+        self.website_show_check.toggled.connect(self._on_website_show_toggled)
+        layout.addWidget(self.website_show_check)
+
         self.website_edit = QLineEdit()
         self.website_edit.setPlaceholderText("Optional: e.g. www.nasheedstudio.com")
         self.website_edit.textChanged.connect(self._on_website_text_changed)
@@ -1026,6 +1042,22 @@ class MainWindow(QMainWindow):
         pos_row.addWidget(self.website_pos_combo, 2)
         pos_row.addWidget(self.website_size_spin, 1)
         layout.addLayout(pos_row)
+
+        web_op_row = QHBoxLayout()
+        web_op_row.setSpacing(6)
+        web_op_lbl = QLabel("URL Opacity:")
+        web_op_lbl.setObjectName("muted")
+        self.website_opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.website_opacity_slider.setRange(0, 100)
+        self.website_opacity_slider.setValue(100)
+        self.website_opacity_val = QLabel("100%")
+        self.website_opacity_val.setObjectName("muted")
+        self.website_opacity_val.setFixedWidth(40)
+        self.website_opacity_slider.valueChanged.connect(self._on_website_opacity_changed)
+        web_op_row.addWidget(web_op_lbl)
+        web_op_row.addWidget(self.website_opacity_slider, 1)
+        web_op_row.addWidget(self.website_opacity_val)
+        layout.addLayout(web_op_row)
 
         self.overlap_warning = QLabel("Logo and website share the same corner. Position will adjust automatically.")
         self.overlap_warning.setObjectName("warning")
@@ -1281,6 +1313,8 @@ class MainWindow(QMainWindow):
             "website_text": self.website_edit.text().strip() if hasattr(self, "website_edit") else "",
             "website_position": self.website_pos_combo.currentText() if hasattr(self, "website_pos_combo") else "Top-Right",
             "website_font_size": self.website_size_spin.value() if hasattr(self, "website_size_spin") else 18,
+            "website_show": self.website_show_check.isChecked() if hasattr(self, "website_show_check") else True,
+            "website_opacity": round(self.website_opacity_slider.value() / 100.0, 2) if hasattr(self, "website_opacity_slider") else 1.0,
             "transition_sfx_enabled": self.sfx_check.isChecked() if hasattr(self, "sfx_check") else False,
             "transition_sfx_path": self.sfx_path,
             "transition_sfx_volume": round(self.sfx_vol_slider.value() / 100.0, 2) if hasattr(self, "sfx_vol_slider") else 0.7,
@@ -1638,6 +1672,21 @@ class MainWindow(QMainWindow):
         self._check_logo_website_overlap()
         self._schedule_preview(200)
 
+    def _on_website_show_toggled(self, checked: bool) -> None:
+        if hasattr(self, "website_opacity_slider"):
+            self.website_opacity_slider.setEnabled(checked)
+        self._check_logo_website_overlap()
+        self._on_layout_param_changed()
+
+    def _on_website_opacity_changed(self, val: int) -> None:
+        if hasattr(self, "website_opacity_val"):
+            self.website_opacity_val.setText(f"{val}%")
+        self._on_layout_param_changed()
+
+    def _on_track_row_changed(self, row: int) -> None:
+        if not getattr(self, "_loading_project", False):
+            self._schedule_preview(120)
+
     def _on_website_pos_changed(self, text: str) -> None:
         self._mark_dirty()
         self._check_logo_website_overlap()
@@ -1651,7 +1700,8 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "overlap_warning") or not hasattr(self, "logo_pos_combo") or not hasattr(self, "website_pos_combo"):
             return
         has_logo = bool(self.logo_path)
-        has_web = bool(self.website_edit.text().strip())
+        is_shown = (not hasattr(self, "website_show_check")) or self.website_show_check.isChecked()
+        has_web = bool(self.website_edit.text().strip()) and is_shown
         same_corner = (self.logo_pos_combo.currentText().strip().lower() == self.website_pos_combo.currentText().strip().lower())
         self.overlap_warning.setVisible(has_logo and has_web and same_corner)
 
@@ -1764,6 +1814,11 @@ class MainWindow(QMainWindow):
         web_txt = self.website_edit.text().strip() if hasattr(self, "website_edit") else ""
         web_pos = self.website_pos_combo.currentText() if hasattr(self, "website_pos_combo") else "Top-Right"
         web_sz = self.website_size_spin.value() if hasattr(self, "website_size_spin") else 18
+        web_show = self.website_show_check.isChecked() if hasattr(self, "website_show_check") else True
+        web_op = round(self.website_opacity_slider.value() / 100.0, 2) if hasattr(self, "website_opacity_slider") else 1.0
+        cur_mode = self._mode_from_combo()
+        cur_cursor_size = self.cursor_size_spin.value() if hasattr(self, "cursor_size_spin") else 32
+        cur_track_row = max(0, self.track_list.currentRow()) if (hasattr(self, "track_list") and self.track_list.currentRow() >= 0) else 0
 
         cache_key = (
             self.background_path, self.logo_path, self.cursor_path,
@@ -1771,7 +1826,7 @@ class MainWindow(QMainWindow):
             self.template_combo.currentText() if hasattr(self, "template_combo") else "",
             title_fam, title_style, title_sz,
             track_fam, track_style, track_sz,
-            logo_pos, web_txt, web_pos, web_sz,
+            logo_pos, web_txt, web_pos, web_sz, web_show, web_op,
             getattr(self, "_previewing_intro", False),
             self.playlist_pos_combo.currentText() if hasattr(self, "playlist_pos_combo") else "Left",
             self.playlist_cols_spin.value() if hasattr(self, "playlist_cols_spin") else 1,
@@ -1782,6 +1837,9 @@ class MainWindow(QMainWindow):
             (hasattr(self, "logo_cleanup_check") and self.logo_cleanup_check.isChecked()),
             self.title_pos_combo.currentText() if hasattr(self, "title_pos_combo") else "Top-Center",
             self.title_show_check.isChecked() if hasattr(self, "title_show_check") else True,
+            cur_mode,
+            cur_cursor_size,
+            cur_track_row,
         )
 
         if getattr(self, "_cached_preview_key", None) == cache_key and self._cached_preview_pixmap:
@@ -1810,6 +1868,8 @@ class MainWindow(QMainWindow):
                         title_font_style=title_style,
                         title_font_size=max(28, int(title_sz * 1.2)),
                         website_text=web_txt,
+                        website_show=web_show,
+                        website_opacity=web_op,
                     )
                     pix = QPixmap(card_path)
                     scaled_pix = pix.scaled(
@@ -1839,10 +1899,11 @@ class MainWindow(QMainWindow):
                     track_titles=titles,
                     template=self.template_combo.currentText(),
                     out_dir=tmp,
-                    indicator_mode=self._mode_from_combo(),
+                    indicator_mode=cur_mode,
                     cursor_path=self.cursor_path or None,
-                    cursor_size=self.cursor_size_spin.value(),
+                    cursor_size=cur_cursor_size,
                     preview_only_first_overlay=True,
+                    active_track_index=cur_track_row,
                     title_font_family=title_fam,
                     title_font_style=title_style,
                     title_font_size=title_sz,
@@ -1853,6 +1914,8 @@ class MainWindow(QMainWindow):
                     website_text=web_txt,
                     website_position=web_pos,
                     website_font_size=web_sz,
+                    website_show=web_show,
+                    website_opacity=web_op,
                     playlist_position=self.playlist_pos_combo.currentText() if hasattr(self, "playlist_pos_combo") else "Left",
                     playlist_columns=self.playlist_cols_spin.value() if hasattr(self, "playlist_cols_spin") else 1,
                     playlist_row_spacing=round(self.track_spacing_spin.value(), 2) if hasattr(self, "track_spacing_spin") else 1.85,
@@ -2248,6 +2311,10 @@ class MainWindow(QMainWindow):
                 self.website_edit.setText("")
                 self.website_pos_combo.setCurrentText("Top-Right")
                 self.website_size_spin.setValue(18)
+                if hasattr(self, "website_show_check"):
+                    self.website_show_check.setChecked(True)
+                if hasattr(self, "website_opacity_slider"):
+                    self.website_opacity_slider.setValue(100)
                 self.overlap_warning.setVisible(False)
             if hasattr(self, "intro_check"):
                 self.intro_check.setChecked(False)
@@ -2370,6 +2437,10 @@ class MainWindow(QMainWindow):
             self.website_pos_combo.setCurrentText(tmpl["website_position"])
         if "website_font_size" in tmpl:
             self.website_size_spin.setValue(int(tmpl["website_font_size"]))
+        if "website_show" in tmpl and hasattr(self, "website_show_check"):
+            self.website_show_check.setChecked(bool(tmpl["website_show"]))
+        if "website_opacity" in tmpl and hasattr(self, "website_opacity_slider"):
+            self.website_opacity_slider.setValue(int(float(tmpl["website_opacity"]) * 100))
         if "intro_enabled" in tmpl:
             self.intro_check.setChecked(bool(tmpl["intro_enabled"]))
         if "intro_duration" in tmpl:
@@ -2468,6 +2539,11 @@ class MainWindow(QMainWindow):
                     self.website_edit.setText(data.get("website_text", ""))
                     self.website_pos_combo.setCurrentText(data.get("website_position", "Top-Right"))
                     self.website_size_spin.setValue(int(data.get("website_font_size", 18) or 18))
+                    if hasattr(self, "website_show_check"):
+                        self.website_show_check.setChecked(bool(data.get("website_show", True)))
+                    if hasattr(self, "website_opacity_slider"):
+                        web_op_val = int(float(data.get("website_opacity", 1.0) if data.get("website_opacity") is not None else 1.0) * 100)
+                        self.website_opacity_slider.setValue(web_op_val)
                 if hasattr(self, "intro_check"):
                     self.intro_check.setChecked(bool(data.get("intro_enabled", False)))
                     self.intro_dur_spin.setValue(float(data.get("intro_duration", 3.0) or 3.0))
