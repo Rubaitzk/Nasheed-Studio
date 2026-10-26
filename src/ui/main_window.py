@@ -52,7 +52,7 @@ from src.services.compositor import create_composition, create_intro_card, CORNE
 from src.services.workspace_service import (
     get_workspace_root, get_projects_dir, get_templates_dir,
     get_exports_dir, get_temp_dir, create_job_work_dir,
-    cleanup_job_work_dir, clean_stale_temp_dirs,
+    cleanup_job_work_dir, clean_stale_temp_dirs, reset_workspace_root,
 )
 from src.services.export_service import (
     generate_job_id, get_staging_path, cleanup_staging,
@@ -63,6 +63,50 @@ from src.services.project_service import (
 )
 from src.ui.icons import get_svg_icon, get_svg_pixmap
 from src.ui.style import STYLE, TOKENS
+
+
+def _set_combo_case_insensitive(combo: Any, text: Any) -> bool:
+    """
+    Set QComboBox or QFontComboBox current index matching text case-insensitively,
+    handling hyphens, spaces, slashes, and substrings safely.
+    """
+    if text is None or not hasattr(combo, "findText"):
+        return False
+    s_val = str(text).strip()
+    if not s_val:
+        return False
+
+    # 1. Exact match
+    idx = combo.findText(s_val)
+    if idx >= 0:
+        combo.setCurrentIndex(idx)
+        return True
+
+    # 2. Case-insensitive exact match
+    target_lower = s_val.lower()
+    for i in range(combo.count()):
+        if combo.itemText(i).strip().lower() == target_lower:
+            combo.setCurrentIndex(i)
+            return True
+
+    # 3. Normalized punctuation-tolerant match (e.g. "two-column" vs "Two Column", "fade in / out" vs "fade in/out")
+    norm_target = target_lower.replace("-", " ").replace("_", " ").replace("/", " ").replace("·", " ")
+    norm_target = " ".join(norm_target.split())
+    for i in range(combo.count()):
+        norm_item = combo.itemText(i).strip().lower().replace("-", " ").replace("_", " ").replace("/", " ").replace("·", " ")
+        norm_item = " ".join(norm_item.split())
+        if norm_item == norm_target:
+            combo.setCurrentIndex(i)
+            return True
+
+    # 4. Substring / contains match
+    for i in range(combo.count()):
+        item_lower = combo.itemText(i).strip().lower()
+        if target_lower in item_lower or item_lower in target_lower:
+            combo.setCurrentIndex(i)
+            return True
+
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -667,6 +711,10 @@ class MainWindow(QMainWindow):
         workspace_act.triggered.connect(self.open_workspace)
         file_menu.addAction(workspace_act)
 
+        reset_ws_act = QAction("Reset Workspace Location to Default", self)
+        reset_ws_act.triggered.connect(self.reset_workspace)
+        file_menu.addAction(reset_ws_act)
+
         help_menu = self.menuBar().addMenu("Help")
         about = QAction("About Nasheed Studio", self)
         about.triggered.connect(lambda: QMessageBox.information(
@@ -1200,6 +1248,16 @@ class MainWindow(QMainWindow):
                 subprocess.run(["xdg-open", str(root)])
         except Exception as exc:
             QMessageBox.warning(self, "Open Workspace", f"Could not open directory:\n\n{exc}")
+
+    def reset_workspace(self) -> None:
+        """Reset workspace location to the default durable home directory."""
+        new_root = reset_workspace_root()
+        self.status_label.setText(f"Workspace reset to default: {new_root}")
+        QMessageBox.information(
+            self, "Workspace Reset",
+            f"Workspace location has been reset to the default durable directory:\n\n{new_root}\n\n"
+            "All previous user files and projects remain intact and were not deleted."
+        )
 
     # ------------------------------------------------------------------
     # Asset Label & File Field Helpers (Bug A)
@@ -1833,8 +1891,14 @@ class MainWindow(QMainWindow):
         if getattr(self, "_previewing_intro", False):
             self.preview_badge.setText("PREVIEW · INTRO CARD")
             return
-        size = RESOLUTIONS[self.resolution_combo.currentText()]
-        self.preview_badge.setText(f"PREVIEW · 16:9 · {size[0]}×{size[1]}")
+        res_text = self.resolution_combo.currentText() if hasattr(self, "resolution_combo") else "1080p · Full HD"
+        size = RESOLUTIONS.get(res_text, (1920, 1080))
+        has_bg = bool(self.background_path and Path(self.background_path).is_file())
+        has_tracks = bool(self.tracks)
+        if not has_bg or not has_tracks:
+            self.preview_badge.setText(f"PREVIEW · {size[0]}×{size[1]} · SAMPLE LAYOUT")
+        else:
+            self.preview_badge.setText(f"PREVIEW · 16:9 · {size[0]}×{size[1]}")
 
     def _refresh_preview(self) -> None:
         self._update_resolution_badge()
@@ -1842,13 +1906,7 @@ class MainWindow(QMainWindow):
         if target_size.width() <= 10 or target_size.height() <= 10:
             target_size = QSize(640, 360)
 
-        if not self.background_path or not Path(self.background_path).is_file():
-            self.preview_image.setPixmap(QPixmap())
-            self.preview_image.setText(
-                "Choose a background image and add audio tracks to preview your composition.\n"
-                "Drop audio files into the playlist."
-            )
-            return
+        valid_bg = self.background_path if (self.background_path and Path(self.background_path).is_file()) else ""
 
         title_fam = self.title_font_combo.currentText() if hasattr(self, "title_font_combo") else "Segoe UI"
         title_style = self.title_style_combo.currentText() if hasattr(self, "title_style_combo") else "Bold"
@@ -1908,7 +1966,7 @@ class MainWindow(QMainWindow):
                     card_path = create_intro_card(
                         width=1280,
                         height=720,
-                        background_path=self.background_path,
+                        background_path=valid_bg,
                         logo_path=self.logo_path or None,
                         collection_title=self._committed_title or "Nasheed Collection",
                         template=self.template_combo.currentText(),
@@ -1935,14 +1993,22 @@ class MainWindow(QMainWindow):
 
         try:
             with tempfile.TemporaryDirectory(prefix="nasheed_preview_") as tmp:
+                sample_candidates = [
+                    "01. Example Nasheed One",
+                    "02. Example Nasheed Two",
+                    "03. Example Nasheed Three",
+                    "04. Example Nasheed Four",
+                    "05. Example Nasheed Five",
+                    "06. Example Nasheed Six",
+                ]
                 titles = (
                     [t["title"] for t in self.tracks]
-                    or ["Example Nasheed One", "Example Nasheed Two", "Example Nasheed Three"]
+                    or sample_candidates
                 )
                 base, overlays = create_composition(
                     width=1280,
                     height=720,
-                    background_path=self.background_path,
+                    background_path=valid_bg,
                     logo_path=self.logo_path or None,
                     collection_title=self._committed_title or "Nasheed Collection",
                     track_titles=titles,
@@ -1972,6 +2038,8 @@ class MainWindow(QMainWindow):
                     logo_cleanup_mode="auto" if (hasattr(self, "logo_cleanup_check") and self.logo_cleanup_check.isChecked()) else "none",
                     title_position=self.title_pos_combo.currentText() if hasattr(self, "title_pos_combo") else "Top-Center",
                     title_show=self.title_show_check.isChecked() if hasattr(self, "title_show_check") else True,
+                    title_color=getattr(self, "title_color", (255, 255, 248)),
+                    track_color=getattr(self, "track_color", (242, 243, 231)),
                     active_track_color=getattr(self, "active_track_color", None),
                     highlight_style=self.highlight_style_combo.currentText() if hasattr(self, "highlight_style_combo") else "Pill",
                     highlight_color=hl_rgb,
@@ -2430,13 +2498,37 @@ class MainWindow(QMainWindow):
             self, "Save Reusable Template", "Template name:",
             text=self.template_combo.currentText() + " Preset"
         )
-        if not ok or not name.strip():
+        if not ok or not name:
             return
         clean_name = name.strip()
+        if not clean_name:
+            QMessageBox.warning(self, "Invalid Template Name", "Template name cannot be empty or only spaces.")
+            return
+
+        # Sanitize filename: strip characters disallowed on Windows / filesystem
+        invalid_chars = '<>:"/\\|?*'
+        safe_name = "".join(c for c in clean_name if c not in invalid_chars).strip()
+        if not safe_name:
+            QMessageBox.warning(self, "Invalid Template Name", "Template name contains only invalid filesystem characters.")
+            return
+
         templates_dir = get_templates_dir()
-        target_path = templates_dir / f"{clean_name}.json"
+        target_path = templates_dir / f"{safe_name}.json"
+
+        # Check for intentional overwrite
+        if target_path.exists():
+            ret = QMessageBox.question(
+                self, "Overwrite Existing Template",
+                f"A template named '{safe_name}' already exists in your workspace:\n\n{target_path}\n\n"
+                "Do you want to overwrite it with current styling?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if ret != QMessageBox.StandardButton.Yes:
+                return
+
         try:
-            tmpl_data = extract_template(self._project(), template_name=clean_name)
+            tmpl_data = extract_template(self._project(), template_name=safe_name)
             save_template_atomic(tmpl_data, target_path)
             QMessageBox.information(
                 self, "Template Saved",
@@ -2457,41 +2549,98 @@ class MainWindow(QMainWindow):
             return
         try:
             tmpl = load_template(path)
+            missing_warnings = []
+            if "cursor_path" in tmpl and tmpl["cursor_path"]:
+                cp = Path(tmpl["cursor_path"])
+                if not cp.is_file():
+                    missing_warnings.append(f"Custom cursor not found on disk: {tmpl['cursor_path']} (retained current cursor)")
+
+            if "transition_sfx_path" in tmpl and tmpl["transition_sfx_path"]:
+                sp = Path(tmpl["transition_sfx_path"])
+                if not sp.is_file():
+                    missing_warnings.append(f"Transition sound effect not found on disk: {tmpl['transition_sfx_path']}")
+
             self._apply_template_data(tmpl)
             self._mark_dirty()
             self._refresh_preview()
-            self.status_label.setText(f"Applied template: {Path(path).stem}")
+            tmpl_display = tmpl.get("template_name") or Path(path).stem
+            layout_desc = self.template_combo.currentText() if hasattr(self, "template_combo") else "Preset"
+            self.status_label.setText(f"Applied template: {tmpl_display} ({layout_desc})")
+
+            if missing_warnings:
+                QMessageBox.warning(
+                    self, "Template Applied (Missing Assets Notice)",
+                    f"Template '{tmpl_display}' was applied successfully, but some referenced external assets could not be located:\n\n"
+                    + "\n\n".join(missing_warnings)
+                )
         except Exception as exc:
             QMessageBox.critical(self, "Apply Template Failed", str(exc))
 
     def _apply_template_data(self, tmpl: dict) -> None:
-        """Update visual controls from a template without modifying tracks or titles."""
+        """Update visual controls from a template without modifying tracks, titles, or collection assets."""
         if "template" in tmpl:
-            self.template_combo.setCurrentText(tmpl["template"])
+            _set_combo_case_insensitive(self.template_combo, tmpl["template"])
         if "resolution" in tmpl:
-            self.resolution_combo.setCurrentText(tmpl["resolution"])
+            res_val = str(tmpl["resolution"])
+            if not _set_combo_case_insensitive(self.resolution_combo, res_val):
+                # Fuzzy match for resolution variants (e.g. 4K, 1440p, 1080p)
+                for i in range(self.resolution_combo.count()):
+                    item_text = self.resolution_combo.itemText(i).lower()
+                    if any(tok in res_val.lower() for tok in ("4k", "2160")) and "4k" in item_text:
+                        self.resolution_combo.setCurrentIndex(i)
+                        break
+                    elif any(tok in res_val.lower() for tok in ("1440", "qhd")) and "1440" in item_text:
+                        self.resolution_combo.setCurrentIndex(i)
+                        break
+                    elif any(tok in res_val.lower() for tok in ("1080", "fhd")) and "1080" in item_text:
+                        self.resolution_combo.setCurrentIndex(i)
+                        break
         if "indicator_mode" in tmpl:
             self._set_combo_from_mode(tmpl["indicator_mode"])
         if "cursor_size" in tmpl:
             self.cursor_size_spin.setValue(int(tmpl["cursor_size"]))
+        if "cursor_path" in tmpl:
+            cp = tmpl["cursor_path"]
+            if cp and Path(cp).is_file():
+                self.cursor_path = cp
+                self._set_asset_label(self.cursor_label, cp)
+            elif not cp:
+                self.cursor_path = ""
+                self._set_asset_label(self.cursor_label, "")
         if "title_font_family" in tmpl:
-            self.title_font_combo.setCurrentText(tmpl["title_font_family"])
+            _set_combo_case_insensitive(self.title_font_combo, tmpl["title_font_family"])
             self._update_title_styles()
         if "title_font_style" in tmpl:
-            self.title_style_combo.setCurrentText(tmpl["title_font_style"])
+            _set_combo_case_insensitive(self.title_style_combo, tmpl["title_font_style"])
         if "title_font_size" in tmpl:
             self.title_size_spin.setValue(int(tmpl["title_font_size"]))
+        if "custom_title_font_path" in tmpl:
+            self.custom_title_font_path = tmpl["custom_title_font_path"]
+            if self.custom_title_font_path and Path(self.custom_title_font_path).is_file():
+                try:
+                    from src.services.font_service import register_custom_font
+                    register_custom_font(self.custom_title_font_path)
+                except Exception:
+                    pass
         if "track_font_family" in tmpl:
-            self.track_font_combo.setCurrentText(tmpl["track_font_family"])
+            _set_combo_case_insensitive(self.track_font_combo, tmpl["track_font_family"])
             self._update_track_styles()
         if "track_font_style" in tmpl:
-            self.track_style_combo.setCurrentText(tmpl["track_font_style"])
+            _set_combo_case_insensitive(self.track_style_combo, tmpl["track_font_style"])
         if "track_font_size" in tmpl:
             self.track_size_spin.setValue(int(tmpl["track_font_size"]))
+        if "custom_track_font_path" in tmpl:
+            self.custom_track_font_path = tmpl["custom_track_font_path"]
+            if self.custom_track_font_path and Path(self.custom_track_font_path).is_file():
+                try:
+                    from src.services.font_service import register_custom_font
+                    register_custom_font(self.custom_track_font_path)
+                except Exception:
+                    pass
         if "logo_position" in tmpl:
-            self.logo_pos_combo.setCurrentText(tmpl["logo_position"])
+            _set_combo_case_insensitive(self.logo_pos_combo, tmpl["logo_position"])
         if "website_position" in tmpl:
-            self.website_pos_combo.setCurrentText(tmpl["website_position"])
+            _set_combo_case_insensitive(self.website_pos_combo, tmpl["website_position"])
         if "website_font_size" in tmpl:
             self.website_size_spin.setValue(int(tmpl["website_font_size"]))
         if "website_show" in tmpl and hasattr(self, "website_show_check"):
@@ -2503,24 +2652,47 @@ class MainWindow(QMainWindow):
         if "intro_duration" in tmpl:
             self.intro_dur_spin.setValue(float(tmpl["intro_duration"]))
         if "intro_animation" in tmpl:
-            self.intro_anim_combo.setCurrentText(tmpl["intro_animation"])
+            _set_combo_case_insensitive(self.intro_anim_combo, tmpl["intro_animation"])
+        if "transition_sfx_enabled" in tmpl and hasattr(self, "sfx_check"):
+            self.sfx_check.setChecked(bool(tmpl["transition_sfx_enabled"]))
         if "transition_sfx_volume" in tmpl:
             vol = int(float(tmpl["transition_sfx_volume"]) * 100)
             self.sfx_vol_slider.setValue(vol)
+        if "transition_sfx_path" in tmpl:
+            sp = tmpl["transition_sfx_path"]
+            if sp and Path(sp).is_file():
+                self.sfx_path = sp
+                self._set_asset_label(self.sfx_label, sp)
+            elif not sp:
+                self.sfx_path = ""
+                self._set_asset_label(self.sfx_label, "")
         if "playlist_position" in tmpl and hasattr(self, "playlist_pos_combo"):
-            self.playlist_pos_combo.setCurrentText(tmpl["playlist_position"])
+            _set_combo_case_insensitive(self.playlist_pos_combo, tmpl["playlist_position"])
+        tmpl_tmpl = str(tmpl.get("template", "")).strip().lower()
         if "playlist_columns" in tmpl and hasattr(self, "playlist_cols_spin"):
             self.playlist_cols_spin.setValue(int(tmpl["playlist_columns"]))
+        elif tmpl_tmpl in ("two-column", "two column", "2-column") or (hasattr(self, "template_combo") and self.template_combo.currentText() == "Two-column"):
+            if hasattr(self, "playlist_cols_spin"):
+                self.playlist_cols_spin.setValue(2)
+        elif tmpl_tmpl in ("cinematic", "minimal", "single-column"):
+            if hasattr(self, "playlist_cols_spin"):
+                self.playlist_cols_spin.setValue(1)
         if "playlist_row_spacing" in tmpl and hasattr(self, "track_spacing_spin"):
             self.track_spacing_spin.setValue(float(tmpl["playlist_row_spacing"]))
         if "playlist_bg_opacity" in tmpl and hasattr(self, "playlist_bg_slider"):
             self.playlist_bg_slider.setValue(int(float(tmpl["playlist_bg_opacity"]) * 100))
         if "title_position" in tmpl and hasattr(self, "title_pos_combo"):
-            self.title_pos_combo.setCurrentText(tmpl["title_position"])
+            _set_combo_case_insensitive(self.title_pos_combo, tmpl["title_position"])
         if "title_show" in tmpl and hasattr(self, "title_show_check"):
             self.title_show_check.setChecked(bool(tmpl["title_show"]))
+        if "title_color" in tmpl:
+            self.title_color = tmpl["title_color"]
+        if "track_color" in tmpl:
+            self.track_color = tmpl["track_color"]
+        if "active_track_color" in tmpl:
+            self.active_track_color = tmpl["active_track_color"]
         if "highlight_style" in tmpl and hasattr(self, "highlight_style_combo"):
-            self.highlight_style_combo.setCurrentText(tmpl["highlight_style"])
+            _set_combo_case_insensitive(self.highlight_style_combo, tmpl["highlight_style"])
         if "highlight_color" in tmpl:
             self.highlight_color = tmpl["highlight_color"]
             self._update_highlight_color_btn()
@@ -2528,6 +2700,20 @@ class MainWindow(QMainWindow):
             self.highlight_opacity_slider.setValue(int(float(tmpl["highlight_bg_opacity"]) * 100))
         if "logo_cleanup_mode" in tmpl and hasattr(self, "logo_cleanup_check"):
             self.logo_cleanup_check.setChecked(tmpl["logo_cleanup_mode"] != "none")
+        if "resource_profile" in tmpl and hasattr(self, "resource_profile_combo"):
+            _set_combo_case_insensitive(self.resource_profile_combo, tmpl["resource_profile"])
+
+        # Adopt starter background / logo only if receiving project does not have one
+        if tmpl.get("background") and not self.background_path:
+            bg_cand = tmpl["background"]
+            if Path(bg_cand).is_file():
+                self.background_path = str(bg_cand)
+                self._set_asset_label(self.bg_label, self.background_path)
+        if tmpl.get("logo") and not self.logo_path:
+            logo_cand = tmpl["logo"]
+            if Path(logo_cand).is_file():
+                self.logo_path = str(logo_cand)
+                self._set_asset_label(self.logo_label, self.logo_path)
 
     def open_project(self) -> None:
         if self.has_unsaved_changes():
@@ -2547,6 +2733,21 @@ class MainWindow(QMainWindow):
     def _load_project_file(self, path: str) -> None:
         try:
             data = json.loads(Path(path).read_text(encoding="utf-8"))
+            if data.get("type") == "template":
+                self._apply_template_data(data)
+                self._mark_dirty()
+                self._refresh_preview()
+                tmpl_name = data.get("template_name") or Path(path).stem
+                layout_desc = self.template_combo.currentText() if hasattr(self, "template_combo") else "Preset"
+                self.status_label.setText(f"Applied styling template: {tmpl_name} ({layout_desc})")
+                QMessageBox.information(
+                    self, "Template Styling Applied",
+                    f"'{Path(path).name}' is a reusable styling template.\n\n"
+                    f"Visual design and layout presets ({tmpl_name}) have been applied to your current project. "
+                    "Your playlist tracks and collection title were preserved.",
+                )
+                return
+
             self.missing_assets = check_missing_assets(data)
             self._loading_project = True
             try:
@@ -2561,8 +2762,9 @@ class MainWindow(QMainWindow):
                 self.tracks = data.get("tracks", [])
                 self.collection_title.setText(self._committed_title)
                 self.title_apply_btn.setEnabled(False)
-                self.template_combo.setCurrentText(data.get("template", "Cinematic"))
-                self.resolution_combo.setCurrentText(data.get("resolution", "1080p · Full HD"))
+                _set_combo_case_insensitive(self.template_combo, data.get("template", "Cinematic"))
+                if not _set_combo_case_insensitive(self.resolution_combo, data.get("resolution", "1080p · Full HD")):
+                    self.resolution_combo.setCurrentText(data.get("resolution", "1080p · Full HD"))
                 self._set_combo_from_mode(data.get("indicator_mode", "both"))
                 self.cursor_size_spin.setValue(int(data.get("cursor_size", 32) or 32))
 
@@ -2584,20 +2786,20 @@ class MainWindow(QMainWindow):
                 self._refresh_system_fonts(initial=False)
 
                 if hasattr(self, "logo_pos_combo"):
-                    self.logo_pos_combo.setCurrentText(data.get("logo_position", "Bottom-Right"))
+                    _set_combo_case_insensitive(self.logo_pos_combo, data.get("logo_position", "Bottom-Right"))
                 if hasattr(self, "title_font_combo"):
-                    self.title_font_combo.setCurrentText(data.get("title_font_family", "Segoe UI"))
+                    _set_combo_case_insensitive(self.title_font_combo, data.get("title_font_family", "Segoe UI"))
                     self._update_title_styles()
-                    self.title_style_combo.setCurrentText(data.get("title_font_style", "Bold"))
+                    _set_combo_case_insensitive(self.title_style_combo, data.get("title_font_style", "Bold"))
                     self.title_size_spin.setValue(int(data.get("title_font_size", 46) or 46))
                 if hasattr(self, "track_font_combo"):
-                    self.track_font_combo.setCurrentText(data.get("track_font_family", "Segoe UI"))
+                    _set_combo_case_insensitive(self.track_font_combo, data.get("track_font_family", "Segoe UI"))
                     self._update_track_styles()
-                    self.track_style_combo.setCurrentText(data.get("track_font_style", "Bold"))
+                    _set_combo_case_insensitive(self.track_style_combo, data.get("track_font_style", "Bold"))
                     self.track_size_spin.setValue(int(data.get("track_font_size", 22) or 22))
                 if hasattr(self, "website_edit"):
                     self.website_edit.setText(data.get("website_text", ""))
-                    self.website_pos_combo.setCurrentText(data.get("website_position", "Top-Right"))
+                    _set_combo_case_insensitive(self.website_pos_combo, data.get("website_position", "Top-Right"))
                     self.website_size_spin.setValue(int(data.get("website_font_size", 18) or 18))
                     if hasattr(self, "website_show_check"):
                         self.website_show_check.setChecked(bool(data.get("website_show", True)))
@@ -2607,16 +2809,16 @@ class MainWindow(QMainWindow):
                 if hasattr(self, "intro_check"):
                     self.intro_check.setChecked(bool(data.get("intro_enabled", False)))
                     self.intro_dur_spin.setValue(float(data.get("intro_duration", 3.0) or 3.0))
-                    self.intro_anim_combo.setCurrentText(data.get("intro_animation", "Fade in / out"))
+                    _set_combo_case_insensitive(self.intro_anim_combo, data.get("intro_animation", "Fade in / out"))
                     self.preview_intro_btn.setText("Preview Intro Card")
                 if hasattr(self, "sfx_check"):
                     self.sfx_check.setChecked(bool(data.get("transition_sfx_enabled", False)))
                     sfx_vol = int(float(data.get("transition_sfx_volume", 0.7) if data.get("transition_sfx_volume") is not None else 0.7) * 100)
                     self.sfx_vol_slider.setValue(sfx_vol)
                 if hasattr(self, "resource_profile_combo") and "resource_profile" in data:
-                    self.resource_profile_combo.setCurrentText(data["resource_profile"])
+                    _set_combo_case_insensitive(self.resource_profile_combo, data["resource_profile"])
                 if hasattr(self, "playlist_pos_combo") and "playlist_position" in data:
-                    self.playlist_pos_combo.setCurrentText(data["playlist_position"])
+                    _set_combo_case_insensitive(self.playlist_pos_combo, data["playlist_position"])
                 if hasattr(self, "playlist_cols_spin") and "playlist_columns" in data:
                     self.playlist_cols_spin.setValue(int(data["playlist_columns"]))
                 if hasattr(self, "track_spacing_spin") and "playlist_row_spacing" in data:
@@ -2624,11 +2826,11 @@ class MainWindow(QMainWindow):
                 if hasattr(self, "playlist_bg_slider") and "playlist_bg_opacity" in data:
                     self.playlist_bg_slider.setValue(int(float(data["playlist_bg_opacity"]) * 100))
                 if hasattr(self, "title_pos_combo") and "title_position" in data:
-                    self.title_pos_combo.setCurrentText(data["title_position"])
+                    _set_combo_case_insensitive(self.title_pos_combo, data["title_position"])
                 if hasattr(self, "title_show_check") and "title_show" in data:
                     self.title_show_check.setChecked(bool(data["title_show"]))
                 if hasattr(self, "highlight_style_combo") and "highlight_style" in data:
-                    self.highlight_style_combo.setCurrentText(data["highlight_style"])
+                    _set_combo_case_insensitive(self.highlight_style_combo, data["highlight_style"])
                 if "highlight_color" in data:
                     self.highlight_color = data["highlight_color"]
                     self._update_highlight_color_btn()

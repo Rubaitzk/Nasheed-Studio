@@ -16,32 +16,90 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from .workspace_service import is_temp_or_obsolete_path, get_templates_dir
+
 TEMPLATE_DESIGN_KEYS = [
+    # Built-in layout preset & output resolution
     "template",
     "resolution",
-    "indicator_mode",
-    "cursor_size",
+    "resource_profile",
+
+    # Playlist layout, positioning, dimensions & density
+    "playlist_position",
+    "playlist_columns",
+    "playlist_row_spacing",
+    "playlist_width_ratio",
+    "playlist_x_offset",
+    "playlist_y_offset",
+    "track_wrap_text",
+
+    # Playlist panel backing & styling
+    "playlist_bg_opacity",
+    "playlist_bg_color",
+    "playlist_bg_radius",
+
+    # Collection title styling & positioning
     "title_font_family",
     "title_font_style",
     "title_font_size",
+    "custom_title_font_path",
+    "title_position",
+    "title_show",
+    "title_margin",
+    "title_color",
+    "title_outline_color",
+    "title_outline_width",
+    "title_shadow",
+
+    # Track title styling & appearance
     "track_font_family",
     "track_font_style",
     "track_font_size",
-    "custom_title_font_path",
     "custom_track_font_path",
+    "track_color",
+    "track_outline_color",
+    "track_outline_width",
+    "track_shadow",
+    "active_track_color",
+
+    # Cursor & active-track indicator styling
+    "indicator_mode",
+    "cursor_size",
+    "cursor_path",
+    "highlight_style",
+    "highlight_color",
+    "highlight_bg_opacity",
+
+    # Logo placement & cleanup
     "logo_position",
+    "logo_scale",
+    "logo_cleanup_mode",
+
+    # Website watermark placement & styling
     "website_position",
     "website_font_size",
     "website_show",
     "website_opacity",
-    "highlight_style",
-    "highlight_color",
-    "highlight_bg_opacity",
+
+    # Intro presentation card & animations
     "intro_enabled",
     "intro_duration",
     "intro_animation",
+
+    # Audio transition sound effect
+    "transition_sfx_enabled",
     "transition_sfx_volume",
+    "transition_sfx_path",
 ]
+
+PROTECTED_PROJECT_CONTENT_KEYS = {
+    "collection_title",
+    "tracks",
+    "background",
+    "logo",
+    "output_path",
+    "website_text",
+}
 
 
 def save_project_atomic(project_data: dict, target_path: str | Path) -> bool:
@@ -73,7 +131,7 @@ def save_project_atomic(project_data: dict, target_path: str | Path) -> bool:
 
 
 def extract_template(project_data: dict, template_name: str = "Custom Template") -> dict:
-    """Extract only reusable visual design and styling settings from a project."""
+    """Extract only reusable visual design, layout, and styling settings from a project."""
     data = {
         "version": 1,
         "type": "template",
@@ -81,7 +139,43 @@ def extract_template(project_data: dict, template_name: str = "Custom Template")
     }
     for key in TEMPLATE_DESIGN_KEYS:
         if key in project_data:
-            data[key] = project_data[key]
+            val = project_data[key]
+            # Custom cursor persistence validation
+            if key == "cursor_path":
+                if val and Path(str(val)).is_file():
+                    src_p = Path(str(val)).resolve()
+                    # If cursor is in a temporary directory, copy it to templates assets dir for durability
+                    if is_temp_or_obsolete_path(src_p):
+                        try:
+                            assets_dir = get_templates_dir() / "assets"
+                            assets_dir.mkdir(parents=True, exist_ok=True)
+                            dest_p = assets_dir / f"cursor_{src_p.name}"
+                            shutil.copy2(src_p, dest_p)
+                            data[key] = str(dest_p)
+                        except Exception:
+                            data[key] = ""
+                    else:
+                        data[key] = str(src_p)
+                else:
+                    data[key] = ""
+            elif key == "transition_sfx_path":
+                if val and Path(str(val)).is_file() and not is_temp_or_obsolete_path(val):
+                    data[key] = str(Path(str(val)).resolve())
+                else:
+                    data[key] = ""
+            else:
+                data[key] = val
+
+    # Optional starter background & logo if present and durable
+    if "background" in project_data and project_data["background"]:
+        bg_p = Path(project_data["background"])
+        if bg_p.is_file() and not is_temp_or_obsolete_path(bg_p):
+            data["background"] = str(bg_p.resolve())
+    if "logo" in project_data and project_data["logo"]:
+        logo_p = Path(project_data["logo"])
+        if logo_p.is_file() and not is_temp_or_obsolete_path(logo_p):
+            data["logo"] = str(logo_p.resolve())
+
     return data
 
 
@@ -91,24 +185,48 @@ def save_template_atomic(template_data: dict, target_path: str | Path) -> bool:
 
 
 def load_template(target_path: str | Path) -> dict:
-    """Load and validate a template JSON file."""
+    """Load and validate a template JSON file with strict error handling for malformed files."""
     path = Path(target_path).expanduser().resolve()
-    if not path.is_file():
+    if not path.exists():
         raise FileNotFoundError(f"Template file not found: {path}")
+    if not path.is_file():
+        raise ValueError(f"Template path is not a file: {path}")
 
-    data = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        content = path.read_text(encoding="utf-8")
+        data = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Malformed template file (invalid JSON in {path.name}): {exc}") from exc
+    except Exception as exc:
+        raise ValueError(f"Could not read template file ({path.name}): {exc}") from exc
+
+    if not isinstance(data, dict):
+        raise ValueError("Invalid template format: root must be a JSON object")
+
     return data
 
 
 def apply_template_to_project(project_data: dict, template_data: dict) -> dict:
     """
     Apply reusable styling settings from a template onto an existing project.
-    Strictly preserves collection title, tracks list, asset paths, and output path.
+    Strictly preserves collection title, tracks list/order, asset paths, and output path.
+    Adopts template starter background or logo only if receiving project has none.
     """
     updated = dict(project_data)
     for key in TEMPLATE_DESIGN_KEYS:
-        if key in template_data:
+        if key in template_data and key not in PROTECTED_PROJECT_CONTENT_KEYS:
             updated[key] = template_data[key]
+
+    # Adopt starter background / logo only if receiving project does not have one
+    if not updated.get("background") and template_data.get("background"):
+        bg_candidate = template_data["background"]
+        if Path(bg_candidate).is_file():
+            updated["background"] = bg_candidate
+    if not updated.get("logo") and template_data.get("logo"):
+        logo_candidate = template_data["logo"]
+        if Path(logo_candidate).is_file():
+            updated["logo"] = logo_candidate
+
     return updated
 
 
