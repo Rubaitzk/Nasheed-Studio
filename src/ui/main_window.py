@@ -30,7 +30,7 @@ import sys
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 from PySide6.QtCore import Qt, Signal, QObject, QTimer, QSettings, QEvent, QSize
 from PySide6.QtGui import QPixmap, QAction, QIcon, QDragEnterEvent, QDropEvent, QColor
