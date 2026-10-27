@@ -228,6 +228,9 @@ class MainWindow(QMainWindow):
         self.highlight_color = (248, 220, 139)
         self.custom_title_font_path = ""
         self.custom_track_font_path = ""
+        self.website_font_family: Optional[str] = None
+        self.website_font_style: str = "Regular"
+        self.website_color = None
         self._previewing_intro = False
         self.tracks: list[dict] = []
         self.project_path = ""
@@ -1133,7 +1136,7 @@ class MainWindow(QMainWindow):
         pos_row = QHBoxLayout()
         pos_row.setSpacing(6)
         self.website_pos_combo = QComboBox()
-        self.website_pos_combo.addItems(["Top-Right", "Top-Left", "Bottom-Left", "Bottom-Right"])
+        self.website_pos_combo.addItems(["Top-Right", "Top-Left", "Bottom-Left", "Bottom-Right", "Bottom-Center", "Top-Center"])
         self.website_pos_combo.currentTextChanged.connect(self._on_website_pos_changed)
         self.website_size_spin = QSpinBox()
         self.website_size_spin.setRange(10, 48)
@@ -1426,6 +1429,9 @@ class MainWindow(QMainWindow):
             "website_font_size": self.website_size_spin.value() if hasattr(self, "website_size_spin") else 18,
             "website_show": self.website_show_check.isChecked() if hasattr(self, "website_show_check") else True,
             "website_opacity": round(self.website_opacity_slider.value() / 100.0, 2) if hasattr(self, "website_opacity_slider") else 1.0,
+            "website_font_family": getattr(self, "website_font_family", None) or (self.track_font_combo.currentText() if hasattr(self, "track_font_combo") else "Segoe UI"),
+            "website_font_style": getattr(self, "website_font_style", "Regular"),
+            "website_color": getattr(self, "website_color", None),
             "transition_sfx_enabled": self.sfx_check.isChecked() if hasattr(self, "sfx_check") else False,
             "transition_sfx_path": self.sfx_path,
             "transition_sfx_volume": round(self.sfx_vol_slider.value() / 100.0, 2) if hasattr(self, "sfx_vol_slider") else 0.7,
@@ -2051,6 +2057,10 @@ class MainWindow(QMainWindow):
                         website_text=web_txt,
                         website_show=web_show,
                         website_opacity=web_op,
+                        website_font_size=web_sz,
+                        website_font_family=getattr(self, "website_font_family", None) or title_fam,
+                        website_font_style=getattr(self, "website_font_style", "Regular"),
+                        website_color=getattr(self, "website_color", None),
                     )
                     pix = QPixmap(card_path)
                     scaled_pix = pix.scaled(
@@ -2105,6 +2115,9 @@ class MainWindow(QMainWindow):
                     website_font_size=web_sz,
                     website_show=web_show,
                     website_opacity=web_op,
+                    website_font_family=getattr(self, "website_font_family", None) or track_fam,
+                    website_font_style=getattr(self, "website_font_style", "Regular"),
+                    website_color=getattr(self, "website_color", None),
                     playlist_position=self.playlist_pos_combo.currentText() if hasattr(self, "playlist_pos_combo") else "Left",
                     playlist_columns=self.playlist_cols_spin.value() if hasattr(self, "playlist_cols_spin") else 1,
                     playlist_row_spacing=round(self.track_spacing_spin.value(), 2) if hasattr(self, "track_spacing_spin") else 1.85,
@@ -2510,6 +2523,9 @@ class MainWindow(QMainWindow):
                     self.website_show_check.setChecked(True)
                 if hasattr(self, "website_opacity_slider"):
                     self.website_opacity_slider.setValue(100)
+                self.website_font_family = None
+                self.website_font_style = "Regular"
+                self.website_color = None
                 self.overlap_warning.setVisible(False)
             if hasattr(self, "intro_check"):
                 self.intro_check.setChecked(False)
@@ -2723,6 +2739,13 @@ class MainWindow(QMainWindow):
             self.website_show_check.setChecked(bool(tmpl["website_show"]))
         if "website_opacity" in tmpl and hasattr(self, "website_opacity_slider"):
             self.website_opacity_slider.setValue(int(float(tmpl["website_opacity"]) * 100))
+        if "website_font_family" in tmpl:
+            self.website_font_family = tmpl["website_font_family"]
+        if "website_font_style" in tmpl:
+            self.website_font_style = tmpl["website_font_style"]
+        if "website_color" in tmpl:
+            wc = tmpl["website_color"]
+            self.website_color = tuple(wc) if isinstance(wc, (list, tuple)) else wc
         if "intro_enabled" in tmpl:
             self.intro_check.setChecked(bool(tmpl["intro_enabled"]))
         if "intro_duration" in tmpl:
@@ -2886,6 +2909,10 @@ class MainWindow(QMainWindow):
                     if hasattr(self, "website_opacity_slider"):
                         web_op_val = int(float(data.get("website_opacity", 1.0) if data.get("website_opacity") is not None else 1.0) * 100)
                         self.website_opacity_slider.setValue(web_op_val)
+                    self.website_font_family = data.get("website_font_family", None)
+                    self.website_font_style = data.get("website_font_style", "Regular")
+                    raw_wc = data.get("website_color", None)
+                    self.website_color = tuple(raw_wc) if isinstance(raw_wc, (list, tuple)) else raw_wc
                 if hasattr(self, "intro_check"):
                     self.intro_check.setChecked(bool(data.get("intro_enabled", False)))
                     self.intro_dur_spin.setValue(float(data.get("intro_duration", 3.0) or 3.0))

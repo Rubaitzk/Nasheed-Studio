@@ -11,6 +11,7 @@ from src.services.font_service import resolve_font_path
 
 INDICATOR_MODES = ["both", "cursor_only", "highlight_only", "neither"]
 CORNER_POSITIONS = ["Top-Left", "Top-Right", "Bottom-Left", "Bottom-Right"]
+WEBSITE_POSITIONS = ["Top-Right", "Top-Left", "Bottom-Left", "Bottom-Right", "Bottom-Center", "Top-Center"]
 PLAYLIST_POSITIONS = ["Left", "Center", "Right"]
 TITLE_POSITIONS = ["Top-Center", "Above Playlist", "Top-Left", "Hidden"]
 HIGHLIGHT_STYLES = ["Pill", "Accent Bar", "Outline", "Underline"]
@@ -214,14 +215,20 @@ def _calculate_corner_position(
     margin_x: int,
     margin_y: int,
 ) -> Tuple[int, int]:
-    """Calculate (x, y) coordinates for an element in one of the 4 screen corners."""
+    """Calculate (x, y) coordinates for an element in screen corners or centers."""
     pos = corner.strip().lower()
     if "top" in pos and "left" in pos:
         return margin_x, margin_y
+    if "top" in pos and "center" in pos:
+        return (canvas_w - elem_w) // 2, margin_y
     if "top" in pos and "right" in pos:
         return canvas_w - margin_x - elem_w, margin_y
     if "bottom" in pos and "left" in pos:
         return margin_x, canvas_h - margin_y - elem_h
+    if "bottom" in pos and "center" in pos:
+        return (canvas_w - elem_w) // 2, canvas_h - margin_y - elem_h
+    if "bottom" in pos and "right" in pos:
+        return canvas_w - margin_x - elem_w, canvas_h - margin_y - elem_h
     # Default to Bottom-Right
     return canvas_w - margin_x - elem_w, canvas_h - margin_y - elem_h
 
@@ -240,6 +247,7 @@ def _calculate_title_layout(
     logo_rect: Optional[Tuple[int, int, int, int]],
     usable_width: int,
     playlist_x: int,
+    website_rect: Optional[Tuple[int, int, int, int]] = None,
 ) -> Tuple[List[str], ImageFont.ImageFont, int, List[Tuple[int, int]], int]:
     """
     Calculate multiline text wrapping, font scaling, line coordinates, and bounding limit
@@ -255,6 +263,8 @@ def _calculate_title_layout(
         start_x = margin
         if logo_placed and logo_rect is not None and logo_rect[0] < int(width * 0.35) and logo_rect[1] < int(height * 0.35):
             start_x = max(start_x, logo_rect[2] + int(width * 0.02))
+        if website_rect is not None and website_rect[0] < int(width * 0.35) and website_rect[1] < int(height * 0.35):
+            start_x = max(start_x, website_rect[2] + int(width * 0.02))
         max_w = max(int(width * 0.30), int(width * 0.70) - start_x)
         start_y = int(height * 0.06)
     else:  # Top-Center
@@ -264,6 +274,13 @@ def _calculate_title_layout(
             if ly1 < int(height * 0.22):
                 # Avoid colliding horizontally with top logos
                 clearance = min(lx1, width - lx2) * 2 - int(width * 0.04)
+                if clearance > int(width * 0.30):
+                    max_w = min(max_w, clearance)
+        if website_rect is not None:
+            wx1, wy1, wx2, wy2 = website_rect
+            if wy1 < int(height * 0.22):
+                # Avoid colliding horizontally with top watermarks
+                clearance = min(wx1, width - wx2) * 2 - int(width * 0.04)
                 if clearance > int(width * 0.30):
                     max_w = min(max_w, clearance)
         start_y = int(height * 0.06)
@@ -357,14 +374,35 @@ def calculate_playlist_layout(
     """
     res_scale = height / 1080.0
     margin = int(width * 0.055)
-    bottom_limit = int(height * 0.93)
 
-    if website_rect is not None and website_rect[1] > int(height * 0.70):
-        bottom_limit = min(bottom_limit, website_rect[1] - int(height * 0.015))
+    eff_width_ratio = max(0.25, min(0.95, float(playlist_width_ratio or 0.47)))
+    usable_width = int(width * eff_width_ratio)
+    if template == "Minimal" and (playlist_width_ratio is None or abs(float(playlist_width_ratio) - 0.47) < 0.01):
+        usable_width = int(width * 0.39)
+
+    norm_pos = playlist_position.strip().capitalize()
+    if norm_pos == "Center":
+        base_px = (width - usable_width) // 2
+    elif norm_pos == "Right":
+        base_px = width - usable_width - margin
+    else:  # Left
+        base_px = int(width * (0.50 if template == "Minimal" else 0.065))
+    playlist_x = base_px + int(playlist_x_offset * res_scale)
+
+    bottom_limit = int(height * 0.93)
+    if website_rect is not None:
+        wx1, wy1, wx2, wy2 = website_rect
+        if wx1 < (playlist_x + usable_width) and wx2 > playlist_x:
+            if wy1 > int(height * 0.70):
+                bottom_limit = min(bottom_limit, wy1 - int(height * 0.015))
 
     base_y = int(height * (0.16 if template == "Minimal" else 0.17))
     if title_bottom_y > 0:
         base_y = max(base_y, title_bottom_y + int(height * 0.035))
+    elif website_rect is not None:
+        wx1, wy1, wx2, wy2 = website_rect
+        if wx1 < (playlist_x + usable_width) and wx2 > playlist_x and wy1 < int(height * 0.30):
+            base_y = max(base_y, wy2 + int(height * 0.02))
     playlist_y = base_y + int(playlist_y_offset * res_scale)
     avail_h = max(80, bottom_limit - playlist_y)
 
@@ -633,6 +671,10 @@ def create_intro_card(
     website_text: str = "",
     website_show: bool = True,
     website_opacity: float = 1.0,
+    website_font_size: int = 20,
+    website_font_family: Optional[str] = None,
+    website_font_style: Optional[str] = None,
+    website_color: Optional[Union[str, tuple, list]] = None,
 ) -> str:
     """
     Generate an intro title card image featuring the collection title and logo presentation.
@@ -708,17 +750,32 @@ def create_intro_card(
     bg = Image.alpha_composite(bg, card_layer)
 
     # Optional Website Address at bottom center
+    web_text_clean = website_text.strip()
     web_op = max(0.0, min(1.0, float(website_opacity if website_opacity is not None else 1.0)))
-    if website_text.strip() and website_show and web_op > 0.0:
-        web_size = max(12, int(20 * res_scale))
-        web_font = _get_font("Segoe UI", "Regular", web_size)
-        wb = draw.textbbox((0, 0), website_text.strip(), font=web_font)
+    if web_text_clean and website_show and web_op > 0.0:
+        web_size = max(12, int(website_font_size * res_scale))
+        web_family = website_font_family or title_font_family or "Segoe UI"
+        web_style = website_font_style or "Regular"
+        web_font = _get_font(web_family, web_style, web_size)
+        wb = web_font.getbbox(web_text_clean)
         ww = wb[2] - wb[0]
+        wh = wb[3] - wb[1]
         wx = (width - ww) // 2
         wy = int(height * 0.88)
         web_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         w_draw = ImageDraw.Draw(web_layer, "RGBA")
-        w_draw.text((wx, wy), website_text.strip(), font=web_font, fill=(220, 228, 222, int(200 * web_op)))
+
+        # Contrast-adaptive color
+        if website_color is not None:
+            text_rgb = _hex_to_rgb(website_color, (240, 244, 242))
+        else:
+            crop = bg.crop((wx, wy, wx + ww, wy + wh)).convert("L")
+            pixels = list(crop.get_flattened_data() if hasattr(crop, "get_flattened_data") else crop.getdata())
+            avg_lum = sum(pixels) / max(1, len(pixels))
+            text_rgb = (35, 40, 42) if avg_lum > 140 else (240, 244, 242)
+
+        text_alpha = max(0, min(255, int(round(255 * web_op))))
+        w_draw.text((wx - wb[0], wy - wb[1]), web_text_clean, font=web_font, fill=(*text_rgb, text_alpha))
         bg = Image.alpha_composite(bg, web_layer)
 
     intro_path = str(out / "intro_card.png")
@@ -752,6 +809,9 @@ def create_composition(
     website_font_size: int = 18,
     website_show: bool = True,
     website_opacity: float = 1.0,
+    website_font_family: Optional[str] = None,
+    website_font_style: Optional[str] = None,
+    website_color: Optional[Union[str, tuple, list]] = None,
     playlist_position: str = "Left",
     playlist_x_offset: int = 0,
     playlist_y_offset: int = 0,
@@ -850,55 +910,64 @@ def create_composition(
     web_rect: Optional[Tuple[int, int, int, int]] = None
     if web_text_clean and website_show and web_op > 0.0:
         eff_web_size = max(10, int(website_font_size * res_scale))
-        web_font = _get_font("Segoe UI", "Regular", eff_web_size)
-        wb = draw.textbbox((0, 0), web_text_clean, font=web_font)
+        web_family = website_font_family or track_font_family or "Segoe UI"
+        web_style = website_font_style or "Regular"
+        web_font = _get_font(web_family, web_style, eff_web_size)
+        wb = web_font.getbbox(web_text_clean)
         tw = wb[2] - wb[0]
         th = wb[3] - wb[1]
-        pill_pad_x = int(eff_web_size * 0.45)
-        pill_pad_y = int(eff_web_size * 0.25)
-        total_w = tw + pill_pad_x * 2
-        total_h = th + pill_pad_y * 2
 
+        # Ensure text stays inside frame and doesn't become clipped
+        max_avail_w = max(50, width - 2 * margin)
+        while tw > max_avail_w and eff_web_size > 10:
+            eff_web_size -= 1
+            web_font = _get_font(web_family, web_style, eff_web_size)
+            wb = web_font.getbbox(web_text_clean)
+            tw = wb[2] - wb[0]
+            th = wb[3] - wb[1]
+
+        margin_y = int(height * 0.045)
         wx, wy = _calculate_corner_position(
-            website_position, total_w, total_h, width, height, margin, int(height * 0.045)
+            website_position, tw, th, width, height, margin, margin_y
         )
 
-        # Overlap Prevention: avoid collision with logo in same corner
+        # Overlap Prevention: avoid collision with logo in same corner/location
         if logo_placed and logo_rect is not None:
             norm_logo_pos = logo_position.strip().lower()
             norm_web_pos = website_position.strip().lower()
             if norm_logo_pos == norm_web_pos:
                 lx1, ly1, lx2, ly2 = logo_rect
                 if "bottom" in norm_web_pos:
-                    wy = ly1 - total_h - int(height * 0.015)
+                    wy = ly1 - th - int(height * 0.015)
+                    if wy < margin_y:
+                        wy = ly2 + int(height * 0.015)
                 else:
                     wy = ly2 + int(height * 0.015)
+                    if wy + th > height - margin_y:
+                        wy = ly1 - th - int(height * 0.015)
 
-        web_rect = (wx, wy, wx + total_w, wy + total_h)
+        # Boundary clamping to preserve frame safety margins
+        wx = max(margin, min(wx, width - margin - tw))
+        wy = max(margin_y, min(wy, height - margin_y - th))
+        web_rect = (wx, wy, wx + tw, wy + th)
 
+        # Dedicated transparent RGBA layer for linear alpha compositing
         web_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         w_draw = ImageDraw.Draw(web_layer, "RGBA")
-        pill_fill_a = int(120 * web_op)
-        pill_outline_a = int(35 * web_op)
-        w_draw.rounded_rectangle(
-            web_rect,
-            radius=max(3, int(eff_web_size * 0.3)),
-            fill=(0, 0, 0, pill_fill_a),
-            outline=(255, 255, 255, pill_outline_a),
-            width=1,
-        )
-        _draw_text_with_outline_and_shadow(
-            draw=w_draw,
-            xy=(wx + pill_pad_x, wy + pill_pad_y),
-            text=web_text_clean,
-            font=web_font,
-            fill=(238, 244, 239, int(245 * web_op)),
-            stroke_width=1,
-            stroke_fill=(0, 0, 0, int(140 * web_op)),
-            shadow=True,
-            shadow_offset=(1, 1),
-            shadow_fill=(0, 0, 0, int(150 * web_op)),
-        )
+
+        # Optimal contrast legibility on light and dark backgrounds without unwanted boxes or dark halos
+        if website_color is not None:
+            text_rgb = _hex_to_rgb(website_color, (240, 244, 242))
+        else:
+            crop = bg.crop(web_rect).convert("L")
+            pixels = list(crop.get_flattened_data() if hasattr(crop, "get_flattened_data") else crop.getdata())
+            avg_lum = sum(pixels) / max(1, len(pixels))
+            text_rgb = (35, 40, 42) if avg_lum > 140 else (240, 244, 242)
+
+        text_alpha = max(0, min(255, int(round(255 * web_op))))
+        w_draw.text((wx - wb[0], wy - wb[1]), web_text_clean, font=web_font, fill=(*text_rgb, text_alpha))
+
+        # True Porter-Duff alpha blend onto base image
         bg = Image.alpha_composite(bg, web_layer)
         draw = ImageDraw.Draw(bg, "RGBA")
 
@@ -927,6 +996,7 @@ def create_composition(
             logo_rect=logo_rect,
             usable_width=usable_width,
             playlist_x=playlist_x,
+            website_rect=web_rect,
         )
 
         title_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))

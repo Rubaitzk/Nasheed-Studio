@@ -114,6 +114,9 @@ def build_render_command(
     website_font_size = int(project.get("website_font_size", 18) or 18)
     website_show = bool(project.get("website_show", True) if "website_show" in project else True)
     website_opacity = float(project.get("website_opacity", 1.0) if project.get("website_opacity") is not None else 1.0)
+    website_font_family = project.get("website_font_family") or track_font_family
+    website_font_style = project.get("website_font_style") or "Regular"
+    website_color = project.get("website_color", None)
 
     # Intro & SFX settings
     intro_enabled = bool(project.get("intro_enabled", False))
@@ -190,6 +193,9 @@ def build_render_command(
         website_font_size=website_font_size,
         website_show=website_show,
         website_opacity=website_opacity,
+        website_font_family=website_font_family,
+        website_font_style=website_font_style,
+        website_color=website_color,
         playlist_position=playlist_position,
         playlist_x_offset=playlist_x_offset,
         playlist_y_offset=playlist_y_offset,
@@ -252,6 +258,10 @@ def build_render_command(
             website_text=website_text,
             website_show=website_show,
             website_opacity=website_opacity,
+            website_font_size=website_font_size,
+            website_font_family=website_font_family,
+            website_font_style=website_font_style,
+            website_color=website_color,
         )
         command += ["-loop", "1", "-framerate", "30", "-i", intro_card]
         intro_input_idx = current_input_idx

@@ -82,6 +82,9 @@ TEMPLATE_DESIGN_KEYS = [
     "website_font_size",
     "website_show",
     "website_opacity",
+    "website_font_family",
+    "website_font_style",
+    "website_color",
 
     # Intro presentation card & animations
     "intro_enabled",
