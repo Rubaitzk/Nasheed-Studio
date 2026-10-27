@@ -196,6 +196,8 @@ def build_render_command(
         playlist_width_ratio=playlist_width_ratio,
         playlist_columns=playlist_columns,
         playlist_row_spacing=playlist_row_spacing,
+        playlist_col_spacing=project.get("playlist_col_spacing", None),
+        track_max_chars=int(project.get("track_max_chars", 0) or 0),
         playlist_bg_opacity=playlist_bg_opacity,
         playlist_bg_color=playlist_bg_color,
         playlist_bg_radius=playlist_bg_radius,

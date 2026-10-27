@@ -201,6 +201,13 @@ class PlaylistListWidget(QListWidget):
                 return
         super().dropEvent(event)
 
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_F2:
+            self.main_window._on_rename_track_clicked()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
 
 # ---------------------------------------------------------------------------
 # Main window
@@ -425,6 +432,11 @@ class MainWindow(QMainWindow):
         self.add_tracks_btn.setToolTip("Add audio files (MP3, WAV, M4A, AAC, FLAC)")
         self.add_tracks_btn.clicked.connect(self.add_tracks)
 
+        self.rename_track_btn = QPushButton("Edit title")
+        self.rename_track_btn.setIcon(get_svg_icon("edit", 13, "#edf2ee"))
+        self.rename_track_btn.setToolTip("Rename / adjust selected nasheed title (F2)")
+        self.rename_track_btn.clicked.connect(self._on_rename_track_clicked)
+
         self.remove_track_btn = QPushButton("Remove")
         self.remove_track_btn.setIcon(get_svg_icon("remove", 13, "#edf2ee"))
         self.remove_track_btn.clicked.connect(self.remove_track)
@@ -440,6 +452,7 @@ class MainWindow(QMainWindow):
         self.down_btn.clicked.connect(lambda: self.move_track(1))
 
         btn_row.addWidget(self.add_tracks_btn, 1)
+        btn_row.addWidget(self.rename_track_btn)
         btn_row.addWidget(self.remove_track_btn)
         btn_row.addWidget(self.up_btn)
         btn_row.addWidget(self.down_btn)
@@ -862,6 +875,17 @@ class MainWindow(QMainWindow):
         self.playlist_cols_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
         pl_pos_row.addWidget(cols_lbl)
         pl_pos_row.addWidget(self.playlist_cols_spin)
+
+        col_sp_lbl = QLabel("Col gap:")
+        col_sp_lbl.setObjectName("muted")
+        self.col_spacing_spin = QSpinBox()
+        self.col_spacing_spin.setRange(10, 250)
+        self.col_spacing_spin.setValue(50)
+        self.col_spacing_spin.setSuffix(" px")
+        self.col_spacing_spin.setToolTip("Distance / gap between playlist columns")
+        self.col_spacing_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
+        pl_pos_row.addWidget(col_sp_lbl)
+        pl_pos_row.addWidget(self.col_spacing_spin)
         layout.addLayout(pl_pos_row)
 
         bg_op_row = QHBoxLayout()
@@ -971,6 +995,18 @@ class MainWindow(QMainWindow):
         self.track_spacing_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
         sp_row.addWidget(sp_lbl)
         sp_row.addWidget(self.track_spacing_spin, 1)
+
+        char_lim_lbl = QLabel("Max title length:")
+        char_lim_lbl.setObjectName("muted")
+        self.track_max_chars_spin = QSpinBox()
+        self.track_max_chars_spin.setRange(0, 80)
+        self.track_max_chars_spin.setValue(0)
+        self.track_max_chars_spin.setSpecialValueText("Auto")
+        self.track_max_chars_spin.setSuffix(" chars")
+        self.track_max_chars_spin.setToolTip("Truncate titles after this many characters (0 = Auto fit to column)")
+        self.track_max_chars_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
+        sp_row.addWidget(char_lim_lbl)
+        sp_row.addWidget(self.track_max_chars_spin, 1)
         layout.addLayout(sp_row)
 
         layout.addSpacing(4)
@@ -1400,6 +1436,8 @@ class MainWindow(QMainWindow):
             "playlist_position": self.playlist_pos_combo.currentText() if hasattr(self, "playlist_pos_combo") else "Left",
             "playlist_columns": self.playlist_cols_spin.value() if hasattr(self, "playlist_cols_spin") else 1,
             "playlist_row_spacing": round(self.track_spacing_spin.value(), 2) if hasattr(self, "track_spacing_spin") else 1.85,
+            "playlist_col_spacing": self.col_spacing_spin.value() if hasattr(self, "col_spacing_spin") else 50,
+            "track_max_chars": self.track_max_chars_spin.value() if hasattr(self, "track_max_chars_spin") else 0,
             "playlist_bg_opacity": round(self.playlist_bg_slider.value() / 100.0, 2) if hasattr(self, "playlist_bg_slider") else 0.0,
             "logo_cleanup_mode": "auto" if (hasattr(self, "logo_cleanup_check") and self.logo_cleanup_check.isChecked()) else "none",
             "title_position": self.title_pos_combo.currentText() if hasattr(self, "title_pos_combo") else "Top-Center",
@@ -1518,19 +1556,35 @@ class MainWindow(QMainWindow):
         self._refresh_tracks_labels()
         self._schedule_preview(200)
 
-    def rename_track(self, item: QListWidgetItem) -> None:
-        idx = self.track_list.row(item)
-        if idx < 0:
+    def _on_rename_track_clicked(self) -> None:
+        row = self.track_list.currentRow()
+        if row >= 0:
+            self.rename_track(self.track_list.item(row))
+        elif self.tracks:
+            self.track_list.setCurrentRow(0)
+            self.rename_track(self.track_list.item(0))
+
+    def rename_track(self, item: Optional[QListWidgetItem] = None) -> None:
+        if item is None:
+            row = self.track_list.currentRow()
+            if row >= 0:
+                item = self.track_list.item(row)
+        if item is None:
             return
+        idx = self.track_list.row(item)
+        if idx < 0 or idx >= len(self.tracks):
+            return
+        cur_title = self.tracks[idx]["title"]
         title, ok = QInputDialog.getText(
-            self, "Edit playlist title", "Title shown in the video:",
-            text=self.tracks[idx]["title"]
+            self, "Edit playlist title",
+            f"Title shown in the video for track #{idx + 1:02d} ({len(cur_title)} chars):",
+            text=cur_title
         )
         if ok and title.strip():
             self.tracks[idx]["title"] = title.strip()
             self._mark_dirty()
             self._refresh_tracks()
-            self._schedule_preview(200)
+            self._schedule_preview(150)
 
     def remove_track(self) -> None:
         idx = self.track_list.currentRow()
@@ -1941,6 +1995,8 @@ class MainWindow(QMainWindow):
         cur_track_row = max(0, self.track_list.currentRow()) if (hasattr(self, "track_list") and self.track_list.currentRow() >= 0) else 0
         hl_color = getattr(self, "highlight_color", (248, 220, 139))
         hl_rgb = _hex_to_rgb(hl_color, (248, 220, 139))
+        col_sp = self.col_spacing_spin.value() if hasattr(self, "col_spacing_spin") else 50
+        max_chars = self.track_max_chars_spin.value() if hasattr(self, "track_max_chars_spin") else 0
 
         cache_key = (
             self.background_path, self.logo_path, self.cursor_path,
@@ -1952,6 +2008,8 @@ class MainWindow(QMainWindow):
             getattr(self, "_previewing_intro", False),
             self.playlist_pos_combo.currentText() if hasattr(self, "playlist_pos_combo") else "Left",
             self.playlist_cols_spin.value() if hasattr(self, "playlist_cols_spin") else 1,
+            col_sp,
+            max_chars,
             round(self.track_spacing_spin.value(), 2) if hasattr(self, "track_spacing_spin") else 1.85,
             round(self.playlist_bg_slider.value() / 100.0, 2) if hasattr(self, "playlist_bg_slider") else 0.0,
             self.highlight_style_combo.currentText() if hasattr(self, "highlight_style_combo") else "Pill",
@@ -2050,6 +2108,8 @@ class MainWindow(QMainWindow):
                     playlist_position=self.playlist_pos_combo.currentText() if hasattr(self, "playlist_pos_combo") else "Left",
                     playlist_columns=self.playlist_cols_spin.value() if hasattr(self, "playlist_cols_spin") else 1,
                     playlist_row_spacing=round(self.track_spacing_spin.value(), 2) if hasattr(self, "track_spacing_spin") else 1.85,
+                    playlist_col_spacing=col_sp,
+                    track_max_chars=max_chars,
                     playlist_bg_opacity=round(self.playlist_bg_slider.value() / 100.0, 2) if hasattr(self, "playlist_bg_slider") else 0.0,
                     logo_cleanup_mode="auto" if (hasattr(self, "logo_cleanup_check") and self.logo_cleanup_check.isChecked()) else "none",
                     title_position=self.title_pos_combo.currentText() if hasattr(self, "title_pos_combo") else "Top-Center",
@@ -2695,6 +2755,10 @@ class MainWindow(QMainWindow):
                 self.playlist_cols_spin.setValue(1)
         if "playlist_row_spacing" in tmpl and hasattr(self, "track_spacing_spin"):
             self.track_spacing_spin.setValue(float(tmpl["playlist_row_spacing"]))
+        if "playlist_col_spacing" in tmpl and hasattr(self, "col_spacing_spin"):
+            self.col_spacing_spin.setValue(int(tmpl["playlist_col_spacing"]))
+        if "track_max_chars" in tmpl and hasattr(self, "track_max_chars_spin"):
+            self.track_max_chars_spin.setValue(int(tmpl["track_max_chars"]))
         if "playlist_bg_opacity" in tmpl and hasattr(self, "playlist_bg_slider"):
             self.playlist_bg_slider.setValue(int(float(tmpl["playlist_bg_opacity"]) * 100))
         if "title_position" in tmpl and hasattr(self, "title_pos_combo"):
@@ -2839,6 +2903,10 @@ class MainWindow(QMainWindow):
                     self.playlist_cols_spin.setValue(int(data["playlist_columns"]))
                 if hasattr(self, "track_spacing_spin") and "playlist_row_spacing" in data:
                     self.track_spacing_spin.setValue(float(data["playlist_row_spacing"]))
+                if hasattr(self, "col_spacing_spin") and "playlist_col_spacing" in data:
+                    self.col_spacing_spin.setValue(int(data["playlist_col_spacing"]))
+                if hasattr(self, "track_max_chars_spin") and "track_max_chars" in data:
+                    self.track_max_chars_spin.setValue(int(data["track_max_chars"]))
                 if hasattr(self, "playlist_bg_slider") and "playlist_bg_opacity" in data:
                     self.playlist_bg_slider.setValue(int(float(data["playlist_bg_opacity"]) * 100))
                 if hasattr(self, "title_pos_combo") and "title_position" in data:

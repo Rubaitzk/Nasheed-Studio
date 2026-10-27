@@ -28,10 +28,12 @@ TEMPLATE_DESIGN_KEYS = [
     "playlist_position",
     "playlist_columns",
     "playlist_row_spacing",
+    "playlist_col_spacing",
     "playlist_width_ratio",
     "playlist_x_offset",
     "playlist_y_offset",
     "track_wrap_text",
+    "track_max_chars",
 
     # Playlist panel backing & styling
     "playlist_bg_opacity",

@@ -406,7 +406,7 @@ class TestLayoutAndTransparency(unittest.TestCase):
         col_1_x = items[6]["x"]
         # In right alignment, Col 1 is on right, Col 0 is to its left, so both sit in right half
         self.assertGreater(col_1_x, col_0_x)
-        self.assertGreater(col_0_x, 900, "In Right alignment, both columns should be on the right side of the canvas")
+        self.assertGreater(col_0_x, 650, "In Right alignment, columns must leave left region for artwork")
         for it in items:
             self.assertLessEqual(it["box"][3], 1080)
 
@@ -491,6 +491,218 @@ class TestLayoutAndTransparency(unittest.TestCase):
         item = layout["track_items"][0]
         self.assertTrue(item["text"].endswith("…"))
         self.assertLess(len(item["text"]), len(f"01. {super_long}"))
+
+    def test_reference_title_mahum_be_ummati_ahmadin_fits_without_ellipsis(self):
+        """In reference-matched layout, 'Mahum Be Umati Ahmadin' fits completely in Column 1 without '...'."""
+        reference_tracks = [
+            "Kuntu Maitan",
+            "Habbat Karreeh",
+            "Hallaka Sirrun Indallah",
+            "Fataat al Khair",
+            "Mahum Be Umati Ahmadin",
+            "We are the Heroes",
+            "Ya Qorial Qur'ani",
+            "This is Umar",
+            "Serna Serna",
+            "Sahmul Ams",
+            "Qul-li Baghin",
+        ]
+        layout = calculate_playlist_layout(
+            track_titles=reference_tracks,
+            width=1920,
+            height=1080,
+            template="Cinematic",
+            playlist_position="Left",
+            playlist_columns=2,
+            playlist_row_spacing=1.85,
+            playlist_width_ratio=0.55,
+            playlist_x_offset=0,
+            playlist_y_offset=0,
+            track_font_family="Segoe UI",
+            track_font_style="Bold",
+            track_font_size=28,
+            track_wrap_text=False,
+            title_bottom_y=160,
+        )
+        mahum_item = [it for it in layout["track_items"] if "Mahum Be Umati Ahmadin" in it["text"]]
+        self.assertTrue(bool(mahum_item), "Mahum Be Umati Ahmadin should be present")
+        self.assertNotIn("…", mahum_item[0]["text"], "Mahum Be Umati Ahmadin should fit without ellipsis")
+        self.assertEqual(mahum_item[0]["text"], "05. Mahum Be Umati Ahmadin")
+
+    def test_second_column_distance_content_aware_auto_placement(self):
+        """Column 2 starting X position adapts automatically based on the longest title in Column 1."""
+        short_col0_tracks = [
+            "Track One",
+            "Track Two",
+            "Track Three",
+            "Track Four",
+            "Track Five",
+            "Track Six",
+            "Track Seven",
+            "Track Eight",
+        ]
+        long_col0_tracks = [
+            "Track One",
+            "Track Two",
+            "Track Three",
+            "Track Four Very Long Mahum Be Umati Ahmadin Extension",
+            "Track Five",
+            "Track Six",
+            "Track Seven",
+            "Track Eight",
+        ]
+        layout_short = calculate_playlist_layout(
+            track_titles=short_col0_tracks,
+            width=1920,
+            height=1080,
+            template="Two-column",
+            playlist_position="Left",
+            playlist_columns=2,
+            playlist_row_spacing=1.85,
+            playlist_width_ratio=0.55,
+            playlist_x_offset=0,
+            playlist_y_offset=0,
+            track_font_family="Segoe UI",
+            track_font_style="Bold",
+            track_font_size=24,
+            track_wrap_text=False,
+        )
+        layout_long = calculate_playlist_layout(
+            track_titles=long_col0_tracks,
+            width=1920,
+            height=1080,
+            template="Two-column",
+            playlist_position="Left",
+            playlist_columns=2,
+            playlist_row_spacing=1.85,
+            playlist_width_ratio=0.55,
+            playlist_x_offset=0,
+            playlist_y_offset=0,
+            track_font_family="Segoe UI",
+            track_font_style="Bold",
+            track_font_size=24,
+            track_wrap_text=False,
+        )
+        col1_x_short = layout_short["track_items"][4]["x"]
+        col1_x_long = layout_long["track_items"][4]["x"]
+        self.assertGreater(col1_x_long, col1_x_short,
+                           "Column 2 must be placed further right when Column 1 has a longer title")
+
+    def test_user_adjustable_column_spacing(self):
+        """User-configured playlist_col_spacing directly controls the distance between columns."""
+        tracks = [f"Nasheed {i+1}" for i in range(8)]
+        layout_narrow = calculate_playlist_layout(
+            track_titles=tracks,
+            width=1920,
+            height=1080,
+            template="Two-column",
+            playlist_position="Left",
+            playlist_columns=2,
+            playlist_row_spacing=1.85,
+            playlist_width_ratio=0.55,
+            playlist_x_offset=0,
+            playlist_y_offset=0,
+            track_font_family="Segoe UI",
+            track_font_style="Bold",
+            track_font_size=24,
+            track_wrap_text=False,
+            playlist_col_spacing=25,
+        )
+        layout_wide = calculate_playlist_layout(
+            track_titles=tracks,
+            width=1920,
+            height=1080,
+            template="Two-column",
+            playlist_position="Left",
+            playlist_columns=2,
+            playlist_row_spacing=1.85,
+            playlist_width_ratio=0.55,
+            playlist_x_offset=0,
+            playlist_y_offset=0,
+            track_font_family="Segoe UI",
+            track_font_style="Bold",
+            track_font_size=24,
+            track_wrap_text=False,
+            playlist_col_spacing=120,
+        )
+        gap_narrow = layout_narrow["track_items"][4]["x"] - (layout_narrow["track_items"][0]["x"] + layout_narrow["col_0_width"])
+        gap_wide = layout_wide["track_items"][4]["x"] - (layout_wide["track_items"][0]["x"] + layout_wide["col_0_width"])
+        self.assertAlmostEqual(gap_narrow, 25, delta=5)
+        self.assertAlmostEqual(gap_wide, 120, delta=5)
+
+    def test_user_adjustable_track_max_chars(self):
+        """track_max_chars limits the character length of titles when configured by user."""
+        long_title = "A Substantially Long Nasheed Title That Needs Truncating"
+        layout = calculate_playlist_layout(
+            track_titles=[long_title],
+            width=1920,
+            height=1080,
+            template="Cinematic",
+            playlist_position="Left",
+            playlist_columns=1,
+            playlist_row_spacing=1.85,
+            playlist_width_ratio=0.60,
+            playlist_x_offset=0,
+            playlist_y_offset=0,
+            track_font_family="Segoe UI",
+            track_font_style="Bold",
+            track_font_size=24,
+            track_wrap_text=False,
+            track_max_chars=20,
+        )
+        item = layout["track_items"][0]
+        self.assertLessEqual(len(item["text"]), 22)
+        self.assertTrue(item["text"].endswith("…"))
+
+    def test_extraordinarily_long_title_boundary_safety(self):
+        """Extremely long title truncates with ellipsis at layout boundaries without pushing columns off-grid."""
+        monster_title = "Extremely Super Mega Exceedingly Long Nasheed Track Name That Spans Past Normal Screen Limits And Keeps Going And Going"
+        tracks = [monster_title] + [f"Short {i}" for i in range(9)]
+        layout = calculate_playlist_layout(
+            track_titles=tracks,
+            width=1920,
+            height=1080,
+            template="Two-column",
+            playlist_position="Left",
+            playlist_columns=2,
+            playlist_row_spacing=1.85,
+            playlist_width_ratio=0.50,
+            playlist_x_offset=0,
+            playlist_y_offset=0,
+            track_font_family="Segoe UI",
+            track_font_style="Bold",
+            track_font_size=24,
+            track_wrap_text=False,
+        )
+        items = layout["track_items"]
+        # Column 1 starts within screen
+        self.assertLess(items[5]["x"], 1920 * 0.75, "Column 2 must stay well within right safety boundary")
+        # Monster title was truncated safely with …
+        self.assertTrue(items[0]["text"].endswith("…"))
+        # Number prefix preserved
+        self.assertTrue(items[0]["text"].startswith("01. "))
+        # Never collapsed to just "01...."
+        self.assertGreater(len(items[0]["text"]), 10)
+
+    def test_top_left_title_and_logo_collision_avoidance(self):
+        """When title is Top-Left and logo is Top-Left, title is positioned to the right of the logo."""
+        lines, font, total_th, coords, bottom_y = _calculate_title_layout(
+            collection_title="Top Left Title",
+            title_font_family="Segoe UI",
+            title_font_style="Bold",
+            title_font_size=46,
+            norm_title_pos="Top-Left",
+            width=1920,
+            height=1080,
+            margin=105,
+            res_scale=1.0,
+            logo_placed=True,
+            logo_rect=(105, 48, 250, 150),  # Top-left logo
+            usable_width=900,
+            playlist_x=125,
+        )
+        # Title start X must be >= logo right edge (250)
+        self.assertGreaterEqual(coords[0][0], 250)
 
 
 if __name__ == "__main__":
