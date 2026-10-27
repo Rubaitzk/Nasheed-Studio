@@ -45,18 +45,20 @@ def _draw_text_with_outline_and_shadow(
 ) -> None:
     """Draw text with optional soft drop-shadow and restrained outline for cinematic legibility."""
     x, y = int(round(xy[0])), int(round(xy[1]))
+    font_sz = getattr(font, "size", 20)
+    line_spacing = max(2, int(font_sz * 0.25))
     if shadow:
         sx, sy = int(round(shadow_offset[0])), int(round(shadow_offset[1]))
         s_alpha = shadow_fill[3] if len(shadow_fill) > 3 else 140
         s_rgb = shadow_fill[:3]
         # Soft two-stage shadow falloff eliminates harsh jagged step-edges while ensuring background separation
         if sx > 1 or sy > 1:
-            draw.text((x + sx, y + sy), text, font=font, fill=(*s_rgb, int(s_alpha * 0.40)))
-        draw.text((x + max(1, sx // 2), y + max(1, sy // 2)), text, font=font, fill=(*s_rgb, int(s_alpha * 0.70)))
+            draw.text((x + sx, y + sy), text, font=font, fill=(*s_rgb, int(s_alpha * 0.40)), spacing=line_spacing)
+        draw.text((x + max(1, sx // 2), y + max(1, sy // 2)), text, font=font, fill=(*s_rgb, int(s_alpha * 0.70)), spacing=line_spacing)
     if stroke_width > 0:
-        draw.text((x, y), text, font=font, fill=fill, stroke_width=stroke_width, stroke_fill=stroke_fill)
+        draw.text((x, y), text, font=font, fill=fill, stroke_width=stroke_width, stroke_fill=stroke_fill, spacing=line_spacing)
     else:
-        draw.text((x, y), text, font=font, fill=fill)
+        draw.text((x, y), text, font=font, fill=fill, spacing=line_spacing)
 
 
 def clean_logo_image(img: Image.Image, mode: str = "auto") -> Image.Image:
@@ -384,184 +386,154 @@ def calculate_playlist_layout(
             "col_gap": 0,
         }
 
-    # Decide 1-col vs 2-col layout
+    # Dynamic Column Count Selection (1, 2, 3, or 4 columns)
     norm_template = str(template or "").lower()
-    if playlist_columns >= 2 or norm_template in ("two-column", "two column", "2-column"):
-        is_two_col = True
-    else:
-        base_eff_sz = max(12, int(track_font_size * res_scale))
-        init_spacing = max(1.0, float(playlist_row_spacing or 1.85))
-        init_gap = int(base_eff_sz * init_spacing)
-        init_row_h = int(base_eff_sz * 1.45)
-        needed_h = (n_tracks - 1) * init_gap + init_row_h
+    base_eff_sz = max(12, int(track_font_size * res_scale))
+    init_spacing = max(1.0, float(playlist_row_spacing or 1.85))
+    init_gap = int(base_eff_sz * init_spacing)
+    row_h_mult = 2.4 if track_wrap_text else 1.45
+    init_row_h = int(base_eff_sz * row_h_mult)
 
-        if needed_h <= avail_h:
-            is_two_col = False
-        else:
-            # Check if gentle compaction (spacing >= 1.25) can fit single column for small playlists
-            compact_gap = int(base_eff_sz * 1.25)
-            compact_h = (n_tracks - 1) * compact_gap + init_row_h
-            if n_tracks <= 8 and compact_h <= avail_h:
-                is_two_col = False
-            else:
-                # Exceeds comfortable single-column capacity: auto-split to 2 columns
-                is_two_col = True
-
-    # Compute optimal font size and row spacing for the chosen column configuration
-    per_col = (n_tracks + 1) // 2 if is_two_col else n_tracks
-    eff_track_size = max(12, int(track_font_size * res_scale))
-    spacing = float(playlist_row_spacing or 1.85)
-    min_readable_sz = max(11, int(track_font_size * 0.70 * res_scale))
-
-    # Progressively compact spacing if needed
-    while spacing > 1.25:
-        rg = int(eff_track_size * spacing)
-        rh = int(eff_track_size * 1.45)
-        if (per_col - 1) * rg + rh <= avail_h:
-            break
-        spacing -= 0.05
-
-    # If still overflowing, scale down font size and spacing
-    while eff_track_size > min_readable_sz:
-        rg = int(eff_track_size * max(1.18, spacing))
-        rh = int(eff_track_size * 1.45)
-        if (per_col - 1) * rg + rh <= avail_h:
-            break
-        eff_track_size -= 1
-        spacing = max(1.18, spacing - 0.03)
-
-    row_font = _get_font(track_font_family, track_font_style, eff_track_size)
-    row_gap = int(eff_track_size * max(1.18, spacing))
-    row_height = int(eff_track_size * 1.45)
-
-    # Column positioning & content-aware auto-distance
-    eff_width_ratio = max(0.25, min(0.90, float(playlist_width_ratio or 0.47)))
+    eff_width_ratio = max(0.25, min(0.95, float(playlist_width_ratio or 0.47)))
     usable_width = int(width * eff_width_ratio)
-    if template == "Minimal":
+    if template == "Minimal" and (playlist_width_ratio is None or abs(float(playlist_width_ratio) - 0.47) < 0.01):
         usable_width = int(width * 0.39)
 
     norm_pos = playlist_position.strip().capitalize()
-
     if playlist_col_spacing is not None and playlist_col_spacing > 0:
         col_gap = max(10, int(playlist_col_spacing * res_scale))
     else:
         col_gap = max(24, int(width * 0.032))
 
-    indicator_padding = int(width * 0.014) + int(eff_track_size * 0.45)
+    if norm_pos == "Center":
+        max_total_w = min(int(width * 0.90), usable_width)
+    elif norm_pos == "Right":
+        right_edge = width - margin + int(playlist_x_offset * res_scale)
+        min_left = max(margin, right_edge - usable_width)
+        max_total_w = right_edge - min_left
+    else:  # Left
+        base_left = int(width * (0.50 if template == "Minimal" else 0.065)) + int(playlist_x_offset * res_scale)
+        max_total_w = min(usable_width, width - margin - base_left)
 
-    def _get_display_cand(idx: int, t_title: str) -> str:
-        raw = f"{idx + 1:02d}. {t_title}"
-        if track_max_chars > 0 and len(raw) > track_max_chars:
-            raw = raw[:track_max_chars].rstrip() + "…"
-        return raw
+    min_single_col_w = max(int(width * 0.12), int(base_eff_sz * 5))
+    min_3_col_w = 3 * min_single_col_w + 2 * col_gap
 
-    col_0_cands = [_get_display_cand(i, track_titles[i]) for i in range(min(per_col, n_tracks))]
-    col_0_text_w = max((row_font.getbbox(c)[2] - row_font.getbbox(c)[0] for c in col_0_cands), default=100)
-    col_0_needed_w = max(int(width * 0.12), col_0_text_w + indicator_padding * 2)
-
-    if is_two_col:
-        col_1_cands = [_get_display_cand(i, track_titles[i]) for i in range(per_col, n_tracks)]
-        col_1_text_w = max((row_font.getbbox(c)[2] - row_font.getbbox(c)[0] for c in col_1_cands), default=100)
-        col_1_needed_w = max(int(width * 0.12), col_1_text_w + indicator_padding * 2)
+    is_multi_col_template = norm_template in ("two-column", "two column", "2-column")
+    if playlist_columns >= 2:
+        desired_cols = playlist_columns
     else:
-        col_1_needed_w = 0
+        # Check if single column fits vertically without overflowing (only for non-two-column templates)
+        needed_h_1 = (n_tracks - 1) * int(base_eff_sz * 1.25) + init_row_h
+        if not is_multi_col_template and n_tracks <= 8 and needed_h_1 <= avail_h:
+            desired_cols = 1
+        else:
+            # Multi-column required: evaluate 2 vs 3 columns
+            per_col_2 = (n_tracks + 1) // 2
+            needed_h_2 = (per_col_2 - 1) * int(base_eff_sz * 1.25) + init_row_h
+            can_fit_3_horiz = (max_total_w >= min_3_col_w)
 
-    if not is_two_col:
-        if norm_pos == "Center":
-            col_x = (width - usable_width) // 2 + int(playlist_x_offset * res_scale)
-            max_allowed_w = int(width * 0.85)
-        elif norm_pos == "Right":
-            col_x = width - usable_width - margin + int(playlist_x_offset * res_scale)
-            max_allowed_w = width - margin
-        else:  # Left
-            base_left = int(width * (0.56 if template == "Minimal" else 0.065))
-            col_x = base_left + int(playlist_x_offset * res_scale)
-            max_allowed_w = width - margin - col_x
-        col_w = min(max(col_0_needed_w, usable_width), max_allowed_w)
-        col_0_actual_w = col_w
-        col_1_actual_w = col_w
-        col_0_x = col_x
-        col_1_x = col_x
+            if needed_h_2 > avail_h and can_fit_3_horiz:
+                desired_cols = 3
+            elif can_fit_3_horiz and (n_tracks >= 15 or (n_tracks >= 12 and (eff_width_ratio >= 0.60 or norm_pos == "Center" or is_multi_col_template))):
+                desired_cols = 3
+            else:
+                desired_cols = 2
+
+    num_cols = max(1, min(4, min(desired_cols, n_tracks)))
+    per_col = (n_tracks + num_cols - 1) // num_cols
+
+    # Compute optimal font size, vertical spacing, and horizontal title fitting
+    eff_track_size = max(12, int(track_font_size * res_scale))
+    spacing = float(playlist_row_spacing or 1.85)
+    min_readable_sz = max(11, int(track_font_size * 0.70 * res_scale))
+
+    # 1. Vertical space optimization
+    while spacing > 1.20:
+        rg = int(eff_track_size * spacing)
+        rh = int(eff_track_size * row_h_mult)
+        if (per_col - 1) * rg + rh <= avail_h:
+            break
+        spacing -= 0.05
+
+    while eff_track_size > min_readable_sz:
+        rg = int(eff_track_size * max(1.18, spacing))
+        rh = int(eff_track_size * row_h_mult)
+        if (per_col - 1) * rg + rh <= avail_h:
+            break
+        eff_track_size -= 1
+        spacing = max(1.18, spacing - 0.03)
+
+    # 2. Horizontal title measurement & preservation
+    def _measure_cols(fnt, sz):
+        ipad = int(width * 0.014) + int(sz * 0.45)
+        needed = []
+        for c in range(num_cols):
+            s_idx = c * per_col
+            e_idx = min((c + 1) * per_col, n_tracks)
+            cands = []
+            for idx in range(s_idx, e_idx):
+                raw = f"{idx + 1:02d}. {track_titles[idx]}"
+                if track_max_chars > 0 and len(raw) > track_max_chars:
+                    raw = raw[:track_max_chars].rstrip() + "…"
+                cands.append(raw)
+            if cands:
+                max_w = max((fnt.getbbox(cand)[2] - fnt.getbbox(cand)[0] for cand in cands), default=100)
+            else:
+                max_w = 100
+            min_w = max(int(width * 0.12), int(sz * 5))
+            needed.append(max(min_w, max_w + ipad * 2))
+        return needed, ipad
+
+    cur_font = _get_font(track_font_family, track_font_style, eff_track_size)
+    col_needed_w, ind_pad = _measure_cols(cur_font, eff_track_size)
+    total_needed_w = sum(col_needed_w) + (num_cols - 1) * col_gap
+
+    # If titles slightly exceed available width, gently scale down font size so complete titles fit:
+    while total_needed_w > max_total_w and eff_track_size > min_readable_sz:
+        eff_track_size -= 1
+        cur_font = _get_font(track_font_family, track_font_style, eff_track_size)
+        col_needed_w, ind_pad = _measure_cols(cur_font, eff_track_size)
+        total_needed_w = sum(col_needed_w) + (num_cols - 1) * col_gap
+
+    row_font = cur_font
+    row_gap = int(eff_track_size * max(1.18, spacing))
+    row_height = int(eff_track_size * row_h_mult)
+
+    # 3. Determine actual column widths
+    if total_needed_w <= max_total_w:
+        col_actual_w = list(col_needed_w)
     else:
-        if norm_pos == "Left":
-            base_left = int(width * (0.50 if template == "Minimal" else 0.065)) + int(playlist_x_offset * res_scale)
-            max_total_w = min(usable_width, width - margin - base_left)
-            total_needed_w = col_0_needed_w + col_gap + col_1_needed_w
-            if total_needed_w <= max_total_w:
-                col_0_actual_w = col_0_needed_w
-                col_1_actual_w = col_1_needed_w
-            else:
-                avail_content_w = max_total_w - col_gap
-                half_w = avail_content_w // 2
-                if col_0_needed_w > half_w and col_1_needed_w > half_w:
-                    col_0_actual_w = half_w
-                    col_1_actual_w = avail_content_w - half_w
-                elif col_0_needed_w > half_w:
-                    col_0_actual_w = half_w
-                    col_1_actual_w = min(col_1_needed_w, avail_content_w - half_w)
-                else:
-                    col_1_actual_w = half_w
-                    col_0_actual_w = min(col_0_needed_w, avail_content_w - half_w)
-            col_0_x = base_left
-            col_1_x = col_0_x + col_0_actual_w + col_gap
-        elif norm_pos == "Right":
-            right_edge = width - margin + int(playlist_x_offset * res_scale)
-            min_left = max(margin, right_edge - usable_width)
-            max_total_w = right_edge - min_left
-            total_needed_w = col_0_needed_w + col_gap + col_1_needed_w
-            if total_needed_w <= max_total_w:
-                col_0_actual_w = col_0_needed_w
-                col_1_actual_w = col_1_needed_w
-            else:
-                avail_content_w = max_total_w - col_gap
-                half_w = avail_content_w // 2
-                if col_0_needed_w > half_w and col_1_needed_w > half_w:
-                    col_0_actual_w = half_w
-                    col_1_actual_w = avail_content_w - half_w
-                elif col_1_needed_w > half_w:
-                    col_1_actual_w = half_w
-                    col_0_actual_w = min(col_0_needed_w, avail_content_w - half_w)
-                else:
-                    col_0_actual_w = half_w
-                    col_1_actual_w = min(col_1_needed_w, avail_content_w - half_w)
-            col_1_x = right_edge - col_1_actual_w
-            col_0_x = col_1_x - col_gap - col_0_actual_w
-        else:  # Center
-            max_total_w = min(int(width * 0.88), usable_width)
-            total_needed_w = col_0_needed_w + col_gap + col_1_needed_w
-            if total_needed_w <= max_total_w:
-                col_0_actual_w = col_0_needed_w
-                col_1_actual_w = col_1_needed_w
-            else:
-                avail_content_w = max_total_w - col_gap
-                half_w = avail_content_w // 2
-                if col_0_needed_w > half_w and col_1_needed_w > half_w:
-                    col_0_actual_w = half_w
-                    col_1_actual_w = avail_content_w - half_w
-                elif col_0_needed_w > half_w:
-                    col_0_actual_w = half_w
-                    col_1_actual_w = min(col_1_needed_w, avail_content_w - half_w)
-                else:
-                    col_1_actual_w = half_w
-                    col_0_actual_w = min(col_0_needed_w, avail_content_w - half_w)
-            total_w = col_0_actual_w + col_gap + col_1_actual_w
-            start_x = (width - total_w) // 2 + int(playlist_x_offset * res_scale)
-            col_0_x = start_x
-            col_1_x = start_x + col_0_actual_w + col_gap
+        # Extraordinarily long titles exceed boundary: clamp per-column to fair share so no columns are pushed off-grid
+        avail_content_w = max_total_w - (num_cols - 1) * col_gap
+        fair_share = avail_content_w // num_cols
+        col_actual_w = [min(w, fair_share) for w in col_needed_w]
 
+    # 4. Calculate Column X Positions for all columns
+    col_x = [0] * num_cols
+    if norm_pos == "Center":
+        total_w = sum(col_actual_w) + (num_cols - 1) * col_gap
+        start_x = (width - total_w) // 2 + int(playlist_x_offset * res_scale)
+        col_x[0] = start_x
+        for c in range(1, num_cols):
+            col_x[c] = col_x[c - 1] + col_actual_w[c - 1] + col_gap
+    elif norm_pos == "Right":
+        col_x[num_cols - 1] = right_edge - col_actual_w[num_cols - 1]
+        for c in range(num_cols - 2, -1, -1):
+            col_x[c] = col_x[c + 1] - col_gap - col_actual_w[c]
+    else:  # Left
+        col_x[0] = base_left
+        for c in range(1, num_cols):
+            col_x[c] = col_x[c - 1] + col_actual_w[c - 1] + col_gap
+
+    # 5. Build Track Items with Multi-line Wrapping & Word-boundary Ellipsis
     track_items = []
     positions: List[Tuple[int, int, int, int]] = []
 
     for i, title in enumerate(track_titles):
-        if is_two_col:
-            col, row = divmod(i, per_col)
-            x = col_0_x if col == 0 else col_1_x
-            curr_w = col_0_actual_w if col == 0 else col_1_actual_w
-        else:
-            col, row = 0, i
-            x = col_0_x
-            curr_w = col_0_actual_w
-
+        col = i // per_col
+        row = i % per_col
+        x = col_x[col]
+        curr_w = col_actual_w[col]
         y = playlist_y + row * row_gap
         box = (x, y - int(eff_track_size * 0.15), x + curr_w, y + row_height)
         positions.append(box)
@@ -571,28 +543,51 @@ def calculate_playlist_layout(
         if track_max_chars > 0 and len(raw_text) > track_max_chars:
             raw_text = raw_text[:track_max_chars].rstrip() + "…"
 
-        display_text = raw_text
-        if not track_wrap_text:
-            max_text_w = curr_w - indicator_padding
-            bb = row_font.getbbox(display_text)
-            if (bb[2] - bb[0]) > max_text_w:
-                title_words = title.split()
-                candidate = raw_text
-                while len(title_words) > 1:
-                    title_words.pop()
-                    candidate = prefix + " ".join(title_words) + "…"
-                    bb = row_font.getbbox(candidate)
-                    if (bb[2] - bb[0]) <= max_text_w:
-                        break
-                if (bb[2] - bb[0]) > max_text_w:
-                    cand_title = title
-                    while len(cand_title) > 2:
-                        cand_title = cand_title[:-1].rstrip()
-                        candidate = prefix + cand_title + "…"
-                        bb = row_font.getbbox(candidate)
-                        if (bb[2] - bb[0]) <= max_text_w:
+        max_text_w = curr_w - ind_pad
+        bb = row_font.getbbox(raw_text)
+        text_w = bb[2] - bb[0]
+
+        if text_w <= max_text_w:
+            display_text = raw_text
+        elif track_wrap_text:
+            words = title.split()
+            line1_words = []
+            line2_words = []
+            for w_word in words:
+                test_l = prefix + " ".join(line1_words + [w_word])
+                if (row_font.getbbox(test_l)[2] - row_font.getbbox(test_l)[0]) <= max_text_w or not line1_words:
+                    line1_words.append(w_word)
+                else:
+                    line2_words.append(w_word)
+            line1 = prefix + " ".join(line1_words)
+            indent = "    "
+            if line2_words:
+                line2 = indent + " ".join(line2_words)
+                if (row_font.getbbox(line2)[2] - row_font.getbbox(line2)[0]) > max_text_w:
+                    while len(line2_words) > 1:
+                        line2_words.pop()
+                        line2 = indent + " ".join(line2_words) + "…"
+                        if (row_font.getbbox(line2)[2] - row_font.getbbox(line2)[0]) <= max_text_w:
                             break
-                display_text = candidate
+                display_text = f"{line1}\n{line2}"
+            else:
+                display_text = line1
+        else:
+            words = title.split()
+            candidate = raw_text
+            while len(words) > 1:
+                words.pop()
+                candidate = prefix + " ".join(words) + "…"
+                if (row_font.getbbox(candidate)[2] - row_font.getbbox(candidate)[0]) <= max_text_w:
+                    break
+            if (row_font.getbbox(candidate)[2] - row_font.getbbox(candidate)[0]) > max_text_w:
+                cand_title = title
+                while len(cand_title) > 2:
+                    cand_title = cand_title[:-1].rstrip()
+                    candidate = prefix + cand_title + "…"
+                    if (row_font.getbbox(candidate)[2] - row_font.getbbox(candidate)[0]) <= max_text_w:
+                        break
+            display_text = candidate
 
         track_items.append({
             "index": i,
@@ -609,15 +604,17 @@ def calculate_playlist_layout(
     return {
         "track_items": track_items,
         "positions": positions,
-        "is_two_col": is_two_col,
+        "is_two_col": num_cols >= 2,
+        "num_cols": num_cols,
         "row_font": row_font,
         "eff_track_size": eff_track_size,
         "row_gap": row_gap,
         "row_height": row_height,
         "overflow": overflow,
         "max_displayable": max_disp,
-        "col_0_width": col_0_actual_w,
-        "col_1_width": col_1_actual_w,
+        "col_widths": col_actual_w,
+        "col_0_width": col_actual_w[0] if col_actual_w else 0,
+        "col_1_width": col_actual_w[1] if len(col_actual_w) > 1 else 0,
         "col_gap": col_gap,
     }
 
