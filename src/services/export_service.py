@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 from .media_probe import find_tool
+from .process_manager import run_tracked_subprocess
 from .workspace_service import get_logs_dir
 
 
@@ -71,7 +72,7 @@ def validate_rendered_output(staging_path: Path) -> Tuple[bool, str]:
                 "-of", "json",
                 str(staging_path),
             ]
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=10.0)
+            res = run_tracked_subprocess(cmd, capture_output=True, text=True, timeout=10.0)
             if res.returncode == 0:
                 data = json.loads(res.stdout)
                 streams = data.get("streams", [])
