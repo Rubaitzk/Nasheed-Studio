@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 from PIL import Image
 
+from .process_manager import run_tracked_subprocess
+
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
@@ -73,7 +75,7 @@ def get_duration(path: str) -> float:
         "-of", "json",
         str(path),
     ]
-    result = subprocess.run(command, capture_output=True, text=True, check=True, timeout=60)
+    result = run_tracked_subprocess(command, capture_output=True, text=True, check=True, timeout=60)
     data = json.loads(result.stdout)
 
     # Try format duration
@@ -161,7 +163,7 @@ def get_video_info(path: str | Path) -> dict:
         "-of", "json",
         str(p),
     ]
-    result = subprocess.run(command, capture_output=True, text=True, check=True, timeout=60)
+    result = run_tracked_subprocess(command, capture_output=True, text=True, check=True, timeout=60)
     data = json.loads(result.stdout)
 
     info = {
@@ -236,7 +238,7 @@ def extract_video_frame(video_path: str | Path, timestamp: float = 0.0) -> Image
         "-f", "image2",
         "pipe:1",
     ]
-    result = subprocess.run(command, capture_output=True, check=True, timeout=60)
+    result = run_tracked_subprocess(command, capture_output=True, text=False, check=True, timeout=60)
     if not result.stdout:
         raise ValueError(f"Failed to extract frame from {video_path} at {ts:.3f}s")
     return Image.open(io.BytesIO(result.stdout)).convert("RGB")
