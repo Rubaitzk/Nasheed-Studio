@@ -8,6 +8,7 @@ from pathlib import Path
 from .media_probe import find_tool, is_video_file, get_video_info
 from .timeline import build_timeline
 from .compositor import create_composition, create_intro_card, INDICATOR_MODES
+from .process_manager import run_tracked_subprocess
 
 RESOLUTIONS = {
     "1080p · Full HD": (1920, 1080),
@@ -533,7 +534,7 @@ def render_project(project: dict, progress_callback=None) -> str:
         command, out_path = build_render_command(project, work_dir, progress_callback)
         if progress_callback:
             progress_callback("Rendering video with FFmpeg…")
-        result = subprocess.run(command, capture_output=True, text=True)
+        result = run_tracked_subprocess(command, capture_output=True, text=True)
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or "FFmpeg failed to render the video.")
         if progress_callback:
