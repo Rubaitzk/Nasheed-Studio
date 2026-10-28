@@ -672,8 +672,12 @@ class MainWindow(QMainWindow):
         qual_lbl.setObjectName("muted")
         qual_col.addWidget(qual_lbl)
         self.export_quality_combo = QComboBox()
-        self.export_quality_combo.addItems(["High Quality (Standard)", "Maximum Quality (Archival)", "Compact (Web/Share)"])
-        self.export_quality_combo.setToolTip("Export video quality & bitrate tuning (CRF + VBR constraint)")
+        self.export_quality_combo.addItems([
+            "Ultra Detail · Master Quality (Recommended)",
+            "High Quality · Balanced",
+            "Compact · Web Sharing",
+        ])
+        self.export_quality_combo.setToolTip("Export video quality & bitrate tuning (Ultra Detail gives unconstrained visual fidelity)")
         qual_col.addWidget(self.export_quality_combo)
         eb_layout.addLayout(qual_col)
 
@@ -1700,7 +1704,7 @@ class MainWindow(QMainWindow):
             "intro_duration": self.intro_dur_spin.value() if hasattr(self, "intro_dur_spin") else 3.0,
             "intro_animation": self.intro_anim_combo.currentText() if hasattr(self, "intro_anim_combo") else "Fade in / out",
             "resource_profile": self.resource_profile_combo.currentText() if hasattr(self, "resource_profile_combo") else "Balanced",
-            "export_quality": self.export_quality_combo.currentText() if hasattr(self, "export_quality_combo") else "High Quality (Standard)",
+            "export_quality": self.export_quality_combo.currentText() if hasattr(self, "export_quality_combo") else "Ultra Detail · Master Quality (Recommended)",
             "playlist_position": self.playlist_pos_combo.currentText() if hasattr(self, "playlist_pos_combo") else "Left",
             "playlist_columns": self.playlist_cols_spin.value() if hasattr(self, "playlist_cols_spin") else 1,
             "playlist_row_spacing": round(self.track_spacing_spin.value(), 2) if hasattr(self, "track_spacing_spin") else 1.85,

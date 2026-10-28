@@ -84,22 +84,21 @@ class TestExportQualitySettings(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def test_default_high_quality_settings(self):
-        """Default export_quality should be High Quality with CRF 22 and 6M cap for 1080p."""
+    def test_default_ultra_quality_settings(self):
+        """Default export_quality should be Ultra Detail with unconstrained CRF 18, 320k audio, and no maxrate."""
         proj = dict(self.base_project)
-        cmd, _ = build_render_command(proj, self.tmp / "work_hq")
+        cmd, _ = build_render_command(proj, self.tmp / "work_ultra")
         cmd_str = " ".join(cmd)
 
-        self.assertIn("-crf 22", cmd_str)
-        self.assertIn("-maxrate 6M", cmd_str)
-        self.assertIn("-bufsize 12M", cmd_str)
-        self.assertIn("-b:a 192k", cmd_str)
+        self.assertIn("-crf 18", cmd_str)
+        self.assertNotIn("-maxrate", cmd_str)
+        self.assertIn("-b:a 320k", cmd_str)
 
-    def test_maximum_quality_archival_settings(self):
-        """Maximum Quality should use unconstrained CRF 20 and 256k audio for 1080p."""
+    def test_balanced_quality_settings(self):
+        """Balanced Quality should use unconstrained CRF 20 and 256k audio for 1080p."""
         proj = dict(self.base_project)
-        proj["export_quality"] = "Maximum Quality (Archival)"
-        cmd, _ = build_render_command(proj, self.tmp / "work_max")
+        proj["export_quality"] = "High Quality · Balanced"
+        cmd, _ = build_render_command(proj, self.tmp / "work_bal")
         cmd_str = " ".join(cmd)
 
         self.assertIn("-crf 20", cmd_str)
@@ -107,16 +106,16 @@ class TestExportQualitySettings(unittest.TestCase):
         self.assertIn("-b:a 256k", cmd_str)
 
     def test_compact_web_settings(self):
-        """Compact Quality should use CRF 24 and 4M cap for 1080p."""
+        """Compact Quality should use CRF 24 and 6M cap for 1080p."""
         proj = dict(self.base_project)
-        proj["export_quality"] = "Compact (Web/Share)"
+        proj["export_quality"] = "Compact · Web Sharing"
         cmd, _ = build_render_command(proj, self.tmp / "work_compact")
         cmd_str = " ".join(cmd)
 
         self.assertIn("-crf 24", cmd_str)
-        self.assertIn("-maxrate 4M", cmd_str)
-        self.assertIn("-bufsize 8M", cmd_str)
-        self.assertIn("-b:a 160k", cmd_str)
+        self.assertIn("-maxrate 6M", cmd_str)
+        self.assertIn("-bufsize 12M", cmd_str)
+        self.assertIn("-b:a 192k", cmd_str)
 
     def test_target_bitrate_override(self):
         """Explicit target_bitrate should override CRF and apply custom bitrate."""

@@ -501,7 +501,7 @@ def build_render_command(
         profile_preset = "veryfast"
 
     # Export Quality & Bitrate Mode Configuration
-    export_quality = str(project.get("export_quality") or "High Quality (Standard)").strip()
+    export_quality = str(project.get("export_quality") or "Ultra Detail · Master Quality (Recommended)").strip()
     res_str = str(project.get("resolution", "")).lower()
     is_4k = "4k" in res_str or "2160" in res_str or "uhd" in res_str
     is_1440p = "1440" in res_str or "qhd" in res_str or "2k" in res_str
@@ -510,51 +510,46 @@ def build_render_command(
     maxrate_val = None
     bufsize_val = None
 
-    if "maximum" in export_quality.lower() or "archival" in export_quality.lower():
-        # Pure unconstrained CRF for maximum archival fidelity
-        if is_4k:
-            crf_val = "18"
-            audio_bitrate = "320k"
-        elif is_1440p:
-            crf_val = "19"
-            audio_bitrate = "256k"
-        else:
-            crf_val = "20"
-            audio_bitrate = "256k"
-    elif "compact" in export_quality.lower() or "web" in export_quality.lower() or "fast" in export_quality.lower():
-        # Compact mode for small file size and rapid sharing
+    eq_lower = export_quality.lower()
+    if "compact" in eq_lower or "web" in eq_lower or "small" in eq_lower or "sharing" in eq_lower:
+        # Compact mode for smaller file size when explicitly requested
         if is_4k:
             crf_val = "22"
-            maxrate_val = "12M"
-            bufsize_val = "24M"
+            maxrate_val = "14M"
+            bufsize_val = "28M"
             audio_bitrate = "256k"
         elif is_1440p:
             crf_val = "23"
-            maxrate_val = "7M"
-            bufsize_val = "14M"
+            maxrate_val = "9M"
+            bufsize_val = "18M"
             audio_bitrate = "192k"
         else:
             crf_val = "24"
-            maxrate_val = "4M"
-            bufsize_val = "8M"
-            audio_bitrate = "160k"
-    else:
-        # Default: High Quality (Standard) - Visually indistinguishable with sensible file size
-        if is_4k:
-            crf_val = "20"
-            maxrate_val = "18M"
-            bufsize_val = "36M"
-            audio_bitrate = "320k"
-        elif is_1440p:
-            crf_val = "21"
-            maxrate_val = "10M"
-            bufsize_val = "20M"
-            audio_bitrate = "256k"
-        else:
-            crf_val = "22"
             maxrate_val = "6M"
             bufsize_val = "12M"
             audio_bitrate = "192k"
+    elif "balanced" in eq_lower:
+        # Balanced quality (CRF 20 unconstrained)
+        if is_4k:
+            crf_val = "19"
+            audio_bitrate = "320k"
+        elif is_1440p:
+            crf_val = "20"
+            audio_bitrate = "256k"
+        else:
+            crf_val = "20"
+            audio_bitrate = "256k"
+    else:
+        # DEFAULT: Ultra Detail · Master Quality - pristine, unconstrained 100% fidelity (CRF 18, 320k AAC)
+        if is_4k:
+            crf_val = "16"
+            audio_bitrate = "320k"
+        elif is_1440p:
+            crf_val = "17"
+            audio_bitrate = "320k"
+        else:
+            crf_val = "18"
+            audio_bitrate = "320k"
 
     if target_bitrate:
         tb_str = str(target_bitrate).strip()
