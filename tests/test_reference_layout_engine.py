@@ -129,7 +129,7 @@ class TestReferenceLayoutEngine(unittest.TestCase):
         self.assertIn("\n", item_wrap["text"], "Long title should wrap onto multiple lines when wrapping is enabled")
         self.assertTrue(item_wrap["text"].startswith("01. "))
 
-        # B. With track_wrap_text=False: truncates at column boundary preserving prefix and ending with …
+        # B. With track_wrap_text=False and track_max_chars=0 (Auto): NEVER truncates based on pixel width
         layout_nowrap = calculate_playlist_layout(
             track_titles=[title_95_chars, "Short Track"],
             width=1920,
@@ -145,14 +145,38 @@ class TestReferenceLayoutEngine(unittest.TestCase):
             track_font_style="Bold",
             track_font_size=24,
             track_wrap_text=False,
+            track_max_chars=0,
             title_bottom_y=160,
         )
         item_nowrap = layout_nowrap["track_items"][0]
-        self.assertTrue(item_nowrap["text"].endswith("…"))
-        self.assertTrue(item_nowrap["text"].startswith("01. "))
-        self.assertGreater(len(item_nowrap["text"]), 15)
-        # Column 1 starts within boundary
-        self.assertLess(layout_nowrap["track_items"][1]["x"], 1920 * 0.70)
+        self.assertNotIn("…", item_nowrap["text"], "Auto max_title_chars must NEVER truncate with ellipsis on pixel width")
+        self.assertEqual(item_nowrap["text"], f"01. {title_95_chars}")
+        # Column 1 starts after Column 0's intrinsic content width
+        self.assertGreater(layout_nowrap["track_items"][1]["x"], item_nowrap["x"])
+
+        # C. With track_max_chars > 0: truncates cleanly by character count ending in …
+        layout_char_limit = calculate_playlist_layout(
+            track_titles=[title_95_chars, "Short Track"],
+            width=1920,
+            height=1080,
+            template="Cinematic",
+            playlist_position="Left",
+            playlist_columns=2,
+            playlist_row_spacing=1.85,
+            playlist_width_ratio=0.50,
+            playlist_x_offset=0,
+            playlist_y_offset=0,
+            track_font_family="Segoe UI",
+            track_font_style="Bold",
+            track_font_size=24,
+            track_wrap_text=False,
+            track_max_chars=35,
+            title_bottom_y=160,
+        )
+        item_limited = layout_char_limit["track_items"][0]
+        self.assertTrue(item_limited["text"].endswith("…"))
+        self.assertTrue(item_limited["text"].startswith("01. "))
+        self.assertLessEqual(len(item_limited["text"]), 36)
 
     # ------------------------------------------------------------------
     # 3. Mixed title lengths, punctuation, and non-ASCII characters

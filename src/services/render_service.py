@@ -500,21 +500,85 @@ def build_render_command(
         profile_threads = max(2, cpu_cores // 2)
         profile_preset = "veryfast"
 
-    # Resolution-tuned CRF
+    # Export Quality & Bitrate Mode Configuration
+    export_quality = str(project.get("export_quality") or "High Quality (Standard)").strip()
     res_str = str(project.get("resolution", "")).lower()
-    if "4k" in res_str:
-        crf_val = "18"
-    elif "1440" in res_str:
-        crf_val = "19"
+    is_4k = "4k" in res_str or "2160" in res_str or "uhd" in res_str
+    is_1440p = "1440" in res_str or "qhd" in res_str or "2k" in res_str
+
+    target_bitrate = project.get("target_bitrate")
+    maxrate_val = None
+    bufsize_val = None
+
+    if "maximum" in export_quality.lower() or "archival" in export_quality.lower():
+        # Pure unconstrained CRF for maximum archival fidelity
+        if is_4k:
+            crf_val = "18"
+            audio_bitrate = "320k"
+        elif is_1440p:
+            crf_val = "19"
+            audio_bitrate = "256k"
+        else:
+            crf_val = "20"
+            audio_bitrate = "256k"
+    elif "compact" in export_quality.lower() or "web" in export_quality.lower() or "fast" in export_quality.lower():
+        # Compact mode for small file size and rapid sharing
+        if is_4k:
+            crf_val = "22"
+            maxrate_val = "12M"
+            bufsize_val = "24M"
+            audio_bitrate = "256k"
+        elif is_1440p:
+            crf_val = "23"
+            maxrate_val = "7M"
+            bufsize_val = "14M"
+            audio_bitrate = "192k"
+        else:
+            crf_val = "24"
+            maxrate_val = "4M"
+            bufsize_val = "8M"
+            audio_bitrate = "160k"
     else:
-        crf_val = "20"
+        # Default: High Quality (Standard) - Visually indistinguishable with sensible file size
+        if is_4k:
+            crf_val = "20"
+            maxrate_val = "18M"
+            bufsize_val = "36M"
+            audio_bitrate = "320k"
+        elif is_1440p:
+            crf_val = "21"
+            maxrate_val = "10M"
+            bufsize_val = "20M"
+            audio_bitrate = "256k"
+        else:
+            crf_val = "22"
+            maxrate_val = "6M"
+            bufsize_val = "12M"
+            audio_bitrate = "192k"
+
+    if target_bitrate:
+        tb_str = str(target_bitrate).strip()
+        command_video_rate = ["-b:v", tb_str]
+        maxrate_val = tb_str
+        try:
+            val = float(tb_str.rstrip("MmKkk"))
+            unit = tb_str[-1]
+            bufsize_val = f"{int(val * 2)}{unit}"
+        except Exception:
+            bufsize_val = tb_str
+    else:
+        command_video_rate = ["-crf", crf_val]
+
+    if maxrate_val and bufsize_val:
+        command_video_rate += ["-maxrate", maxrate_val, "-bufsize", bufsize_val]
 
     command += [
         "-filter_complex", ";".join(filters),
         "-map", video_out, "-map", final_audio,
-        "-c:v", "libx264", "-preset", profile_preset, "-threads", str(profile_threads), "-crf", crf_val,
+        "-c:v", "libx264", "-preset", profile_preset, "-threads", str(profile_threads),
+        *command_video_rate,
         "-pix_fmt", "yuv420p", "-r", "30",
-        "-c:a", "aac", "-b:a", "192k",
+        "-c:a", "aac", "-b:a", audio_bitrate,
         "-movflags", "+faststart", "-shortest",
         str(effective_out),
     ]

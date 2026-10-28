@@ -23,6 +23,8 @@ TEMPLATE_DESIGN_KEYS = [
     "template",
     "resolution",
     "resource_profile",
+    "export_quality",
+    "target_bitrate",
 
     # Playlist layout, positioning, dimensions & density
     "playlist_position",

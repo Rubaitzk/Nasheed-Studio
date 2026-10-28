@@ -469,7 +469,7 @@ class TestLayoutAndTransparency(unittest.TestCase):
                 self.assertEqual(im.size, (w, h))
 
     def test_long_track_title_wrapping_and_truncation(self):
-        """Long track titles truncate at word boundaries with ellipsis and never exceed column width."""
+        """Long track titles truncate at character boundary with ellipsis only when track_max_chars > 0."""
         super_long = "This Is An Extremely Long Nasheed Title That Exceeds The Maximum Usable Single Column Width And Must Truncate Safely"
         layout = calculate_playlist_layout(
             track_titles=[super_long],
@@ -486,6 +486,7 @@ class TestLayoutAndTransparency(unittest.TestCase):
             track_font_style="Bold",
             track_font_size=28,
             track_wrap_text=False,
+            track_max_chars=45,
             title_bottom_y=160,
         )
         item = layout["track_items"][0]
@@ -655,7 +656,7 @@ class TestLayoutAndTransparency(unittest.TestCase):
         self.assertTrue(item["text"].endswith("…"))
 
     def test_extraordinarily_long_title_boundary_safety(self):
-        """Extremely long title truncates with ellipsis at layout boundaries without pushing columns off-grid."""
+        """Extremely long title with char limit truncates with ellipsis at layout boundaries without pushing columns off-grid."""
         monster_title = "Extremely Super Mega Exceedingly Long Nasheed Track Name That Spans Past Normal Screen Limits And Keeps Going And Going"
         tracks = [monster_title] + [f"Short {i}" for i in range(9)]
         layout = calculate_playlist_layout(
@@ -673,6 +674,7 @@ class TestLayoutAndTransparency(unittest.TestCase):
             track_font_style="Bold",
             track_font_size=24,
             track_wrap_text=False,
+            track_max_chars=40,
         )
         items = layout["track_items"]
         # Column 1 starts within screen

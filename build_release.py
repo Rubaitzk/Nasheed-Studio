@@ -301,10 +301,14 @@ def assemble_release(bundle: Path) -> Path:
 
     # 5b. Source code (exclude .venv, build, dist, __pycache__, release_build)
     step("Copying source code…")
-    EXCLUDE_DIRS = {".venv", "build", "dist", "__pycache__", "release_build",
+    EXCLUDE_DIRS = {".venv", "build", "dist", "__pycache__", "release_build", "final_deliverable",
                    ".pytest_cache", ".git", "scratch", "mp4_proof",
                    "video_proof_of_template_not_working",
+                   "video_proof_of_template_not_loading",
                    "picture_for_improving_layout",
+                   "picture_of_video_playlist_display",
+                   "pictur e_of_video_playlist_display",
+                   "last_improvements",
                    "picture_of_video_playlist_design_reference"}
     for item in ROOT.iterdir():
         if item.name in EXCLUDE_DIRS:

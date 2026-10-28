@@ -29,7 +29,6 @@ else:
 
 _LOCK = threading.Lock()
 _ACTIVE_PROCESSES: Set[subprocess.Popen] = set()
-_CLEANED_UP = False
 
 
 def register_process(proc: subprocess.Popen) -> None:
@@ -37,7 +36,7 @@ def register_process(proc: subprocess.Popen) -> None:
     if proc is None:
         return
     with _LOCK:
-        if not _CLEANED_UP:
+        if proc.poll() is None:
             _ACTIVE_PROCESSES.add(proc)
 
 

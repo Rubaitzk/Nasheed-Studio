@@ -544,7 +544,7 @@ class TestAcceptanceFixes(unittest.TestCase):
                     self.assertGreater(extrema[3][1], 0, f"Overlay for {style} must not be empty")
 
     def test_long_title_truncation_without_overlap(self):
-        """Long titles are truncated cleanly with an ellipsis and do not exceed the column boundaries."""
+        """Long titles are truncated cleanly with an ellipsis when track_max_chars > 0 and do not exceed boundaries."""
         with tempfile.TemporaryDirectory() as tmp:
             long_title = "A Very Long Nasheed Title That Vastly Exceeds The Available Column Width Boundary And Requires Clean Truncation"
             _, ov = create_composition(
@@ -553,11 +553,11 @@ class TestAcceptanceFixes(unittest.TestCase):
                 track_titles=[long_title, "Short Track"],
                 template="Cinematic", out_dir=tmp, indicator_mode="highlight",
                 playlist_columns=2, playlist_position="Left", playlist_width_ratio=0.5,
-                track_wrap_text=False, active_track_index=0,
+                track_wrap_text=False, track_max_chars=35, active_track_index=0,
             )
             with Image.open(ov[0]) as img:
                 data = img.convert("RGBA").load()
-                # Ensure no pixels bleed into right column territory (x > 1000)
+                # Ensure truncated text with max_chars does not bleed across x > 1000
                 bleed_pixels = sum(1 for y in range(1080) for x in range(1000, 1920) if data[x, y][3] > 0)
                 self.assertEqual(bleed_pixels, 0, "Truncated text must not bleed across column boundary")
 

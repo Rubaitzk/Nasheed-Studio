@@ -665,6 +665,18 @@ class MainWindow(QMainWindow):
         prof_col.addWidget(self.resource_profile_combo)
         eb_layout.addLayout(prof_col)
 
+        # Quality Preset combo
+        qual_col = QHBoxLayout()
+        qual_col.setSpacing(6)
+        qual_lbl = QLabel("Quality:")
+        qual_lbl.setObjectName("muted")
+        qual_col.addWidget(qual_lbl)
+        self.export_quality_combo = QComboBox()
+        self.export_quality_combo.addItems(["High Quality (Standard)", "Maximum Quality (Archival)", "Compact (Web/Share)"])
+        self.export_quality_combo.setToolTip("Export video quality & bitrate tuning (CRF + VBR constraint)")
+        qual_col.addWidget(self.export_quality_combo)
+        eb_layout.addLayout(qual_col)
+
         # Progress bar (visible during active job)
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
@@ -1688,6 +1700,7 @@ class MainWindow(QMainWindow):
             "intro_duration": self.intro_dur_spin.value() if hasattr(self, "intro_dur_spin") else 3.0,
             "intro_animation": self.intro_anim_combo.currentText() if hasattr(self, "intro_anim_combo") else "Fade in / out",
             "resource_profile": self.resource_profile_combo.currentText() if hasattr(self, "resource_profile_combo") else "Balanced",
+            "export_quality": self.export_quality_combo.currentText() if hasattr(self, "export_quality_combo") else "High Quality (Standard)",
             "playlist_position": self.playlist_pos_combo.currentText() if hasattr(self, "playlist_pos_combo") else "Left",
             "playlist_columns": self.playlist_cols_spin.value() if hasattr(self, "playlist_cols_spin") else 1,
             "playlist_row_spacing": round(self.track_spacing_spin.value(), 2) if hasattr(self, "track_spacing_spin") else 1.85,
@@ -2637,6 +2650,17 @@ class MainWindow(QMainWindow):
             self.play_preview_btn.setText("Pause Video Preview")
             self.play_preview_btn.setIcon(get_svg_icon("pause", 13, "#edf2ee"))
 
+    def _release_video_player(self) -> None:
+        """Fully stop and release QMediaPlayer decoder resources."""
+        if self._video_player:
+            try:
+                self._video_player.stop()
+                self._video_player.setSource(QUrl())
+            except Exception:
+                pass
+            self._video_player = None
+        self._is_preview_playing = False
+
     def _stop_video_preview(self) -> None:
         """Stop/pause live moving video preview and restore static representative frame."""
         if self._video_player:
@@ -2897,6 +2921,11 @@ class MainWindow(QMainWindow):
             if self._job and self._job.is_running:
                 self._job.cancel()
                 self._job.join(timeout=5.0)
+
+            # 3b. Stop and release media player decoder and clean up child processes
+            self._release_video_player()
+            from src.services.process_manager import cleanup_all_processes
+            cleanup_all_processes(timeout_per_process=1.5)
 
             # 4. Stop timers
             if hasattr(self, "_title_timer") and self._title_timer.isActive():
@@ -3491,6 +3520,8 @@ class MainWindow(QMainWindow):
             self.logo_cleanup_check.setChecked(tmpl["logo_cleanup_mode"] != "none")
         if "resource_profile" in tmpl and hasattr(self, "resource_profile_combo"):
             _set_combo_case_insensitive(self.resource_profile_combo, tmpl["resource_profile"])
+        if "export_quality" in tmpl and hasattr(self, "export_quality_combo"):
+            _set_combo_case_insensitive(self.export_quality_combo, tmpl["export_quality"])
         if "video_fit_mode" in tmpl and hasattr(self, "video_fit_combo"):
             _set_combo_case_insensitive(self.video_fit_combo, tmpl["video_fit_mode"])
         if "video_start_time" in tmpl and hasattr(self, "video_start_spin"):
@@ -3661,6 +3692,8 @@ class MainWindow(QMainWindow):
                     self.sfx_vol_slider.setValue(sfx_vol)
                 if hasattr(self, "resource_profile_combo") and "resource_profile" in data:
                     _set_combo_case_insensitive(self.resource_profile_combo, data["resource_profile"])
+                if hasattr(self, "export_quality_combo") and "export_quality" in data:
+                    _set_combo_case_insensitive(self.export_quality_combo, data["export_quality"])
                 if hasattr(self, "playlist_pos_combo") and "playlist_position" in data:
                     _set_combo_case_insensitive(self.playlist_pos_combo, data["playlist_position"])
                 if hasattr(self, "playlist_cols_spin") and "playlist_columns" in data:

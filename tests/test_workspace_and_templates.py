@@ -95,7 +95,7 @@ class TestWorkspacePersistence(unittest.TestCase):
 
     def test_nonexistent_workspace_safely_resets(self):
         """If workspace path in QSettings does not exist, it safely resets without error."""
-        nonexistent = Path("Z:/NonexistentDrive/NeverExisted/NasheedWorkspace")
+        nonexistent = Path("C:/NonexistentLocalFolder_NeverExisted_9999/NasheedWorkspace")
         self.settings.setValue("workspace_root", str(nonexistent))
 
         self.assertTrue(is_temp_or_obsolete_path(nonexistent))
@@ -509,6 +509,21 @@ class TestMainWindowTemplateUI(unittest.TestCase):
         self.assertIsNotNone(self.win._cached_preview_pixmap)
         self.assertFalse(self.win._cached_preview_pixmap.isNull())
         self.assertFalse(self.win.preview_image.pixmap().isNull())
+
+    def test_built_in_reference_presets(self):
+        """Built-in presets for Refer 1, Refer 2, and Refer 3 load completely into UI."""
+        self.win._apply_built_in_preset("refer2_abu_ali_two_column.json")
+        self.assertEqual(self.win.template_combo.currentText(), "Two-column")
+        self.assertEqual(self.win.playlist_cols_spin.value(), 2)
+        self.assertEqual(self.win.highlight_style_combo.currentText(), "Pill")
+        self.assertIn(self.win.title_font_combo.currentText().lower(), ["montserrat", "cinzel decorative"])
+        self.assertIn("Abu Ali", self.win.status_label.text())
+
+        self.win._apply_built_in_preset("refer3_slave_of_allah_outline.json")
+        self.assertEqual(self.win.template_combo.currentText(), "Cinematic")
+        self.assertEqual(self.win.playlist_cols_spin.value(), 1)
+        self.assertEqual(self.win.highlight_style_combo.currentText(), "Outline")
+        self.assertTrue(any(tok in self.win.status_label.text() for tok in ("Abu Ali", "Slave of Allah", "Refer 3")))
 
 
 if __name__ == "__main__":
