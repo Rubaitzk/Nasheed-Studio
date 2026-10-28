@@ -8,6 +8,7 @@ TTF/OTF font file paths for Pillow ImageFont, and provides graceful fallbacks.
 
 from __future__ import annotations
 
+import functools
 import os
 import re
 import sys
@@ -29,22 +30,23 @@ PREFERRED_DEFAULTS = ["Segoe UI", "Arial", "Calibri", "Verdana", "Tahoma"]
 
 
 def _clean_descriptor(raw_name: str) -> Tuple[str, str]:
-    """Parse a registry font descriptor (e.g., 'Segoe UI Bold (TrueType)') into family and style."""
+    """Parse a registry font descriptor (e.g., 'Segoe UI Bold (TrueType)' or 'CinzelDecorative-Bold') into family and style."""
     cleaned = re.sub(r"\s*\((TrueType|OpenType)\)$", "", raw_name, flags=re.IGNORECASE).strip()
-    
+
     # Check for compound styles first
     lower = cleaned.lower()
     if "bold italic" in lower or "bolditalic" in lower:
-        family = re.sub(r"\s+bold\s*italic\b", "", cleaned, flags=re.IGNORECASE).strip()
+        family = re.sub(r"[\s_-]*bold\s*italic\b.*$", "", cleaned, flags=re.IGNORECASE).strip()
         return family, "Bold Italic"
     if "bold" in lower:
-        family = re.sub(r"\s+bold\b", "", cleaned, flags=re.IGNORECASE).strip()
+        family = re.sub(r"[\s_-]*bold\b.*$", "", cleaned, flags=re.IGNORECASE).strip()
         return family, "Bold"
     if "italic" in lower or "oblique" in lower:
-        family = re.sub(r"\s+(italic|oblique)\b", "", cleaned, flags=re.IGNORECASE).strip()
+        family = re.sub(r"[\s_-]*(italic|oblique)\b.*$", "", cleaned, flags=re.IGNORECASE).strip()
         return family, "Italic"
 
-    return cleaned, "Regular"
+    family = re.sub(r"[\s_-]*(regular|normal|roman|variablefont_wght)\b.*$", "", cleaned, flags=re.IGNORECASE).strip()
+    return family or cleaned, "Regular"
 
 
 def _build_font_cache() -> Dict[str, Dict[str, str]]:
@@ -117,6 +119,22 @@ def _build_font_cache() -> Dict[str, Dict[str, str]]:
                 fam, style = _clean_descriptor(p.stem)
                 register_font(fam, style, p)
 
+    # 4. Project-bundled / custom fonts directory (e.g. assets/fonts)
+    local_font_dirs = [
+        Path(__file__).resolve().parent.parent.parent / "assets" / "fonts",
+        Path("assets/fonts").resolve(),
+    ]
+    for lfd in local_font_dirs:
+        if lfd.is_dir():
+            for ext in ("*.ttf", "*.otf"):
+                for font_file in lfd.glob(ext):
+                    stem = font_file.stem
+                    fam, style = _clean_descriptor(stem)
+                    register_font(fam, style, font_file)
+                    spaced_fam = re.sub(r"([a-z])([A-Z])", r"\1 \2", fam)
+                    if spaced_fam != fam:
+                        register_font(spaced_fam, style, font_file)
+
     return cache
 
 
@@ -172,6 +190,12 @@ def register_custom_font(font_path: str | Path, family_alias: Optional[str] = No
 
     # Invalidate system families list so it is re-queried with custom fonts included
     _SYSTEM_FAMILIES_CACHE = None
+    resolve_font_path.cache_clear()
+    try:
+        measure_font_cap_height.cache_clear()
+        get_normalized_font_size.cache_clear()
+    except NameError:
+        pass
 
     return family_name, style_name
 
@@ -186,6 +210,12 @@ def refresh_fonts() -> None:
     global _FONT_REGISTRY_CACHE, _SYSTEM_FAMILIES_CACHE
     _FONT_REGISTRY_CACHE = None
     _SYSTEM_FAMILIES_CACHE = None
+    resolve_font_path.cache_clear()
+    try:
+        measure_font_cap_height.cache_clear()
+        get_normalized_font_size.cache_clear()
+    except NameError:
+        pass
     get_font_cache()
 
 
@@ -246,6 +276,7 @@ def list_family_styles(family: str) -> List[str]:
     return styles
 
 
+@functools.lru_cache(maxsize=512)
 def resolve_font_path(family: str = "Segoe UI", style: str = "Regular") -> str:
     """
     Resolve a font family and style to a concrete .ttf, .otf, or .ttc file path.
@@ -317,3 +348,40 @@ def resolve_font_path(family: str = "Segoe UI", style: str = "Regular") -> str:
             return str(p)
 
     return ""
+
+@functools.lru_cache(maxsize=256)
+def measure_font_cap_height(family: str = "Segoe UI", style: str = "Regular", sample_size: int = 100) -> int:
+    """Measure the capital glyph height (cap-height) of a font at a reference size."""
+    try:
+        from PIL import ImageFont
+        path = resolve_font_path(family, style)
+        if path and Path(path).is_file():
+            font = ImageFont.truetype(path, sample_size)
+            bbox = font.getbbox("H")
+            return max(1, bbox[3] - bbox[1])
+    except Exception:
+        pass
+    return int(round(sample_size * 0.70))
+
+
+@functools.lru_cache(maxsize=512)
+def get_normalized_font_size(
+    family: str,
+    style: str,
+    requested_size: int,
+    reference_family: str = "Segoe UI",
+    reference_style: str = "Regular",
+) -> int:
+    """
+    Calculate normalized font size so different typefaces have harmonious perceived
+    prominence at the same numerical font-size setting.
+    """
+    if requested_size <= 0:
+        return requested_size
+    ref_cap = measure_font_cap_height(reference_family, reference_style, 100)
+    target_cap = measure_font_cap_height(family, style, 100)
+    if target_cap <= 0 or ref_cap <= 0:
+        return requested_size
+    ratio = ref_cap / float(target_cap)
+    eff_scale = max(0.80, min(1.25, 1.0 + (ratio - 1.0) * 0.70))
+    return max(12, int(round(requested_size * eff_scale)))

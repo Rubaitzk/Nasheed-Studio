@@ -5,7 +5,7 @@ path so that the caller (``ExportJob``) owns process creation and cleanup.
 ``build_render_command`` is a pure function and is independently testable.
 """
 from pathlib import Path
-from .media_probe import find_tool
+from .media_probe import find_tool, is_video_file, get_video_info
 from .timeline import build_timeline
 from .compositor import create_composition, create_intro_card, INDICATOR_MODES
 
@@ -46,7 +46,13 @@ def validate_project(project: dict) -> None:
             )
     bg = project.get("background", "")
     if not bg or not Path(bg).is_file():
-        raise ValueError("Choose a valid background image first.")
+        raise ValueError("Choose a valid background image or video first.")
+    if is_video_file(bg):
+        info = get_video_info(bg)
+        if not info.get("has_video"):
+            raise ValueError(f"Selected video background contains no video stream: {bg}")
+        if float(info.get("duration", 0) or 0) <= 0:
+            raise ValueError(f"Selected video background has invalid duration: {bg}")
     logo = project.get("logo", "") or None
     if logo and not Path(logo).is_file():
         raise FileNotFoundError(f"Logo file not found: {logo}")
@@ -159,7 +165,7 @@ def build_render_command(
     title_outline_color = project.get("title_outline_color", (0, 0, 0))
     title_outline_width = int(project.get("title_outline_width", 2) if "title_outline_width" in project else 2)
     title_shadow = bool(project.get("title_shadow", True) if "title_shadow" in project else True)
-    track_color = project.get("track_color", (242, 243, 231))
+    track_color = project.get("track_color", (255, 255, 255))
     track_outline_color = project.get("track_outline_color", (0, 0, 0))
     track_outline_width = int(project.get("track_outline_width", 1) if "track_outline_width" in project else 1)
     track_shadow = bool(project.get("track_shadow", True) if "track_shadow" in project else True)
@@ -168,6 +174,13 @@ def build_render_command(
     highlight_bg_opacity = float(project.get("highlight_bg_opacity", 0.25) if "highlight_bg_opacity" in project else 0.25)
     logo_cleanup_mode = project.get("logo_cleanup_mode", "auto")
     logo_scale = float(project.get("logo_scale", 1.0) or 1.0)
+
+    # Video background parameters
+    bg_is_video = is_video_file(bg)
+    video_loop = bool(project.get("video_loop", True) if "video_loop" in project else True)
+    video_start_time = float(project.get("video_start_time", 0.0) or 0.0)
+    video_fit_mode = str(project.get("video_fit_mode", "fill/crop")).lower().strip()
+    video_mute_audio = bool(project.get("video_mute_audio", True) if "video_mute_audio" in project else True)
 
     base, overlays = create_composition(
         width=width,
@@ -225,13 +238,45 @@ def build_render_command(
         highlight_bg_opacity=highlight_bg_opacity,
         logo_cleanup_mode=logo_cleanup_mode,
         logo_scale=logo_scale,
+        video_start_time=video_start_time,
+        video_fit_mode=video_fit_mode,
+        title_playlist_spacing=project.get("title_playlist_spacing", 40),
+        title_opacity=float(project.get("title_opacity", 1.0) if project.get("title_opacity") is not None else 1.0),
+        track_opacity=float(project.get("track_opacity", 1.0) if project.get("track_opacity") is not None else 1.0),
+        title_softening=float(project.get("title_softening", 0.0) if project.get("title_softening") is not None else 0.0),
+        track_softening=float(project.get("track_softening", 0.0) if project.get("track_softening") is not None else 0.0),
+        text_softening=float(project.get("text_softening", 0.0) if project.get("text_softening") is not None else 0.0),
+        highlight_outline_width=int(project.get("highlight_outline_width", 2) or 2),
+        highlight_corner_radius=(int(project["highlight_corner_radius"]) if project.get("highlight_corner_radius") is not None else None),
+        highlight_target=str(project.get("highlight_target", "row")),
+        highlight_padding_x=(int(project["highlight_padding_x"]) if project.get("highlight_padding_x") is not None else None),
+        highlight_padding_y=(int(project["highlight_padding_y"]) if project.get("highlight_padding_y") is not None else None),
+        highlight_opacity=float(project.get("highlight_opacity", 1.0) if project.get("highlight_opacity") is not None else 1.0),
+        cursor_y_offset=int(project.get("cursor_y_offset", 0) or 0),
+        highlight_y_offset=int(project.get("highlight_y_offset", 0) or 0),
     )
 
     ffmpeg = find_tool("ffmpeg")
     command = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
-               "-progress", "pipe:1", "-nostats",
-               "-loop", "1", "-framerate", "30", "-i", base]
-    current_input_idx = 1
+               "-progress", "pipe:1", "-nostats"]
+
+    fg_input_idx = None
+    if bg_is_video:
+        if video_loop:
+            command += ["-stream_loop", "-1"]
+        if video_start_time > 0:
+            command += ["-ss", f"{video_start_time:.3f}"]
+        command += ["-i", str(bg)]
+        current_input_idx = 1
+
+        fg_file = Path(work_dir) / "composition_fg.png"
+        if fg_file.is_file():
+            command += ["-loop", "1", "-framerate", "1", "-i", str(fg_file)]
+            fg_input_idx = current_input_idx
+            current_input_idx += 1
+    else:
+        command += ["-loop", "1", "-framerate", "30", "-i", base]
+        current_input_idx = 1
 
     # Overlays
     overlay_input_indices = []
@@ -243,6 +288,7 @@ def build_render_command(
 
     # Intro Card
     intro_input_idx = None
+    intro_bg_input_idx = None
     if intro_enabled:
         intro_card = create_intro_card(
             width=width,
@@ -254,7 +300,7 @@ def build_render_command(
             out_dir=str(work_dir),
             title_font_family=title_font_family,
             title_font_style=title_font_style,
-            title_font_size=max(32, int(title_font_size * 1.25)),
+            title_font_size=title_font_size,
             website_text=website_text,
             website_show=website_show,
             website_opacity=website_opacity,
@@ -263,9 +309,20 @@ def build_render_command(
             website_font_style=website_font_style,
             website_color=website_color,
         )
-        command += ["-loop", "1", "-framerate", "30", "-i", intro_card]
-        intro_input_idx = current_input_idx
-        current_input_idx += 1
+        intro_bg_file = Path(work_dir) / "intro_bg.png"
+        intro_overlay_file = Path(work_dir) / "intro_overlay.png"
+        if intro_bg_file.is_file() and intro_overlay_file.is_file():
+            command += ["-loop", "1", "-framerate", "30", "-i", str(intro_bg_file)]
+            intro_bg_input_idx = current_input_idx
+            current_input_idx += 1
+
+            command += ["-loop", "1", "-framerate", "30", "-i", str(intro_overlay_file)]
+            intro_input_idx = current_input_idx
+            current_input_idx += 1
+        else:
+            command += ["-loop", "1", "-framerate", "30", "-i", intro_card]
+            intro_input_idx = current_input_idx
+            current_input_idx += 1
 
     # Audio Tracks
     track_input_indices = []
@@ -286,13 +343,47 @@ def build_render_command(
     # ------------------------------------------------------------------
     # 1. Video Filter Graph Construction
     # ------------------------------------------------------------------
-    current_v = "0:v"
+    if bg_is_video:
+        if video_fit_mode in ("fit with padding", "pad") or "pad" in video_fit_mode:
+            scale_filter = f"[0:v]scale=w={width}:h={height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30[v_bg_fit]"
+        elif video_fit_mode == "stretch":
+            scale_filter = f"[0:v]scale=w={width}:h={height},setsar=1,fps=30[v_bg_fit]"
+        else:  # "fill/crop" (cover)
+            scale_filter = f"[0:v]scale=w={width}:h={height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,fps=30[v_bg_fit]"
+        filters.append(scale_filter)
+
+        v_bg_stream = "v_bg_fit"
+        if not video_loop:
+            filters.append(f"[{v_bg_stream}]tpad=stop_mode=clone:stop=-1[v_bg_held]")
+            v_bg_stream = "v_bg_held"
+
+        if fg_input_idx is not None:
+            filters.append(f"[{v_bg_stream}][{fg_input_idx}:v]overlay=0:0[v_base]")
+            current_v = "v_base"
+        else:
+            current_v = v_bg_stream
+    else:
+        current_v = "0:v"
 
     # Intro presentation overlay
     if intro_enabled and intro_input_idx is not None:
         intro_fade_d = min(0.5, intro_dur / 3.0)
         intro_out_st = max(0.0, intro_dur - intro_fade_d)
 
+        # 1. Stationary dimmed background wash to conceal playlist tracks during intro
+        if intro_bg_input_idx is not None:
+            filters.append(
+                f"[{intro_bg_input_idx}:v]trim=duration={intro_dur:.3f},"
+                f"fade=t=out:st={intro_out_st:.3f}:d={intro_fade_d:.3f}:alpha=1[intro_bg_fx]"
+            )
+            filters.append(
+                f"[{current_v}][intro_bg_fx]overlay=0:0:enable='between(t\\,0\\,{intro_dur:.3f})'[v_intro_base]"
+            )
+            base_v = "v_intro_base"
+        else:
+            base_v = current_v
+
+        # 2. Foreground animation (centered logo, title, watermark)
         if intro_anim == "Zoom in":
             filters.append(
                 f"[{intro_input_idx}:v]trim=duration={intro_dur:.3f},"
@@ -301,13 +392,16 @@ def build_render_command(
                 f"fade=t=out:st={intro_out_st:.3f}:d={intro_fade_d:.3f}:alpha=1[intro_fx]"
             )
             filters.append(
-                f"[{current_v}][intro_fx]overlay=0:0:enable='between(t\\,0\\,{intro_dur:.3f})'[v_intro]"
+                f"[{base_v}][intro_fx]overlay=0:0:enable='between(t\\,0\\,{intro_dur:.3f})'[v_intro]"
             )
         elif intro_anim == "Slide":
-            filters.append(f"[{intro_input_idx}:v]trim=duration={intro_dur:.3f}[intro_fx]")
+            filters.append(
+                f"[{intro_input_idx}:v]trim=duration={intro_dur:.3f},"
+                f"fade=t=out:st={intro_out_st:.3f}:d={intro_fade_d:.3f}:alpha=1[intro_fx]"
+            )
             slide_st = max(0.0, intro_dur - 0.5)
             filters.append(
-                f"[{current_v}][intro_fx]overlay=x=0:y='if(gte(t\\,{slide_st:.3f})\\,-(t-{slide_st:.3f})/0.5*{height}\\,0)':"
+                f"[{base_v}][intro_fx]overlay=x=0:y='if(gte(t\\,{slide_st:.3f})\\,-(t-{slide_st:.3f})/0.5*{height}\\,0)':"
                 f"enable='between(t\\,0\\,{intro_dur:.3f})'[v_intro]"
             )
         else:  # "Fade in / out" (default)
@@ -317,7 +411,7 @@ def build_render_command(
                 f"fade=t=out:st={intro_out_st:.3f}:d={intro_fade_d:.3f}:alpha=1[intro_fx]"
             )
             filters.append(
-                f"[{current_v}][intro_fx]overlay=0:0:enable='between(t\\,0\\,{intro_dur:.3f})'[v_intro]"
+                f"[{base_v}][intro_fx]overlay=0:0:enable='between(t\\,0\\,{intro_dur:.3f})'[v_intro]"
             )
         current_v = "v_intro"
 

@@ -1,0 +1,125 @@
+{
+  "version": 1,
+  "collection_title": "GYM Nasheeds Collection",
+  "background": "C:/Users/rubai/Downloads/lion_clean_bg.png",
+  "logo": "C:/Users/rubai/Downloads/ncn_logo.png",
+  "logo_position": "Top-Left",
+  "tracks": [
+    {
+      "title": "1. Kuntu Maitan",
+      "path": "C:/Users/rubai/Downloads/abdul2025-whispers-of-salah-425559.mp3",
+      "duration": 129.96,
+      "_id": "4c0dc6c538474d5dae72d9f0d6671db1"
+    },
+    {
+      "title": "2. Habbat Karreeh",
+      "path": "C:/Users/rubai/Downloads/alex-morgan-arabic-islam-islamic-music-545530.mp3",
+      "duration": 167.304,
+      "_id": "da424b9ce8ef495f84770064a2432c50"
+    },
+    {
+      "title": "3. Hallaka Sirrun Indallah",
+      "path": "C:/Users/rubai/Downloads/alex-morgan-islamic-nasheed-peaceful-reflection-573946.mp3",
+      "duration": 153.192,
+      "_id": "26061693dfbb472c8f63c19666cdcc2d"
+    },
+    {
+      "title": "4. Fataat al Khair",
+      "path": "C:/Users/rubai/Downloads/oxidvideos-transition-sfx-2-409073.mp3",
+      "duration": 1.272,
+      "_id": "c2c07d09dcca4c18aad657470841453d"
+    },
+    {
+      "title": "5. Mahom Be Ummati Ahmadin",
+      "path": "C:/Users/rubai/Downloads/desifreemusic-islamic-music-240169.mp3",
+      "duration": 120.024,
+      "_id": "7e5d2a326202437db131e5cae4e84447"
+    },
+    {
+      "title": "6. We are the Heroes",
+      "path": "C:/Users/rubai/Downloads/ikoliks_aj-arabic-islam-islamic-music-419364.mp3",
+      "duration": 66.168156,
+      "_id": "4eb13d8ebad448f893a23cd6644f2138"
+    },
+    {
+      "title": "7. Ya Qorial Qur'ani",
+      "path": "C:/Users/rubai/Downloads/nocopyrightsound633-harmony-314210.mp3",
+      "duration": 191.660406,
+      "_id": "e8d00572e6824247b92ddc6f620098ca"
+    },
+    {
+      "title": "8. This is Umar",
+      "path": "C:/Users/rubai/Downloads/bineleyas-arabic-nasheed-520002.mp3",
+      "duration": 202.512,
+      "_id": "4c2eddb52fd94b14a6f04392ddadb3e7"
+    }
+  ],
+  "template": "Cinematic",
+  "resolution": "1080p • Full HD",
+  "indicator_mode": "cursor_only",
+  "cursor_path": "C:/Users/rubai/Downloads/paw_cursor.png",
+  "cursor_size": 50,
+  "title_font_family": "Century Gothic",
+  "title_font_style": "Bold",
+  "title_font_size": 91,
+  "custom_title_font_path": "",
+  "track_font_family": "Century Gothic",
+  "track_font_style": "Regular",
+  "track_font_size": 61,
+  "custom_track_font_path": "",
+  "website_text": "www.nocopyrightnasheeds.com",
+  "website_position": "Bottom-Right",
+  "website_font_size": 37,
+  "website_show": true,
+  "website_opacity": 1.0,
+  "transition_sfx_enabled": true,
+  "transition_sfx_path": "C:/Users/rubai/Downloads/dragon-studio-cartoon-cat-meow-487661.mp3",
+  "transition_sfx_volume": 0.91,
+  "intro_enabled": false,
+  "intro_duration": 3.0,
+  "intro_animation": "Fade in / out",
+  "resource_profile": "Balanced",
+  "playlist_position": "Right",
+  "playlist_columns": 1,
+  "playlist_row_spacing": 1.39,
+  "playlist_col_spacing": 95,
+  "track_max_chars": 0,
+  "playlist_bg_opacity": 0.0,
+  "logo_cleanup_mode": "auto",
+  "title_position": "Above Playlist",
+  "title_show": true,
+  "highlight_style": "Pill",
+  "highlight_color": [
+    255,
+    255,
+    127
+  ],
+  "highlight_bg_opacity": 0.0,
+  "output_path": "C:/Users/rubai/Downloads/gym_nasheeds_collection_1080p.mp4",
+  "title_color": [
+    255,
+    255,
+    255
+  ],
+  "title_shadow": false,
+  "title_outline_width": 0,
+  "track_color": [
+    255,
+    255,
+    255
+  ],
+  "track_shadow": false,
+  "track_outline_width": 0,
+  "playlist_width_ratio": 0.65,
+  "playlist_x_offset": -110,
+  "playlist_y_offset": 0,
+  "bg_path": "C:/Users/rubai/Downloads/lion_clean_bg.png",
+  "logo_path": "C:/Users/rubai/Downloads/ncn_logo.png",
+  "website_font_family": "Century Gothic",
+  "website_font_style": "Regular",
+  "website_color": [
+    255,
+    255,
+    255
+  ]
+}

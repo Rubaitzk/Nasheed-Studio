@@ -52,6 +52,9 @@ TEMPLATE_DESIGN_KEYS = [
     "title_outline_color",
     "title_outline_width",
     "title_shadow",
+    "title_playlist_spacing",
+    "title_opacity",
+    "title_softening",
 
     # Track title styling & appearance
     "track_font_family",
@@ -63,6 +66,9 @@ TEMPLATE_DESIGN_KEYS = [
     "track_outline_width",
     "track_shadow",
     "active_track_color",
+    "track_opacity",
+    "track_softening",
+    "text_softening",
 
     # Cursor & active-track indicator styling
     "indicator_mode",
@@ -71,6 +77,14 @@ TEMPLATE_DESIGN_KEYS = [
     "highlight_style",
     "highlight_color",
     "highlight_bg_opacity",
+    "highlight_outline_width",
+    "highlight_corner_radius",
+    "highlight_target",
+    "highlight_padding_x",
+    "highlight_padding_y",
+    "highlight_opacity",
+    "cursor_y_offset",
+    "highlight_y_offset",
 
     # Logo placement & cleanup
     "logo_position",
@@ -90,6 +104,13 @@ TEMPLATE_DESIGN_KEYS = [
     "intro_enabled",
     "intro_duration",
     "intro_animation",
+
+    # Video background behavior
+    "background_type",
+    "video_fit_mode",
+    "video_start_time",
+    "video_loop",
+    "video_mute_audio",
 
     # Audio transition sound effect
     "transition_sfx_enabled",
@@ -384,3 +405,40 @@ def bundle_managed_assets(project_data: dict, project_bundle_dir: Path) -> dict:
         managed["tracks"] = managed_tracks
 
     return managed
+
+
+def discover_user_templates(project_root: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """
+    Discover all valid reusable JSON templates in user_templates/ (and fallback templates/).
+    Returns a sorted list of template summaries with metadata.
+    """
+    root = project_root or Path(__file__).resolve().parent.parent.parent
+    search_dirs = [root / "user_templates", root / "templates"]
+    discovered: List[Dict[str, Any]] = []
+    seen_paths = set()
+
+    for sdir in search_dirs:
+        if not sdir.is_dir():
+            continue
+        for p in sorted(sdir.glob("*.json")):
+            resolved = p.resolve()
+            if resolved in seen_paths:
+                continue
+            seen_paths.add(resolved)
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+                name = data.get("template_name") or p.stem.replace("_", " ").title()
+                desc = data.get("description", "")
+                cat = "User Template" if sdir.name == "user_templates" else "Preset"
+                discovered.append({
+                    "path": str(resolved),
+                    "filename": p.name,
+                    "name": name,
+                    "description": desc,
+                    "category": cat,
+                    "data": data,
+                })
+            except Exception:
+                continue
+
+    return discovered

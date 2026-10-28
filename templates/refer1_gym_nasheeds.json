@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "template_name": "Refer 1: GYM Nasheeds",
+  "collection_title": "GYM Nasheeds Collection",
+  "title_font_family": "Century Gothic",
+  "title_font_style": "Bold",
+  "title_font_size": 91,
+  "title_position": "Top-Center",
+  "title_show": true,
+  "title_color": [
+    255,
+    255,
+    255
+  ],
+  "title_outline_color": [
+    0,
+    0,
+    0
+  ],
+  "title_outline_width": 2,
+  "title_shadow": true,
+  "track_font_family": "Century Gothic",
+  "track_font_style": "Regular",
+  "track_font_size": 37,
+  "track_color": [
+    255,
+    255,
+    255
+  ],
+  "track_outline_color": [
+    0,
+    0,
+    0
+  ],
+  "track_outline_width": 1,
+  "track_shadow": true,
+  "template": "Cinematic",
+  "playlist_position": "Left",
+  "playlist_columns": 1,
+  "playlist_row_spacing": 1.85,
+  "playlist_width_ratio": 0.47,
+  "indicator_mode": "both",
+  "highlight_style": "Pill",
+  "highlight_color": [
+    248,
+    220,
+    139
+  ],
+  "highlight_bg_opacity": 0.25,
+  "cursor_path": "assets/paw_cursor.png",
+  "cursor_size": 32,
+  "logo": "assets/ncn_logo.png",
+  "logo_position": "Bottom-Right",
+  "background": "assets/lion_clean_bg.png",
+  "website_text": "www.nocopyrightnasheeds.com",
+  "website_font_family": "Century Gothic",
+  "website_font_style": "Regular",
+  "website_font_size": 37,
+  "website_position": "Bottom-Center",
+  "website_show": true,
+  "website_opacity": 0.85,
+  "intro_enabled": true,
+  "intro_duration": 3.0,
+  "intro_animation": "Zoom in"
+}

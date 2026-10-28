@@ -19,3 +19,18 @@ video_proof_of_template_not_loading/
 picture_of_video_playlist_display/
 pictur e_of_video_playlist_display/
 picture_for_improving_layout/
+last_improvements/
+final_deliverable/
+release_build/
+release_build_log.txt
+Gemini conversation-*.md
+*.log
+assets/*.png
+assets/*.jpg
+assets/*.jpeg
+assets/*.mp3
+mp4_proof/
+tests/test_final_pass_features.py
+tests/test_ui_adjusters_and_colors.py
+tests/test_user_templates_and_indicators.py
+tests/test_video_background.py
