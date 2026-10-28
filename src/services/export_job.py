@@ -25,6 +25,12 @@ import threading
 from pathlib import Path
 from typing import Callable, Optional
 
+from .process_manager import (
+    register_process,
+    unregister_process,
+    terminate_process_tree,
+)
+
 # ---------------------------------------------------------------------------
 # Windows Job Object helpers
 # ---------------------------------------------------------------------------
@@ -290,6 +296,7 @@ class ExportJob:
                 popen_kwargs["creationflags"] = flags
 
             proc = subprocess.Popen(self._command, **popen_kwargs)
+            register_process(proc)
 
             # Atomically store proc and assign to Job Object.
             with self._lock:
@@ -338,6 +345,9 @@ class ExportJob:
         except Exception as exc:
             self._finish(STATE_FAILED, error=str(exc))
             return
+        finally:
+            if proc is not None:
+                unregister_process(proc)
 
         with self._lock:
             current_state = self._state
@@ -358,15 +368,9 @@ class ExportJob:
         if jh is not None:
             _terminate_job(jh)
             _close_handle(jh)
-        elif proc is not None:
-            try:
-                if sys.platform == "win32":
-                    proc.kill()
-                else:
-                    import signal, os as _os
-                    _os.killpg(_os.getpgid(proc.pid), signal.SIGKILL)
-            except Exception:
-                pass
+        if proc is not None:
+            terminate_process_tree(proc, timeout=1.0)
+            unregister_process(proc)
 
     def _kill_process_tree(self) -> None:
         """Kill the FFmpeg process tree. Safe to call from any thread."""
