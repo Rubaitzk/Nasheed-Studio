@@ -23,6 +23,7 @@ Stage 2 Architecture
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import subprocess
@@ -33,10 +34,11 @@ from pathlib import Path
 from typing import Any, Optional, Union
 
 from PySide6.QtCore import Qt, Signal, QObject, QTimer, QSettings, QEvent, QSize, QUrl
-from PySide6.QtGui import QPixmap, QAction, QIcon, QDragEnterEvent, QDropEvent, QColor, QPainter, QImage
+from PySide6.QtGui import QPixmap, QAction, QIcon, QDragEnterEvent, QDropEvent, QColor, QPainter, QImage, QKeySequence, QShortcut, QKeyEvent
 from PySide6.QtMultimedia import QMediaPlayer, QVideoSink
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QTextEdit, QPlainTextEdit, QAbstractSpinBox,
     QFileDialog, QListWidget, QListWidgetItem, QLineEdit, QComboBox,
     QFormLayout, QSplitter, QMessageBox, QProgressBar, QFrame, QAbstractItemView,
     QToolButton, QInputDialog, QSizePolicy, QSpinBox, QScrollArea, QCheckBox,
@@ -204,10 +206,27 @@ class PlaylistListWidget(QListWidget):
         super().dropEvent(event)
 
     def keyPressEvent(self, event) -> None:
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            self.main_window.remove_track()
+            event.accept()
+            return
         if event.key() == Qt.Key.Key_F2:
             self.main_window._on_rename_track_clicked()
             event.accept()
             return
+        if event.key() == Qt.Key.Key_Up and (event.modifiers() & Qt.KeyboardModifier.AltModifier):
+            self.main_window.move_track(-1)
+            event.accept()
+            return
+        if event.key() == Qt.Key.Key_Down and (event.modifiers() & Qt.KeyboardModifier.AltModifier):
+            self.main_window.move_track(1)
+            event.accept()
+            return
+        if event.key() == Qt.Key.Key_Space:
+            if hasattr(self.main_window, "_toggle_intro_preview"):
+                self.main_window._toggle_intro_preview()
+                event.accept()
+                return
         super().keyPressEvent(event)
 
 
@@ -286,6 +305,17 @@ class MainWindow(QMainWindow):
         self._update_track_color_btn()
         self._update_project_ui_indicators()
         self._refresh_preview()
+
+        # Undo / Redo engine state
+        self._undo_stack: list[dict] = [copy.deepcopy(self._project())]
+        self._redo_stack: list[dict] = []
+        self._max_undo_depth = 50
+        self._undoing_or_redoing = False
+        self._undo_timer = QTimer(self)
+        self._undo_timer.setSingleShot(True)
+        self._undo_timer.setInterval(300)
+        self._undo_timer.timeout.connect(self._push_undo_snapshot)
+        self._update_undo_redo_actions()
 
     # ------------------------------------------------------------------
     # UI construction
@@ -772,6 +802,72 @@ class MainWindow(QMainWindow):
         reset_ws_act = QAction("Reset Workspace Location to Default", self)
         reset_ws_act.triggered.connect(self.reset_workspace)
         file_menu.addAction(reset_ws_act)
+
+        file_menu.addSeparator()
+
+        self.render_act = QAction("Render Video…", self)
+        self.render_act.setShortcut("Ctrl+R")
+        self.render_act.triggered.connect(self.render_video)
+        file_menu.addAction(self.render_act)
+
+        # --------------------------------------------------------------
+        # Edit Menu (Undo/Redo & Track Shortcuts)
+        # --------------------------------------------------------------
+        edit_menu = self.menuBar().addMenu("Edit")
+
+        self.undo_act = QAction("Undo", self)
+        self.undo_act.setShortcut("Ctrl+Z")
+        self.undo_act.setToolTip("Undo the last action (Ctrl+Z)")
+        self.undo_act.triggered.connect(self.undo)
+        edit_menu.addAction(self.undo_act)
+
+        self.redo_act = QAction("Redo", self)
+        self.redo_act.setShortcut("Ctrl+Y")
+        self.redo_act.setToolTip("Redo the last undone action (Ctrl+Y or Ctrl+Shift+Z)")
+        self.redo_act.triggered.connect(self.redo)
+        edit_menu.addAction(self.redo_act)
+
+        self._redo_shortcut_alt = QShortcut(QKeySequence("Ctrl+Shift+Z"), self)
+        self._redo_shortcut_alt.activated.connect(self.redo)
+
+        edit_menu.addSeparator()
+
+        self.del_track_act = QAction("Delete Track", self)
+        self.del_track_act.setShortcut(QKeySequence.StandardKey.Delete)
+        self.del_track_act.setToolTip("Delete selected track from playlist (Delete)")
+        self.del_track_act.triggered.connect(self._on_shortcut_delete_track)
+        edit_menu.addAction(self.del_track_act)
+
+        self.rename_track_act = QAction("Rename Track…", self)
+        self.rename_track_act.setShortcut("F2")
+        self.rename_track_act.setToolTip("Rename selected track (F2)")
+        self.rename_track_act.triggered.connect(self._on_shortcut_rename_track)
+        edit_menu.addAction(self.rename_track_act)
+
+        self.move_up_act = QAction("Move Track Up", self)
+        self.move_up_act.setShortcut("Alt+Up")
+        self.move_up_act.setToolTip("Move selected track up in playlist (Alt+Up)")
+        self.move_up_act.triggered.connect(self._on_shortcut_move_up)
+        edit_menu.addAction(self.move_up_act)
+
+        self.move_down_act = QAction("Move Track Down", self)
+        self.move_down_act.setShortcut("Alt+Down")
+        self.move_down_act.setToolTip("Move selected track down in playlist (Alt+Down)")
+        self.move_down_act.triggered.connect(self._on_shortcut_move_down)
+        edit_menu.addAction(self.move_down_act)
+
+        edit_menu.addSeparator()
+
+        self.clear_tracks_act = QAction("Clear All Tracks", self)
+        self.clear_tracks_act.setToolTip("Remove all audio tracks from the playlist")
+        self.clear_tracks_act.triggered.connect(self.clear_all_tracks)
+        edit_menu.addAction(self.clear_tracks_act)
+
+        # Refresh Preview shortcut (F5)
+        self.refresh_preview_act = QAction("Refresh Preview", self)
+        self.refresh_preview_act.setShortcut("F5")
+        self.refresh_preview_act.triggered.connect(self._refresh_preview)
+        self.addAction(self.refresh_preview_act)
 
         help_menu = self.menuBar().addMenu("Help")
         about = QAction("About Nasheed Studio", self)
@@ -1596,6 +1692,7 @@ class MainWindow(QMainWindow):
                 self.video_controls_group.setVisible(False)
             if hasattr(self, "play_preview_btn"):
                 self.play_preview_btn.setVisible(False)
+            self._commit_undo_snapshot()
             self._mark_dirty()
             self._refresh_preview()
 
@@ -1605,6 +1702,7 @@ class MainWindow(QMainWindow):
             self.logo_path = ""
             self._set_asset_label(self.logo_label, "")
             self.logo_label.setText("No logo selected")
+            self._commit_undo_snapshot()
             self._mark_dirty()
             self._check_logo_website_overlap()
             self._refresh_preview()
@@ -1821,6 +1919,7 @@ class MainWindow(QMainWindow):
         if path:
             self.logo_path = path
             self._set_asset_label(self.logo_label, path)
+            self._commit_undo_snapshot()
             self._mark_dirty()
             self._check_logo_website_overlap()
             self._refresh_preview()
@@ -1850,6 +1949,7 @@ class MainWindow(QMainWindow):
             except Exception as exc:
                 QMessageBox.warning(self, "Could not import audio", f"{Path(path).name}\n\n{exc}")
         if added:
+            self._commit_undo_snapshot()
             self._mark_dirty()
             self._refresh_tracks()
             self._schedule_preview(200)
@@ -1902,6 +2002,7 @@ class MainWindow(QMainWindow):
                         break
         if len(reordered) == len(self.tracks):
             self.tracks = reordered
+            self._commit_undo_snapshot()
             self._mark_dirty()
         self._refresh_tracks_labels()
         self._schedule_preview(200)
@@ -1932,14 +2033,16 @@ class MainWindow(QMainWindow):
         )
         if ok and title.strip():
             self.tracks[idx]["title"] = title.strip()
+            self._commit_undo_snapshot()
             self._mark_dirty()
             self._refresh_tracks()
             self._schedule_preview(150)
 
     def remove_track(self) -> None:
         idx = self.track_list.currentRow()
-        if idx >= 0:
+        if idx >= 0 and idx < len(self.tracks):
             self.tracks.pop(idx)
+            self._commit_undo_snapshot()
             self._mark_dirty()
             self._refresh_tracks()
             self._schedule_preview(200)
@@ -1950,6 +2053,7 @@ class MainWindow(QMainWindow):
         if idx < 0 or not (0 <= target < len(self.tracks)):
             return
         self.tracks[idx], self.tracks[target] = self.tracks[target], self.tracks[idx]
+        self._commit_undo_snapshot()
         self._mark_dirty()
         self._refresh_tracks()
         self.track_list.setCurrentRow(target)
@@ -1997,6 +2101,7 @@ class MainWindow(QMainWindow):
         text = self.collection_title.text().strip()
         if text != self._committed_title:
             self._committed_title = text
+            self._commit_undo_snapshot()
             self._mark_dirty()
             self._refresh_preview()
         self.title_apply_btn.setEnabled(False)
@@ -2257,6 +2362,7 @@ class MainWindow(QMainWindow):
         """Update highlight color, marking dirty state and scheduling preview update."""
         self.highlight_color = color
         self._update_highlight_color_btn()
+        self._commit_undo_snapshot()
         self._on_layout_param_changed()
 
     def _update_title_color_btn(self) -> None:
@@ -2284,6 +2390,7 @@ class MainWindow(QMainWindow):
     def set_title_color(self, color: Union[str, tuple, list]) -> None:
         self.title_color = color
         self._update_title_color_btn()
+        self._commit_undo_snapshot()
         self._on_layout_param_changed()
 
     def _update_track_color_btn(self) -> None:
@@ -2311,6 +2418,7 @@ class MainWindow(QMainWindow):
     def set_track_color(self, color: Union[str, tuple, list]) -> None:
         self.track_color = color
         self._update_track_color_btn()
+        self._commit_undo_snapshot()
         self._on_layout_param_changed()
 
     def choose_sfx(self) -> None:
@@ -2955,9 +3063,11 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _mark_dirty(self, *args) -> None:
-        if not self._loading_project:
+        if not self._loading_project and not getattr(self, "_undoing_or_redoing", False):
             self._is_dirty = True
             self._update_project_ui_indicators()
+            if hasattr(self, "_undo_timer"):
+                self._undo_timer.start(300)
 
     def has_unsaved_changes(self) -> bool:
         if self._is_dirty:
@@ -3167,6 +3277,9 @@ class MainWindow(QMainWindow):
             self._refresh_preview()
             self._is_dirty = False
             self._last_saved_snapshot = None
+            self._undo_stack = [copy.deepcopy(self._project())]
+            self._redo_stack.clear()
+            self._update_undo_redo_actions()
             self._update_project_ui_indicators()
             self.status_label.setText("New project ready.")
         finally:
@@ -3606,189 +3719,342 @@ class MainWindow(QMainWindow):
                 return
 
             self.missing_assets = check_missing_assets(data)
-            self._loading_project = True
-            try:
-                if hasattr(self, "_title_timer") and self._title_timer.isActive():
-                    self._title_timer.stop()
-                self._committed_title = data.get("collection_title", "Nasheed Collection")
-                self.background_path = data.get("background", "")
-                self.background_type = data.get("background_type", "video" if is_video_file(self.background_path) else "image")
-                if self.background_path and Path(self.background_path).is_file():
-                    self._apply_background_file(self.background_path)
-                else:
-                    self.clear_background()
-
-                if hasattr(self, "video_fit_combo") and "video_fit_mode" in data:
-                    _set_combo_case_insensitive(self.video_fit_combo, data["video_fit_mode"])
-                if hasattr(self, "video_start_spin") and "video_start_time" in data:
-                    self.video_start_spin.setValue(float(data["video_start_time"]))
-                if hasattr(self, "video_loop_check") and "video_loop" in data:
-                    self.video_loop_check.setChecked(bool(data["video_loop"]))
-                if hasattr(self, "video_mute_check") and "video_mute_audio" in data:
-                    self.video_mute_check.setChecked(bool(data["video_mute_audio"]))
-
-                self.logo_path = data.get("logo", "")
-                self.cursor_path = data.get("cursor_path", "")
-                self.sfx_path = data.get("transition_sfx_path", "")
-                self._previewing_intro = False
-                self.tracks = data.get("tracks", [])
-                self.collection_title.setText(self._committed_title)
-                self.title_apply_btn.setEnabled(False)
-                _set_combo_case_insensitive(self.template_combo, data.get("template", "Cinematic"))
-                if not _set_combo_case_insensitive(self.resolution_combo, data.get("resolution", "1080p · Full HD")):
-                    self.resolution_combo.setCurrentText(data.get("resolution", "1080p · Full HD"))
-                self._set_combo_from_mode(data.get("indicator_mode", "both"))
-                self.cursor_size_spin.setValue(int(data.get("cursor_size", 32) or 32))
-
-                # Custom Fonts registration
-                self.custom_title_font_path = data.get("custom_title_font_path", "")
-                self.custom_track_font_path = data.get("custom_track_font_path", "")
-                if self.custom_title_font_path and Path(self.custom_title_font_path).is_file():
-                    try:
-                        from src.services.font_service import register_custom_font
-                        register_custom_font(self.custom_title_font_path)
-                    except Exception:
-                        pass
-                if self.custom_track_font_path and Path(self.custom_track_font_path).is_file():
-                    try:
-                        from src.services.font_service import register_custom_font
-                        register_custom_font(self.custom_track_font_path)
-                    except Exception:
-                        pass
-                self._refresh_system_fonts(initial=False)
-
-                if hasattr(self, "logo_pos_combo"):
-                    _set_combo_case_insensitive(self.logo_pos_combo, data.get("logo_position", "Bottom-Right"))
-                if hasattr(self, "title_font_combo"):
-                    _set_combo_case_insensitive(self.title_font_combo, data.get("title_font_family", "Segoe UI"))
-                    self._update_title_styles()
-                    _set_combo_case_insensitive(self.title_style_combo, data.get("title_font_style", "Bold"))
-                    self.title_size_spin.setValue(int(data.get("title_font_size", 46) or 46))
-                if hasattr(self, "title_spacing_spin") and "title_playlist_spacing" in data:
-                    self.title_spacing_spin.setValue(int(data["title_playlist_spacing"]))
-                if hasattr(self, "title_opacity_slider") and "title_opacity" in data:
-                    self.title_opacity_slider.setValue(int(float(data["title_opacity"]) * 100))
-                if hasattr(self, "track_font_combo"):
-                    _set_combo_case_insensitive(self.track_font_combo, data.get("track_font_family", "Segoe UI"))
-                    self._update_track_styles()
-                    _set_combo_case_insensitive(self.track_style_combo, data.get("track_font_style", "Bold"))
-                    self.track_size_spin.setValue(int(data.get("track_font_size", 22) or 22))
-                if hasattr(self, "track_opacity_slider") and "track_opacity" in data:
-                    self.track_opacity_slider.setValue(int(float(data["track_opacity"]) * 100))
-                if hasattr(self, "text_softening_spin"):
-                    if "text_softening" in data:
-                        self.text_softening_spin.setValue(float(data["text_softening"]))
-                    elif "title_softening" in data:
-                        self.text_softening_spin.setValue(float(data["title_softening"]))
-                if hasattr(self, "website_edit"):
-                    self.website_edit.setText(data.get("website_text", ""))
-                    _set_combo_case_insensitive(self.website_pos_combo, data.get("website_position", "Top-Right"))
-                    self.website_size_spin.setValue(int(data.get("website_font_size", 18) or 18))
-                    if hasattr(self, "website_show_check"):
-                        self.website_show_check.setChecked(bool(data.get("website_show", True)))
-                    if hasattr(self, "website_opacity_slider"):
-                        web_op_val = int(float(data.get("website_opacity", 1.0) if data.get("website_opacity") is not None else 1.0) * 100)
-                        self.website_opacity_slider.setValue(web_op_val)
-                    self.website_font_family = data.get("website_font_family", None)
-                    self.website_font_style = data.get("website_font_style", "Regular")
-                    raw_wc = data.get("website_color", None)
-                    self.website_color = tuple(raw_wc) if isinstance(raw_wc, (list, tuple)) else raw_wc
-                if hasattr(self, "intro_check"):
-                    self.intro_check.setChecked(bool(data.get("intro_enabled", False)))
-                    self.intro_dur_spin.setValue(float(data.get("intro_duration", 3.0) or 3.0))
-                    _set_combo_case_insensitive(self.intro_anim_combo, data.get("intro_animation", "Fade in / out"))
-                    self.preview_intro_btn.setText("Preview Intro Card")
-                if hasattr(self, "sfx_check"):
-                    self.sfx_check.setChecked(bool(data.get("transition_sfx_enabled", False)))
-                    sfx_vol = int(float(data.get("transition_sfx_volume", 0.7) if data.get("transition_sfx_volume") is not None else 0.7) * 100)
-                    self.sfx_vol_slider.setValue(sfx_vol)
-                if hasattr(self, "resource_profile_combo") and "resource_profile" in data:
-                    _set_combo_case_insensitive(self.resource_profile_combo, data["resource_profile"])
-                if hasattr(self, "export_quality_combo") and "export_quality" in data:
-                    _set_combo_case_insensitive(self.export_quality_combo, data["export_quality"])
-                if hasattr(self, "playlist_pos_combo") and "playlist_position" in data:
-                    _set_combo_case_insensitive(self.playlist_pos_combo, data["playlist_position"])
-                if hasattr(self, "playlist_cols_spin") and "playlist_columns" in data:
-                    self.playlist_cols_spin.setValue(int(data["playlist_columns"]))
-                if hasattr(self, "track_spacing_spin") and "playlist_row_spacing" in data:
-                    self.track_spacing_spin.setValue(float(data["playlist_row_spacing"]))
-                if hasattr(self, "col_spacing_spin") and "playlist_col_spacing" in data:
-                    self.col_spacing_spin.setValue(int(data["playlist_col_spacing"]))
-                if hasattr(self, "track_max_chars_spin") and "track_max_chars" in data:
-                    self.track_max_chars_spin.setValue(int(data["track_max_chars"]))
-                if hasattr(self, "playlist_bg_slider") and "playlist_bg_opacity" in data:
-                    self.playlist_bg_slider.setValue(int(float(data["playlist_bg_opacity"]) * 100))
-                if hasattr(self, "title_pos_combo") and "title_position" in data:
-                    _set_combo_case_insensitive(self.title_pos_combo, data["title_position"])
-                if hasattr(self, "title_show_check") and "title_show" in data:
-                    self.title_show_check.setChecked(bool(data["title_show"]))
-                self._update_title_spacing_enabled()
-                if hasattr(self, "highlight_style_combo") and "highlight_style" in data:
-                    _set_combo_case_insensitive(self.highlight_style_combo, data["highlight_style"])
-                if "title_color" in data:
-                    self.title_color = data["title_color"]
-                    self._update_title_color_btn()
-                if "track_color" in data:
-                    self.track_color = data["track_color"]
-                    self._update_track_color_btn()
-                if "active_track_color" in data:
-                    self.active_track_color = data["active_track_color"]
-                if hasattr(self, "cursor_y_offset_spin") and "cursor_y_offset" in data:
-                    self.cursor_y_offset_spin.setValue(int(data["cursor_y_offset"]))
-                if hasattr(self, "highlight_y_offset_spin") and "highlight_y_offset" in data:
-                    self.highlight_y_offset_spin.setValue(int(data["highlight_y_offset"]))
-                if hasattr(self, "highlight_outline_spin") and "highlight_outline_width" in data:
-                    self.highlight_outline_spin.setValue(int(data["highlight_outline_width"]))
-                if hasattr(self, "highlight_corner_combo") and "highlight_corner_radius" in data:
-                    rad = data["highlight_corner_radius"]
-                    if rad == 0 or rad == "0":
-                        self.highlight_corner_combo.setCurrentText("Square (Sharp)")
-                    else:
-                        self.highlight_corner_combo.setCurrentText("Rounded")
-                if hasattr(self, "highlight_target_combo") and "highlight_target" in data:
-                    tgt = str(data["highlight_target"]).lower().strip()
-                    if tgt == "text" or "text" in tgt:
-                        self.highlight_target_combo.setCurrentText("Surround Text")
-                    else:
-                        self.highlight_target_combo.setCurrentText("Full Row")
-                if "highlight_color" in data:
-                    self.highlight_color = data["highlight_color"]
-                    self._update_highlight_color_btn()
-                if hasattr(self, "highlight_opacity_slider") and "highlight_bg_opacity" in data:
-                    self.highlight_opacity_slider.setValue(int(float(data["highlight_bg_opacity"]) * 100))
-                if hasattr(self, "logo_cleanup_check") and "logo_cleanup_mode" in data:
-                    self.logo_cleanup_check.setChecked(data["logo_cleanup_mode"] != "none")
-                self.output_edit.setText(
-                    data.get("output_path", str(Path.home() / "Videos" / "nasheed_collection.mp4"))
-                )
-                self.project_path = path
-                self._set_asset_label(self.background_label, self.background_path)
-                if not self.background_path:
-                    self.background_label.setText("No background selected")
-                self._set_asset_label(self.logo_label, self.logo_path)
-                if not self.logo_path:
-                    self.logo_label.setText("No logo selected")
-                if self.cursor_path:
-                    self._set_asset_label(self.cursor_label, self.cursor_path)
-                else:
-                    self._set_asset_label(self.cursor_label, "")
-                    self.cursor_label.setText("Default arrow cursor")
-                if hasattr(self, "sfx_label"):
-                    if self.sfx_path:
-                        self._set_asset_label(self.sfx_label, self.sfx_path)
-                    else:
-                        self._set_asset_label(self.sfx_label, "")
-                        self.sfx_label.setText("No sound effect selected")
-                self._check_logo_website_overlap()
-                self._refresh_tracks()
-                self._refresh_preview()
-                self._is_dirty = False
-                self._last_saved_snapshot = self._project()
-                self._update_project_ui_indicators()
-            finally:
-                self._loading_project = False
-
+            self._restore_project_state(data)
+            self.project_path = path
+            self._is_dirty = False
+            self._last_saved_snapshot = copy.deepcopy(self._project())
+            self._undo_stack = [copy.deepcopy(self._last_saved_snapshot)]
+            self._redo_stack.clear()
+            self._update_undo_redo_actions()
+            self._update_project_ui_indicators()
             self._add_recent_project(path)
             self.status_label.setText(f"Project opened: {path}")
         except Exception as exc:
             QMessageBox.critical(self, "Could not open project", str(exc))
+
+    # ------------------------------------------------------------------
+    # Project State Restoration, Undo/Redo & Essential Shortcuts
+    # ------------------------------------------------------------------
+
+    def _restore_project_state(self, data: dict) -> None:
+        """Restores the full project UI and data model to match the given snapshot dictionary."""
+        self._loading_project = True
+        try:
+            if hasattr(self, "_title_timer") and self._title_timer.isActive():
+                self._title_timer.stop()
+            self._committed_title = data.get("collection_title", "Nasheed Collection")
+            self.collection_title.setText(self._committed_title)
+            self.title_apply_btn.setEnabled(False)
+
+            self.background_path = data.get("background", "")
+            self.background_type = data.get("background_type", "video" if is_video_file(self.background_path) else "image")
+            if self.background_path and Path(self.background_path).is_file():
+                self._apply_background_file(self.background_path)
+            else:
+                self.clear_background()
+
+            if hasattr(self, "video_fit_combo") and "video_fit_mode" in data:
+                _set_combo_case_insensitive(self.video_fit_combo, data["video_fit_mode"])
+            if hasattr(self, "video_start_spin") and "video_start_time" in data:
+                self.video_start_spin.setValue(float(data["video_start_time"]))
+            if hasattr(self, "video_loop_check") and "video_loop" in data:
+                self.video_loop_check.setChecked(bool(data["video_loop"]))
+            if hasattr(self, "video_mute_check") and "video_mute_audio" in data:
+                self.video_mute_check.setChecked(bool(data["video_mute_audio"]))
+
+            self.logo_path = data.get("logo", "")
+            if self.logo_path and Path(self.logo_path).is_file():
+                self._set_asset_label(self.logo_label, self.logo_path)
+            else:
+                self.logo_path = ""
+                self._set_asset_label(self.logo_label, "")
+                self.logo_label.setText("No logo selected")
+
+            self.cursor_path = data.get("cursor_path", "")
+            if self.cursor_path and Path(self.cursor_path).is_file():
+                self._set_asset_label(self.cursor_label, self.cursor_path)
+            else:
+                self.cursor_path = ""
+                self._set_asset_label(self.cursor_label, "")
+                self.cursor_label.setText("Default arrow cursor")
+
+            self.sfx_path = data.get("transition_sfx_path", "")
+            if hasattr(self, "sfx_label"):
+                if self.sfx_path and Path(self.sfx_path).is_file():
+                    self._set_asset_label(self.sfx_label, self.sfx_path)
+                else:
+                    self.sfx_path = ""
+                    self._set_asset_label(self.sfx_label, "")
+                    self.sfx_label.setText("No sound effect selected")
+
+            self._previewing_intro = False
+            self.tracks = copy.deepcopy(data.get("tracks", []))
+
+            _set_combo_case_insensitive(self.template_combo, data.get("template", "Cinematic"))
+            if not _set_combo_case_insensitive(self.resolution_combo, data.get("resolution", "1080p · Full HD")):
+                self.resolution_combo.setCurrentText(data.get("resolution", "1080p · Full HD"))
+            self._set_combo_from_mode(data.get("indicator_mode", "both"))
+            self.cursor_size_spin.setValue(int(data.get("cursor_size", 32) or 32))
+
+            # Custom Fonts registration
+            self.custom_title_font_path = data.get("custom_title_font_path", "")
+            self.custom_track_font_path = data.get("custom_track_font_path", "")
+            if self.custom_title_font_path and Path(self.custom_title_font_path).is_file():
+                try:
+                    from src.services.font_service import register_custom_font
+                    register_custom_font(self.custom_title_font_path)
+                except Exception:
+                    pass
+            if self.custom_track_font_path and Path(self.custom_track_font_path).is_file():
+                try:
+                    from src.services.font_service import register_custom_font
+                    register_custom_font(self.custom_track_font_path)
+                except Exception:
+                    pass
+            self._refresh_system_fonts(initial=False)
+
+            if hasattr(self, "logo_pos_combo"):
+                _set_combo_case_insensitive(self.logo_pos_combo, data.get("logo_position", "Bottom-Right"))
+            if hasattr(self, "title_font_combo"):
+                _set_combo_case_insensitive(self.title_font_combo, data.get("title_font_family", "Segoe UI"))
+                self._update_title_styles()
+                _set_combo_case_insensitive(self.title_style_combo, data.get("title_font_style", "Bold"))
+                self.title_size_spin.setValue(int(data.get("title_font_size", 46) or 46))
+            if hasattr(self, "title_spacing_spin") and "title_playlist_spacing" in data:
+                self.title_spacing_spin.setValue(int(data["title_playlist_spacing"]))
+            if hasattr(self, "title_opacity_slider") and "title_opacity" in data:
+                self.title_opacity_slider.setValue(int(float(data["title_opacity"]) * 100))
+            if hasattr(self, "track_font_combo"):
+                _set_combo_case_insensitive(self.track_font_combo, data.get("track_font_family", "Segoe UI"))
+                self._update_track_styles()
+                _set_combo_case_insensitive(self.track_style_combo, data.get("track_font_style", "Bold"))
+                self.track_size_spin.setValue(int(data.get("track_font_size", 22) or 22))
+            if hasattr(self, "track_opacity_slider") and "track_opacity" in data:
+                self.track_opacity_slider.setValue(int(float(data["track_opacity"]) * 100))
+            if hasattr(self, "text_softening_spin"):
+                if "text_softening" in data:
+                    self.text_softening_spin.setValue(float(data["text_softening"]))
+                elif "title_softening" in data:
+                    self.text_softening_spin.setValue(float(data["title_softening"]))
+            if hasattr(self, "website_edit"):
+                self.website_edit.setText(data.get("website_text", ""))
+                _set_combo_case_insensitive(self.website_pos_combo, data.get("website_position", "Top-Right"))
+                self.website_size_spin.setValue(int(data.get("website_font_size", 18) or 18))
+                if hasattr(self, "website_show_check"):
+                    self.website_show_check.setChecked(bool(data.get("website_show", True)))
+                if hasattr(self, "website_opacity_slider"):
+                    web_op_val = int(float(data.get("website_opacity", 1.0) if data.get("website_opacity") is not None else 1.0) * 100)
+                    self.website_opacity_slider.setValue(web_op_val)
+                self.website_font_family = data.get("website_font_family", None)
+                self.website_font_style = data.get("website_font_style", "Regular")
+                raw_wc = data.get("website_color", None)
+                self.website_color = tuple(raw_wc) if isinstance(raw_wc, (list, tuple)) else raw_wc
+            if hasattr(self, "intro_check"):
+                self.intro_check.setChecked(bool(data.get("intro_enabled", False)))
+                self.intro_dur_spin.setValue(float(data.get("intro_duration", 3.0) or 3.0))
+                _set_combo_case_insensitive(self.intro_anim_combo, data.get("intro_animation", "Fade in / out"))
+                self.preview_intro_btn.setText("Preview Intro Card")
+            if hasattr(self, "sfx_check"):
+                self.sfx_check.setChecked(bool(data.get("transition_sfx_enabled", False)))
+                sfx_vol = int(float(data.get("transition_sfx_volume", 0.7) if data.get("transition_sfx_volume") is not None else 0.7) * 100)
+                self.sfx_vol_slider.setValue(sfx_vol)
+            if hasattr(self, "resource_profile_combo") and "resource_profile" in data:
+                _set_combo_case_insensitive(self.resource_profile_combo, data["resource_profile"])
+            if hasattr(self, "export_quality_combo") and "export_quality" in data:
+                _set_combo_case_insensitive(self.export_quality_combo, data["export_quality"])
+            if hasattr(self, "playlist_pos_combo") and "playlist_position" in data:
+                _set_combo_case_insensitive(self.playlist_pos_combo, data["playlist_position"])
+            if hasattr(self, "playlist_cols_spin") and "playlist_columns" in data:
+                self.playlist_cols_spin.setValue(int(data["playlist_columns"]))
+            if hasattr(self, "track_spacing_spin") and "playlist_row_spacing" in data:
+                self.track_spacing_spin.setValue(float(data["playlist_row_spacing"]))
+            if hasattr(self, "col_spacing_spin") and "playlist_col_spacing" in data:
+                self.col_spacing_spin.setValue(int(data["playlist_col_spacing"]))
+            if hasattr(self, "track_max_chars_spin") and "track_max_chars" in data:
+                self.track_max_chars_spin.setValue(int(data["track_max_chars"]))
+            if hasattr(self, "playlist_bg_slider") and "playlist_bg_opacity" in data:
+                self.playlist_bg_slider.setValue(int(float(data["playlist_bg_opacity"]) * 100))
+            if hasattr(self, "title_pos_combo") and "title_position" in data:
+                _set_combo_case_insensitive(self.title_pos_combo, data["title_position"])
+            if hasattr(self, "title_show_check") and "title_show" in data:
+                self.title_show_check.setChecked(bool(data["title_show"]))
+            self._update_title_spacing_enabled()
+            if hasattr(self, "highlight_style_combo") and "highlight_style" in data:
+                _set_combo_case_insensitive(self.highlight_style_combo, data["highlight_style"])
+            if "title_color" in data:
+                self.title_color = data["title_color"]
+                self._update_title_color_btn()
+            if "track_color" in data:
+                self.track_color = data["track_color"]
+                self._update_track_color_btn()
+            if "active_track_color" in data:
+                self.active_track_color = data["active_track_color"]
+            if hasattr(self, "cursor_y_offset_spin") and "cursor_y_offset" in data:
+                self.cursor_y_offset_spin.setValue(int(data["cursor_y_offset"]))
+            if hasattr(self, "highlight_y_offset_spin") and "highlight_y_offset" in data:
+                self.highlight_y_offset_spin.setValue(int(data["highlight_y_offset"]))
+            if hasattr(self, "highlight_outline_spin") and "highlight_outline_width" in data:
+                self.highlight_outline_spin.setValue(int(data["highlight_outline_width"]))
+            if hasattr(self, "highlight_corner_combo") and "highlight_corner_radius" in data:
+                rad = data["highlight_corner_radius"]
+                if rad == 0 or rad == "0":
+                    self.highlight_corner_combo.setCurrentText("Square (Sharp)")
+                else:
+                    self.highlight_corner_combo.setCurrentText("Rounded")
+            if hasattr(self, "highlight_target_combo") and "highlight_target" in data:
+                tgt = str(data["highlight_target"]).lower().strip()
+                if tgt == "text" or "text" in tgt:
+                    self.highlight_target_combo.setCurrentText("Surround Text")
+                else:
+                    self.highlight_target_combo.setCurrentText("Full Row")
+            if "highlight_color" in data:
+                self.highlight_color = data["highlight_color"]
+                self._update_highlight_color_btn()
+            if hasattr(self, "highlight_opacity_slider") and "highlight_bg_opacity" in data:
+                self.highlight_opacity_slider.setValue(int(float(data["highlight_bg_opacity"]) * 100))
+            if hasattr(self, "logo_cleanup_check") and "logo_cleanup_mode" in data:
+                self.logo_cleanup_check.setChecked(data["logo_cleanup_mode"] != "none")
+            if "output_path" in data and data["output_path"]:
+                self.output_edit.setText(data["output_path"])
+
+            self._check_logo_website_overlap()
+            self._refresh_tracks()
+            self._refresh_preview()
+            self._update_project_ui_indicators()
+        finally:
+            self._loading_project = False
+
+    def _push_undo_snapshot(self) -> None:
+        if getattr(self, "_loading_project", False) or getattr(self, "_undoing_or_redoing", False):
+            return
+        current = copy.deepcopy(self._project())
+        if not self._undo_stack:
+            self._undo_stack.append(current)
+            self._update_undo_redo_actions()
+            return
+        if self._undo_stack[-1] == current:
+            return
+        self._undo_stack.append(current)
+        if len(self._undo_stack) > self._max_undo_depth:
+            self._undo_stack.pop(0)
+        self._redo_stack.clear()
+        self._update_undo_redo_actions()
+
+    def _commit_undo_snapshot(self) -> None:
+        if getattr(self, "_loading_project", False) or getattr(self, "_undoing_or_redoing", False):
+            return
+        if hasattr(self, "_undo_timer") and self._undo_timer.isActive():
+            self._undo_timer.stop()
+        self._push_undo_snapshot()
+
+    def undo(self) -> None:
+        fw = QApplication.focusWidget()
+        if isinstance(fw, (QLineEdit, QTextEdit, QPlainTextEdit)):
+            if hasattr(fw, "undo"):
+                fw.undo()
+                return
+
+        if hasattr(self, "_undo_timer") and self._undo_timer.isActive():
+            self._undo_timer.stop()
+            current = copy.deepcopy(self._project())
+            if not self._undo_stack or self._undo_stack[-1] != current:
+                self._undo_stack.append(current)
+
+        if len(self._undo_stack) <= 1:
+            self.status_label.setText("Nothing to undo.")
+            return
+
+        self._undoing_or_redoing = True
+        try:
+            current_state = self._undo_stack.pop()
+            self._redo_stack.append(current_state)
+            prev_state = self._undo_stack[-1]
+            self._restore_project_state(prev_state)
+            self._is_dirty = (self._project() != self._last_saved_snapshot) if self._last_saved_snapshot is not None else True
+            self._update_project_ui_indicators()
+            self.status_label.setText("Undo applied.")
+        finally:
+            self._undoing_or_redoing = False
+            self._update_undo_redo_actions()
+
+    def redo(self) -> None:
+        fw = QApplication.focusWidget()
+        if isinstance(fw, (QLineEdit, QTextEdit, QPlainTextEdit)):
+            if hasattr(fw, "redo"):
+                fw.redo()
+                return
+
+        if not self._redo_stack:
+            self.status_label.setText("Nothing to redo.")
+            return
+
+        self._undoing_or_redoing = True
+        try:
+            next_state = self._redo_stack.pop()
+            self._undo_stack.append(next_state)
+            self._restore_project_state(next_state)
+            self._is_dirty = (self._project() != self._last_saved_snapshot) if self._last_saved_snapshot is not None else True
+            self._update_project_ui_indicators()
+            self.status_label.setText("Redo applied.")
+        finally:
+            self._undoing_or_redoing = False
+            self._update_undo_redo_actions()
+
+    def _update_undo_redo_actions(self) -> None:
+        can_undo = len(self._undo_stack) > 1
+        can_redo = len(self._redo_stack) > 0
+        if hasattr(self, "undo_act"):
+            self.undo_act.setEnabled(can_undo)
+        if hasattr(self, "redo_act"):
+            self.redo_act.setEnabled(can_redo)
+
+    def _on_shortcut_delete_track(self) -> None:
+        fw = QApplication.focusWidget()
+        if isinstance(fw, (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox)):
+            return
+        self.remove_track()
+
+    def _on_shortcut_rename_track(self) -> None:
+        fw = QApplication.focusWidget()
+        if isinstance(fw, (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox)):
+            return
+        self._on_rename_track_clicked()
+
+    def _on_shortcut_move_up(self) -> None:
+        fw = QApplication.focusWidget()
+        if isinstance(fw, (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox)):
+            return
+        self.move_track(-1)
+
+    def _on_shortcut_move_down(self) -> None:
+        fw = QApplication.focusWidget()
+        if isinstance(fw, (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox)):
+            return
+        self.move_track(1)
+
+    def clear_all_tracks(self) -> None:
+        if not self.tracks:
+            return
+        self.tracks.clear()
+        self._commit_undo_snapshot()
+        self._mark_dirty()
+        self._refresh_tracks()
+        self._schedule_preview(200)
+        self.status_label.setText("All tracks cleared. Press Ctrl+Z to undo.")
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        fw = QApplication.focusWidget()
+        if isinstance(fw, (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox)):
+            super().keyPressEvent(event)
+            return
+
+        if event.key() == Qt.Key.Key_Space:
+            if hasattr(self, "_toggle_intro_preview"):
+                self._toggle_intro_preview()
+                event.accept()
+                return
+        elif event.key() == Qt.Key.Key_F5:
+            self._refresh_preview()
+            event.accept()
+            return
+        super().keyPressEvent(event)
