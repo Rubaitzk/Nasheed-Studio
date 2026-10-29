@@ -6,12 +6,16 @@ sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
 # Import build_release internals
 import importlib.util, pathlib
+root_dir = pathlib.Path(__file__).resolve().parent.parent
 spec = importlib.util.spec_from_file_location("build_release",
-    str(pathlib.Path(__file__).parent / "build_release.py"))
+    str(root_dir / "build_release.py"))
 br = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(br)
 
+# Prefer dist if rebuilt, otherwise existing Application bundle in final_deliverable
 bundle = br.DIST_DIR / br.BUNDLE_NAME
+if not bundle.exists() and (br.APP_OUT / br.BUNDLE_NAME).exists():
+    bundle = br.APP_OUT / br.BUNDLE_NAME
 print(f"Bundle: {bundle}")
 print(f"EXE: {bundle / (br.BUNDLE_NAME + '.exe')}")
 print(f"EXE exists: {(bundle / (br.BUNDLE_NAME + '.exe')).exists()}")

@@ -58,7 +58,7 @@ TEMPLATES_DIR = ROOT / "user_templates"
 PACKAGING_DIR = ROOT / "packaging"
 DOCS_DIR = ROOT / "Documentation"
 
-RELEASE_DIR = ROOT / "release_build"
+RELEASE_DIR = ROOT / "final_deliverable"
 APP_OUT = RELEASE_DIR / "Application"
 SRC_OUT = RELEASE_DIR / "Source_Code"
 SCRIPTS_OUT = RELEASE_DIR / "Scripts"
@@ -293,11 +293,14 @@ def assemble_release(bundle: Path) -> Path:
 
     # 5a. Application bundle
     dest_bundle = APP_OUT / BUNDLE_NAME
-    if dest_bundle.exists():
-        shutil.rmtree(dest_bundle)
-    step(f"Copying bundle to {dest_bundle}…")
-    shutil.copytree(bundle, dest_bundle)
-    ok(f"Application bundle copied")
+    if bundle.resolve() != dest_bundle.resolve():
+        if dest_bundle.exists():
+            shutil.rmtree(dest_bundle)
+        step(f"Copying bundle to {dest_bundle}…")
+        shutil.copytree(bundle, dest_bundle)
+        ok(f"Application bundle copied")
+    else:
+        ok(f"Application bundle already in place at {dest_bundle}")
 
     # 5b. Source code (exclude .venv, build, dist, __pycache__, release_build)
     step("Copying source code…")
@@ -349,13 +352,29 @@ def assemble_release(bundle: Path) -> Path:
                 shutil.copy2(f, TEMPLATES_OUT / f.name)
     ok("Templates copied")
 
-    # 5e. Installation instructions
+    # 5e. Installation instructions and desktop shortcut helpers
     if (ROOT / "Documentation" / "INSTALLATION.md").is_file():
         shutil.copy2(ROOT / "Documentation" / "INSTALLATION.md", INSTALL_OUT / "INSTALLATION.md")
     else:
         install_txt = INSTALL_OUT / "INSTALLATION.md"
         install_txt.write_text(INSTALLATION_GUIDE, encoding="utf-8")
-    ok("Installation guide written")
+
+    shortcut_bat = ROOT / "packaging" / "create_desktop_shortcut.bat"
+    shortcut_ps1 = ROOT / "packaging" / "create_desktop_shortcut.ps1"
+    readme_run = ROOT / "packaging" / "README_HOW_TO_RUN.txt"
+
+    if shortcut_bat.is_file():
+        shutil.copy2(shortcut_bat, dest_bundle / "Create Desktop Shortcut.bat")
+        shutil.copy2(shortcut_bat, INSTALL_OUT / "create_desktop_shortcut.bat")
+        shutil.copy2(shortcut_bat, RELEASE_DIR / "Create Desktop Shortcut.bat")
+    if shortcut_ps1.is_file():
+        shutil.copy2(shortcut_ps1, dest_bundle / "create_desktop_shortcut.ps1")
+        shutil.copy2(shortcut_ps1, INSTALL_OUT / "create_desktop_shortcut.ps1")
+        shutil.copy2(shortcut_ps1, RELEASE_DIR / "create_desktop_shortcut.ps1")
+    if readme_run.is_file():
+        shutil.copy2(readme_run, dest_bundle / "README_HOW_TO_RUN.txt")
+        shutil.copy2(readme_run, RELEASE_DIR / "README_HOW_TO_RUN.txt")
+    ok("Installation guide and shortcut utilities copied")
 
     # 5f. Documentation
     if DOCS_DIR.is_dir():
@@ -370,18 +389,21 @@ def assemble_release(bundle: Path) -> Path:
 
     # 5g. Evidence placeholder
     evidence_note = EVIDENCE_OUT / "README.md"
-    evidence_note.write_text(
-        "# Test Evidence\n\n"
-        "Place clean-environment test screenshots, exported sample videos, and test "
-        "logs here before delivering to the client.\n\n"
-        "Required evidence items:\n"
-        "- Screenshot of application launch in clean environment\n"
-        "- Screenshot of completed export dialog\n"
-        "- Sample exported MP4 (short, ≤60 s)\n"
-        "- Test log from clean-environment session\n",
-        encoding="utf-8",
-    )
-    ok("Evidence placeholder created")
+    if not evidence_note.exists():
+        evidence_note.write_text(
+            "# Test Evidence\n\n"
+            "Place clean-environment test screenshots, exported sample videos, and test "
+            "logs here before delivering to the client.\n\n"
+            "Required evidence items:\n"
+            "- Screenshot of application launch in clean environment\n"
+            "- Screenshot of completed export dialog\n"
+            "- Sample exported MP4 (short, ≤60 s)\n"
+            "- Test log from clean-environment session\n",
+            encoding="utf-8",
+        )
+        ok("Evidence placeholder created")
+    else:
+        ok("Evidence directory preserved")
 
     # 5h. ZIP of Application
     zip_path = RELEASE_DIR / ZIP_NAME
