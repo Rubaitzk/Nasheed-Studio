@@ -254,7 +254,7 @@ class MainWindow(QMainWindow):
         self._is_closing = False
         self._recent_menu: Optional[QMenu] = None
         self._committed_title = "Abu Ali Nasheeds Collection"
-        self._last_inspector_width = 320
+        self._last_inspector_width = 360
 
         # Preview cache
         self._cached_preview_key = None
@@ -561,7 +561,7 @@ class MainWindow(QMainWindow):
         # Pane 3: Inspector Pane (min 280, collapsible)
         self.inspector_panel = QFrame()
         self.inspector_panel.setObjectName("inspector_pane")
-        self.inspector_panel.setMinimumWidth(280)
+        self.inspector_panel.setMinimumWidth(320)
         insp_layout = QVBoxLayout(self.inspector_panel)
         insp_layout.setContentsMargins(8, 8, 8, 8)
         insp_layout.setSpacing(6)
@@ -605,7 +605,7 @@ class MainWindow(QMainWindow):
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setStretchFactor(2, 0)
-        self.splitter.setSizes([310, 620, 320])
+        self.splitter.setSizes([300, 580, 360])
         root_layout.addWidget(self.splitter, 1)
 
         # --------------------------------------------------------------
@@ -790,6 +790,7 @@ class MainWindow(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         content = QWidget()
         layout = QVBoxLayout(content)
         layout.setContentsMargins(6, 8, 6, 8)
@@ -826,7 +827,8 @@ class MainWindow(QMainWindow):
         self.background_clear_btn.setToolTip("Clear background")
         self.background_clear_btn.clicked.connect(self.clear_background)
 
-        self.background_btn = QPushButton("Choose background (image / MP4)…")
+        self.background_btn = QPushButton("Choose Background…")
+        self.background_btn.setToolTip("Select background image (PNG, JPG) or video (MP4, MOV)")
         self.background_btn.setIcon(get_svg_icon("image", 13, "#edf2ee"))
         self.background_btn.clicked.connect(self.choose_background)
 
@@ -957,17 +959,20 @@ class MainWindow(QMainWindow):
         self.playlist_pos_combo.currentTextChanged.connect(lambda _: self._on_layout_param_changed())
         pl_pos_row.addWidget(pl_pos_lbl)
         pl_pos_row.addWidget(self.playlist_pos_combo, 1)
+        layout.addLayout(pl_pos_row)
 
-        cols_lbl = QLabel("Cols:")
+        pl_col_row = QHBoxLayout()
+        pl_col_row.setSpacing(6)
+        cols_lbl = QLabel("Columns:")
         cols_lbl.setObjectName("muted")
         self.playlist_cols_spin = QSpinBox()
         self.playlist_cols_spin.setRange(1, 4)
         self.playlist_cols_spin.setValue(1)
         self.playlist_cols_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
-        pl_pos_row.addWidget(cols_lbl)
-        pl_pos_row.addWidget(self.playlist_cols_spin)
+        pl_col_row.addWidget(cols_lbl)
+        pl_col_row.addWidget(self.playlist_cols_spin, 1)
 
-        col_sp_lbl = QLabel("Col gap:")
+        col_sp_lbl = QLabel("Column gap:")
         col_sp_lbl.setObjectName("muted")
         self.col_spacing_spin = QSpinBox()
         self.col_spacing_spin.setRange(10, 250)
@@ -975,9 +980,9 @@ class MainWindow(QMainWindow):
         self.col_spacing_spin.setSuffix(" px")
         self.col_spacing_spin.setToolTip("Distance / gap between playlist columns")
         self.col_spacing_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
-        pl_pos_row.addWidget(col_sp_lbl)
-        pl_pos_row.addWidget(self.col_spacing_spin)
-        layout.addLayout(pl_pos_row)
+        pl_col_row.addWidget(col_sp_lbl)
+        pl_col_row.addWidget(self.col_spacing_spin, 1)
+        layout.addLayout(pl_col_row)
 
         bg_op_row = QHBoxLayout()
         bg_op_row.setSpacing(6)
@@ -1121,7 +1126,7 @@ class MainWindow(QMainWindow):
 
         sp_row = QHBoxLayout()
         sp_row.setSpacing(6)
-        sp_lbl = QLabel("Row spacing:")
+        sp_lbl = QLabel("Row Spacing:")
         sp_lbl.setObjectName("muted")
         self.track_spacing_spin = QDoubleSpinBox()
         self.track_spacing_spin.setRange(1.2, 2.8)
@@ -1131,8 +1136,11 @@ class MainWindow(QMainWindow):
         self.track_spacing_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
         sp_row.addWidget(sp_lbl)
         sp_row.addWidget(self.track_spacing_spin, 1)
+        layout.addLayout(sp_row)
 
-        char_lim_lbl = QLabel("Max title length:")
+        char_row = QHBoxLayout()
+        char_row.setSpacing(6)
+        char_lim_lbl = QLabel("Max Title Length:")
         char_lim_lbl.setObjectName("muted")
         self.track_max_chars_spin = QSpinBox()
         self.track_max_chars_spin.setRange(0, 120)
@@ -1141,9 +1149,9 @@ class MainWindow(QMainWindow):
         self.track_max_chars_spin.setSuffix(" chars")
         self.track_max_chars_spin.setToolTip("Truncate titles after this many characters (0 = Auto fit to column)")
         self.track_max_chars_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
-        sp_row.addWidget(char_lim_lbl)
-        sp_row.addWidget(self.track_max_chars_spin, 1)
-        layout.addLayout(sp_row)
+        char_row.addWidget(char_lim_lbl)
+        char_row.addWidget(self.track_max_chars_spin, 1)
+        layout.addLayout(char_row)
 
         trop_row = QHBoxLayout()
         trop_row.setSpacing(6)
@@ -1509,13 +1517,13 @@ class MainWindow(QMainWindow):
         if is_visible:
             sizes = self.splitter.sizes()
             if len(sizes) >= 3 and sizes[2] > 0:
-                self._last_inspector_width = max(280, sizes[2])
+                self._last_inspector_width = max(320, sizes[2])
             self.inspector_panel.hide()
             self.inspector_toggle_btn.setChecked(False)
         else:
             self.inspector_panel.show()
             self.inspector_toggle_btn.setChecked(True)
-            w = max(280, getattr(self, "_last_inspector_width", 320))
+            w = max(320, getattr(self, "_last_inspector_width", 340))
             sizes = self.splitter.sizes()
             total = sum(sizes)
             left = sizes[0] if sizes else 310

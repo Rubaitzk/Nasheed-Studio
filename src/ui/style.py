@@ -101,7 +101,7 @@ QLabel#muted {
 }
 QLabel#subtle {
     color: #66756b;
-    font-size: 8.5pt;
+    font-size: 8pt;
 }
 QLabel#unsaved_pill {
     background: #332617;
@@ -124,7 +124,7 @@ QLabel#saved_pill {
 }
 QLabel#warning {
     color: #f2ba49;
-    font-size: 8.5pt;
+    font-size: 8pt;
     font-weight: 500;
     padding: 6px 10px;
     background: #2a251a;
@@ -410,9 +410,9 @@ QTabBar::tab {
     border-bottom: none;
     border-top-left-radius: 6px;
     border-top-right-radius: 6px;
-    padding: 6px 12px;
-    margin-right: 3px;
-    font-size: 8.5pt;
+    padding: 5px 6px;
+    margin-right: 2px;
+    font-size: 8pt;
     font-weight: 500;
 }
 QTabBar::tab:hover {
@@ -440,7 +440,7 @@ QProgressBar {
     background: #1c221e;
     text-align: center;
     color: #edf2ee;
-    font-size: 8.5pt;
+    font-size: 8pt;
     height: 18px;
 }
 QProgressBar::chunk {
