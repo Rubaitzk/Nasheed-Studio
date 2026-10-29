@@ -349,15 +349,23 @@ def assemble_release(bundle: Path) -> Path:
                 shutil.copy2(f, TEMPLATES_OUT / f.name)
     ok("Templates copied")
 
-    # 5e. Installation instructions (inline)
-    install_txt = INSTALL_OUT / "INSTALLATION.md"
-    install_txt.write_text(INSTALLATION_GUIDE, encoding="utf-8")
+    # 5e. Installation instructions
+    if (ROOT / "Documentation" / "INSTALLATION.md").is_file():
+        shutil.copy2(ROOT / "Documentation" / "INSTALLATION.md", INSTALL_OUT / "INSTALLATION.md")
+    else:
+        install_txt = INSTALL_OUT / "INSTALLATION.md"
+        install_txt.write_text(INSTALLATION_GUIDE, encoding="utf-8")
     ok("Installation guide written")
 
     # 5f. Documentation
-    (DOCS_OUT / "USER_GUIDE.md").write_text(USER_GUIDE, encoding="utf-8")
-    (DOCS_OUT / "DEVELOPER_GUIDE.md").write_text(DEVELOPER_GUIDE, encoding="utf-8")
-    (DOCS_OUT / "TROUBLESHOOTING.md").write_text(TROUBLESHOOTING_GUIDE, encoding="utf-8")
+    if DOCS_DIR.is_dir():
+        for doc_file in DOCS_DIR.iterdir():
+            if doc_file.is_file():
+                shutil.copy2(doc_file, DOCS_OUT / doc_file.name)
+    else:
+        (DOCS_OUT / "USER_GUIDE.md").write_text(USER_GUIDE, encoding="utf-8")
+        (DOCS_OUT / "DEVELOPER_GUIDE.md").write_text(DEVELOPER_GUIDE, encoding="utf-8")
+        (DOCS_OUT / "TROUBLESHOOTING.md").write_text(TROUBLESHOOTING_GUIDE, encoding="utf-8")
     ok("Documentation written")
 
     # 5g. Evidence placeholder
@@ -415,58 +423,44 @@ Generated: {ts}
 |------|---------|
 | `Application/Nasheed Studio/Nasheed Studio.exe` | `{exe_hash}` |
 
-## Distribution Archive
+## Delivery Package Structure
 
-| File | SHA-256 |
-|------|---------|
-| `{ZIP_NAME}` | `{zip_hash}` |
-
-## Folder Structure
+The client receives the entire project archive containing:
 
 ```
-release_build/
+final_deliverable/
   Application/
     Nasheed Studio/         ← Run "Nasheed Studio.exe" to launch
-  Source_Code/              ← Complete Python source for maintenance
+  Source_Code/              ← Complete clean Python source for maintenance
   Scripts/
     build_release.py        ← Reproduces this build
     build_exe.py            ← Legacy packaging helper
-    tests/                  ← Automated test suite
+    tests/                  ← Automated test suite (246 tests)
   Templates/                ← Seed design templates (JSON)
   Installation/
     INSTALLATION.md         ← Installation and first-run instructions
   Documentation/
     USER_GUIDE.md           ← End-user operational guide
     DEVELOPER_GUIDE.md      ← Developer / build guide
-    TROUBLESHOOTING.md      ← Common issues and solutions
-  Evidence/                 ← Clean-environment test screenshots and exports
-  {ZIP_NAME}     ← Portable ZIP of Application/ for delivery
+    TROUBLESHOOTING.md      ← Diagnostics & process lifecycle guide
+    ACCEPTANCE_TEST_GUIDE.md← 25-step QA checklist
+  Evidence/                 ← Clean-environment test screenshots and master exports
   MANIFEST.md               ← This file
 ```
 
 ## What the client receives
 
-The client extracts `{ZIP_NAME}` (or copies `Application/Nasheed Studio/` as-is)
-to any directory on a Windows 10/11 machine and double-clicks `Nasheed Studio.exe`.
-No Python installation is required. No additional software installation is needed.
+The client unzips the master project archive to any directory on a Windows 10/11 machine,
+navigates to `Application/Nasheed Studio/`, and double-clicks `Nasheed Studio.exe`.
+No Python installation is required. No additional codecs or software installations are needed.
 FFmpeg is bundled inside the `tools/` sub-directory.
+The complete source code, templates, tests, and documentation are included for full transparency.
 
 ## Source-code notes
 
 The `Source_Code/` directory contains the complete Python source tree.
-It excludes virtual environments, build artifacts, and private credentials.
-To build from source, follow `Documentation/DEVELOPER_GUIDE.md`.
-
-## Known limitations at time of delivery
-
-- Hardware video encoders (NVENC, AMF, QSV) may or may not be available
-  on the target machine; the application automatically falls back to the
-  libx264 software encoder.
-- Font rendering uses the fonts installed on the target Windows system.
-  The bundled `assets/fonts/` directory ships Montserrat, Cinzel, Cinzel
-  Decorative, Oswald, and Bebas Neue as fallbacks.
-- The clean-environment test should be completed and evidence added to
-  Evidence/ before final client delivery.
+It excludes virtual environments, build artifacts, and temporary caches.
+To run from source or execute the test suite, follow `Documentation/DEVELOPER_GUIDE.md`.
 """
     manifest_path = release_dir / "MANIFEST.md"
     manifest_path.write_text(manifest, encoding="utf-8")

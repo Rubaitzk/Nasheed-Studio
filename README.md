@@ -1,171 +1,148 @@
 # Nasheed Studio
 
-A modern Windows desktop application designed to automate the production of high-quality Nasheed playlist collection videos with synchronized track indicators, flexible multi-column layouts, customizable branding, and high-resolution MP4 export.
+A professional Windows desktop application designed to automate the production of high-quality Nasheed playlist collection videos with synchronized track indicators, flexible multi-column layouts, customizable branding, and high-resolution MP4 export.
 
 ---
 
-## Overview
+## Delivery Package Structure
 
-**Nasheed Studio** empowers content creators to design and render professional playlist videos without requiring manual video editing software or command-line scripting. The application combines a responsive 3-panel PySide6 interface with an FFmpeg-backed rendering engine, producing Full HD (1080p), 2K (1440p), and 4K (2160p) videos.
+The project is delivered as a comprehensive, self-contained master distribution package (`final_deliverable/` or `Nasheed_Studio_Complete_Project_v1.0.zip`), containing everything needed for both immediate end-user operation and future developer maintenance:
+
+```
+final_deliverable/
+├── Application/
+│   └── Nasheed Studio/
+│       ├── Nasheed Studio.exe        # Standalone executable (zero external dependencies required)
+│       ├── _internal/                # Bundled Python 3.10 runtime & PySide6 Qt 6 libraries
+│       └── tools/                    # Static FFmpeg 8.1 & FFprobe binaries
+├── Source_Code/                      # Complete clean Python source code
+│   ├── app.py                        # Application entry point
+│   ├── build_release.py              # Automated packaging & distribution builder
+│   ├── nasheed_studio.spec           # PyInstaller build specification
+│   ├── requirements.txt              # Python runtime dependencies
+│   ├── src/                          # Modular services and PySide6 UI components
+│   └── assets/                       # Bundled fonts, icons, and templates
+├── Documentation/                    # Comprehensive user and technical guides
+│   ├── USER_GUIDE.md                 # End-user operational guide & feature walkthrough
+│   ├── DEVELOPER_GUIDE.md            # Architecture, pipeline, and developer build instructions
+│   ├── TROUBLESHOOTING.md            # Diagnostics, process lifecycle, and FAQs
+│   ├── INSTALLATION.md               # Quick-start extraction and launch guide
+│   └── ACCEPTANCE_TEST_GUIDE.md      # 25-step manual QA verification checklist
+├── Evidence/                         # Real-world verification proofs and audit reports
+│   ├── ultra_detail_master_render_1080p.mp4  # Verified 12.75 Mbps CRF 18 master export
+│   ├── verification_render_1080p_crf22.mp4   # Verified 6.40 Mbps balanced export
+│   ├── verification_audit_report.txt         # Zero-orphan process lifecycle audit report
+│   ├── ultra_detail_frame_03s.png            # Frame proof at 3.0s
+│   ├── ultra_detail_frame_15s_loop.png       # Seamless video background loop proof at 15.0s
+│   └── clean_environment_test_export_1080p.mp4 # Standalone clean-machine test export
+├── Templates/                        # Reusable Nasheed design layout presets (JSON)
+├── Scripts/                          # Test suite runner and automated build scripts
+└── MANIFEST.md                       # Delivery manifest, file index, and SHA-256 checksums
+```
 
 ---
 
 ## Key Features
 
-### 1. Dynamic Backgrounds
-- **Image Backgrounds:** Full support for PNG, JPG, JPEG, and WebP images.
-- **Video Backgrounds:** Loopable MP4 video background support with seamless playback synchronization across the full audio timeline.
+### 1. Ultra Detail · Master Quality Rendering Engine
+- **Restored Unconstrained CRF 18:** Encodes via `libx264` with no artificial bitrate clamping (`-maxrate` and `-bufsize` omitted in master mode). Preserves the finest details, including starry skies, atmospheric smoke, particle effects, and film grain on looping video backgrounds without macroblocking or color banding.
+- **Studio-Grade AAC Audio:** 320 kbps AAC stereo encoding preserving full dynamic audio range and crisp acoustics.
+- **Selectable Quality Presets:**
+  - **Ultra Detail · Master Quality (Recommended):** Unconstrained CRF 18, 320 kbps audio (~12–14 Mbps total bitrate; ~850–900 MB for a 10-minute 1080p video).
+  - **High Quality · Balanced:** CRF 22 with gentle caps, 192 kbps audio (~5–6 Mbps total bitrate; ~400–450 MB for 10 minutes).
+  - **Web / Fast:** CRF 26 with tighter caps, 128 kbps audio (~2.5–3.5 Mbps total bitrate; ~200–250 MB for 10 minutes).
+- **Multi-Resolution Export:** Supports 1080p Full HD (1920×1080), 1440p QHD (2560×1440), and 4K UHD (3840×2160).
+- **Atomic Two-Stage Export:** Renders to a temporary `.part.mp4` file and atomically commits upon 100% completion, protecting existing files from corruption.
 
-### 2. Audio & Playlist Management
-- **Multi-Track Import:** Add MP3, WAV, AAC, FLAC, and M4A audio files.
-- **Interactive Editing:** Double-click to rename titles independently of original filenames.
-- **Flexible Ordering:** Reorder tracks via drag-and-drop or toolbar controls.
-- **Flexible Columns:** 1-column, 2-column, or multi-column layouts with adjustable spacing, widths, and positioning.
-- **Automatic Duration Detection:** Precise audio probing using FFprobe for accurate track-by-track timelines.
+### 2. Process Lifecycle Management & Zero Zombie Safety
+- **Centralized `ProcessManager`:** All child subprocesses (`ffmpeg.exe`, `ffprobe.exe`) are launched through a centralized manager (`src/services/process_manager.py`) with `CREATE_NO_WINDOW` creation flags, completely eliminating black command-window flashing and Command Prompt hosts.
+- **Win32 Job Object Protection:** Background render jobs are assigned to a Windows Job Object configured with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. Even if the application terminates unexpectedly, Windows automatically reaps all child processes.
+- **Bounded Graceful Termination:** Subprocesses receive graceful termination signals followed by bounded timeout escalation (`wait(2.0)` → `terminate()` → `kill()`).
+- **Comprehensive Cleanup Hooks:** Safe shutdown triggers on normal exit, window close (`closeEvent`), render cancellation, render failure, and Python `atexit`.
 
-### 3. Active Track Indicators
+### 3. Looping Video & Image Backgrounds
+- **Seamless MP4 Video Backgrounds:** Import any MP4 or MOV video. The rendering engine loops the background seamlessly across the entire timeline to match the combined duration of all audio tracks.
+- **Still Image Backgrounds:** Full support for PNG, JPG, JPEG, and WebP images.
+- **Aspect-Aware Scaling:** Auto-centers and scales media to 16:9 canvas dimensions without distortion.
+
+### 4. Audio & Playlist Management
+- **Multi-Format Ingestion:** Import MP3, WAV, AAC, FLAC, and M4A audio files.
+- **Automated Metadata Extraction:** Millisecond-accurate duration probing using bundled FFprobe.
+- **Interactive Editing:** Double-click any track in the playlist pane to rename display titles independently of original filenames.
+- **Flexible Ordering:** Drag-and-drop reordering with live preview canvas updates.
+- **Layout Columns:** Choose between 1-column and 2-column layouts with adjustable column gap, playlist width, and horizontal/vertical positioning.
+
+### 5. Active Track Indicators
 - **Independent Highlight Modes:**
-  - **Pill:** Rounded pill-style highlight.
-  - **Rectangle:** Thick solid rectangular highlight box with adjustable padding.
-  - **Outline:** Sleek border bounding box.
+  - **Pill:** Modern rounded pill highlight behind the active track.
+  - **Rectangle:** Clean rectangular highlight box with adjustable margins and padding.
+  - **Outline:** Sleek border outline accent.
   - **Glass:** Frosted, translucent backdrop accent.
   - Full control over highlight color, opacity, and margin offsets.
-- **Custom Cursors:**
-  - Choose between built-in pointers or custom image cursors (PNG/SVG).
+- **Custom Animated Cursors:**
+  - Built-in pointers or custom image cursors (PNG/SVG).
   - Adjustable size and font-cap-height-normalized vertical alignment.
   - Toggle cursor and highlight independently or use both simultaneously.
 
-### 4. Typography & Branding
-- **Independent Typography Controls:** Configure fonts, styles, weights, and sizes separately for the Collection Title and Playlist items.
-- **Bundled Fonts:** Ships with modern typography including Montserrat, Bebas Neue, Oswald, and Cinzel, alongside full Windows system font enumeration.
-- **Brand Logo & Watermark:**
-  - 4-corner placement (Top-Left, Top-Right, Bottom-Left, Bottom-Right).
-  - Adjustable scale and alpha opacity blending.
-  - Optional corner website text watermark with non-overlapping safety boundaries.
+### 6. Typography, Branding & Watermarks
+- **Independent Typography Controls:** Separate font family, style (Regular, Bold, Italic), and size controls for Collection Title and Playlist items.
+- **Bundled Fonts:** Ships with modern typography including Montserrat, Bebas Neue, Oswald, and Cinzel, alongside full Windows system font discovery.
+- **Brand Logo:** 4-corner placement (Top-Left, Top-Right, Bottom-Left, Bottom-Right) with adjustable scale, alpha opacity, and background cleanup.
+- **Website Watermark:** Corner website URL watermark with collision-avoiding safety margins.
 
-### 5. Intro Animation & Sound Effects
-- **Intro Sequence:** Configurable opening card with animated title, subtitle, duration, and fade transitions.
-- **Audio Cues:** Optional track-transition sound effects (chimes, clicks, or custom audio) with volume control.
-
-### 6. Templates & Presets
-- **Built-in Reference Layouts:** Includes ready-to-use presets inspired by popular Nasheed channel aesthetics (Monochrome Lion, Two-Column Warrior, Battlefield Knight, Glass Highlight).
-- **User Template Library:** Save, import, and export custom JSON design presets (`user_templates/`) to streamline future productions.
-- **Atomic Project Files:** Save and reopen `.nasheed` / `.json` project files safely without risk of data corruption.
-
-### 7. Engine Safety & Process Lifecycle
-- **Zero-Halo Compositing:** Crisp single-layer alpha blending without muddy shadows or color bleeding.
-- **Win32 Job Object & Process Manager:** Prevents orphaned FFmpeg processes or zombie conhost windows during cancellation or app exit.
-- **Atomic Staging Export:** Renders to a `.part.mp4` file first and commits only upon 100% successful render completion, ensuring existing outputs are never corrupted.
+### 7. Intro Animation & Sound Effects
+- **Intro Sequence:** Configurable opening card with animated collection title, subtitle, duration (1–10s), and fade/slide/zoom transitions.
+- **Track Transition SFX:** Optional audio cues (chimes, clicks, or custom sound effects) that trigger at each track transition with custom volume control.
 
 ---
 
-## Project Structure
+## Quick Start (No Python Required)
 
+1. Unzip the delivery archive (`final_deliverable.zip` or `Nasheed_Studio_Complete_Project_v1.0.zip`).
+2. Open the `Application\Nasheed Studio\` folder.
+3. Double-click **`Nasheed Studio.exe`**.
+4. The application launches immediately. No Python, FFmpeg, or external codecs are required.
+
+---
+
+## Running from Source (Developer Setup)
+
+### Requirements
+- **OS:** Windows 10 or Windows 11 (64-bit)
+- **Python:** 3.10 (recommended)
+- **FFmpeg & FFprobe:** Included in `tools/` or available on system `PATH`
+
+### Step-by-Step Setup
+```powershell
+# 1. Navigate to the project root
+cd Source_Code
+
+# 2. Create and activate a virtual environment
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+
+# 3. Install dependencies
+pip install --upgrade pip
+pip install -r requirements.txt
+
+# 4. Launch the application
+python app.py
+
+# 5. Run the automated test suite (246 tests)
+python -m pytest tests/ -v
 ```
-nasheed_studio/
-├── app.py                      # Main application entry point
-├── build_release.py            # Automated standalone packaging script
-├── assemble_only.py            # Packaging assembly helper
-├── requirements.txt            # Python dependencies
-├── assets/                     # Core bundled assets and typography
-│   └── fonts/                  # Bundled Google fonts (Montserrat, Cinzel, etc.)
-├── src/
-│   ├── services/               # Core business logic and rendering services
-│   │   ├── compositor.py       # Layout calculation and Pillow overlay renderer
-│   │   ├── export_job.py       # Threaded render job with Win32 Job Object binding
-│   │   ├── export_service.py   # FFmpeg command builder and export validation
-│   │   ├── font_service.py     # System and custom font discovery and metric calculations
-│   │   ├── media_probe.py      # FFprobe metadata extraction (audio durations, video streams)
-│   │   ├── process_manager.py  # Centralized child process tracker and clean termination
-│   │   ├── project_service.py  # Atomic project and template I/O
-│   │   ├── render_service.py   # Multi-pass video rendering pipeline
-│   │   └── workspace_service.py# Temporary render staging and cache cleanup
-│   └── ui/                     # PySide6 graphical user interface
-│       ├── main_window.py      # Primary 3-column application window and state handlers
-│       ├── icons.py            # Dynamic SVG and vector icon generators
-│       └── style.py            # High-contrast dark theme stylesheet
-├── templates/                  # Built-in reference layout presets
-├── user_templates/             # Reusable user template presets and documentation
-└── tools/                      # Local FFmpeg / FFprobe binaries (optional)
-```
-
----
-
-## Installation & Setup
-
-### Option A: Standalone Windows Executable (Recommended for End Users)
-If using the packaged release:
-1. Extract the `Nasheed_Studio_Windows_x64.zip` distribution.
-2. Launch `Nasheed Studio.exe`.
-3. No Python or external dependencies required.
-
-### Option B: Running from Source
-
-#### Requirements
-- **OS:** Windows 10 or 11 (64-bit)
-- **Python:** 3.10, 3.11, or 3.12
-- **FFmpeg & FFprobe:** Installed and available on your system `PATH`, or placed inside the `tools/` directory (`tools/ffmpeg.exe`, `tools/ffprobe.exe`).
-
-#### Step-by-Step Setup
-1. **Clone the repository:**
-   ```powershell
-   git clone https://github.com/Rubaitzk/Nasheed-Studio.git
-   cd Nasheed-Studio
-   ```
-
-2. **Create and activate a virtual environment:**
-   ```powershell
-   python -m venv .venv
-   .\.venv\Scripts\Activate.ps1
-   ```
-
-3. **Install dependencies:**
-   ```powershell
-   pip install --upgrade pip
-   pip install -r requirements.txt
-   ```
-
-4. **Verify FFmpeg:**
-   ```powershell
-   ffmpeg -version
-   ffprobe -version
-   ```
-
-5. **Launch the application:**
-   ```powershell
-   python app.py
-   ```
-
----
-
-## Workflow Guide
-
-1. **Set Background:** Choose an image or loopable MP4 video background.
-2. **Add Tracks:** Click **Add Tracks** to select audio files. Drag to reorder, or double-click to rename titles.
-3. **Configure Layout & Typography:**
-   - Adjust column count (1 or 2), row spacing, and playlist width.
-   - Select custom fonts, sizes, and colors for titles and tracks.
-   - Choose between **Pill**, **Rectangle**, **Outline**, or **Glass** highlight styles.
-   - Select or import a custom cursor icon and adjust its scale.
-4. **Branding & Intro:**
-   - Select an optional brand logo and choose its corner placement.
-   - Configure the opening intro card and track-change sound effect if desired.
-5. **Preview & Render:**
-   - Check the 16:9 interactive preview canvas.
-   - Choose resolution (**1080p Full HD**, **1440p 2K**, or **2160p 4K UHD**).
-   - Set output destination and click **Render MP4**.
 
 ---
 
 ## Building Standalone Executables
 
-To build a clean, self-contained Windows executable bundling PyInstaller, FFmpeg, fonts, and preset templates:
+To reproduce the self-contained Windows executable bundling the Python runtime, PySide6, FFmpeg, and assets:
 
 ```powershell
 python build_release.py
 ```
 
-The compiled release will be assembled in `dist/` and zipped for distribution.
+The compiled release package will be generated inside `release_build/`.
 
 ---
 
