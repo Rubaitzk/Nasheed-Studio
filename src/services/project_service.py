@@ -43,6 +43,8 @@ TEMPLATE_DESIGN_KEYS = [
     "playlist_bg_radius",
 
     # Collection title styling & positioning
+    "title_x_offset",
+    "title_y_offset",
     "title_font_family",
     "title_font_style",
     "title_font_size",

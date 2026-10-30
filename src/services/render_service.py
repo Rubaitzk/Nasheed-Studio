@@ -225,6 +225,8 @@ def build_render_command(
         playlist_bg_radius=playlist_bg_radius,
         track_wrap_text=track_wrap_text,
         title_position=title_position,
+        title_x_offset=int(project.get("title_x_offset", 0) or 0),
+        title_y_offset=int(project.get("title_y_offset", 0) or 0),
         title_margin=title_margin,
         title_show=title_show,
         title_color=title_color,

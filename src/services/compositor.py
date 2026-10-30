@@ -329,6 +329,8 @@ def _calculate_title_layout(
     usable_width: int,
     playlist_x: int,
     website_rect: Optional[Tuple[int, int, int, int]] = None,
+    title_x_offset: int = 0,
+    title_y_offset: int = 0,
 ) -> Tuple[List[str], ImageFont.ImageFont, int, List[Tuple[int, int]], int]:
     """
     Calculate multiline text wrapping, font scaling, line coordinates, and bounding limit
@@ -407,12 +409,15 @@ def _calculate_title_layout(
                 l2 = " ".join(rem_words)
             lines = [l1, l2.rstrip() + "…"]
 
+    eff_title_x_off = int(round(title_x_offset * res_scale))
+    eff_title_y_off = int(round(title_y_offset * res_scale))
+
     line_h = int(curr_sz * 1.25)
     line_coords: List[Tuple[int, int]] = []
     for idx, line_text in enumerate(lines):
         bb = title_font.getbbox(line_text)
         lw = bb[2] - bb[0]
-        ly = start_y + idx * line_h
+        ly = start_y + idx * line_h + eff_title_y_off
         if norm_title_pos == "Above Playlist":
             if playlist_x + lw > width - margin:
                 lx = max(margin, width - margin - lw)
@@ -424,14 +429,19 @@ def _calculate_title_layout(
                 lx = max(lx, logo_rect[2] + int(width * 0.02))
         else:  # Top-Center
             lx = (width - lw) // 2
+        lx += eff_title_x_off
+
+        # Safe clamping within frame boundaries
+        lx = max(0, min(width - lw, lx))
+        ly = max(0, min(height - line_h, ly))
         line_coords.append((lx, ly))
 
     total_th = len(lines) * line_h
     if line_coords:
         actual_bottom = max(ly + title_font.getbbox(l)[3] for (lx, ly), l in zip(line_coords, lines))
-        title_bottom_y = max(start_y + total_th, actual_bottom)
+        title_bottom_y = max(start_y + total_th + eff_title_y_off, actual_bottom)
     else:
-        title_bottom_y = start_y + total_th
+        title_bottom_y = start_y + total_th + eff_title_y_off
     return lines, title_font, total_th, line_coords, title_bottom_y
 
 
@@ -1089,6 +1099,8 @@ def create_composition(
     playlist_padding: int = 8,
     track_wrap_text: bool = False,
     title_position: str = "Top-Center",
+    title_x_offset: int = 0,
+    title_y_offset: int = 0,
     title_margin: int = 12,
     title_show: bool = True,
     title_color: Union[str, tuple, list] = (255, 255, 248),
@@ -1313,6 +1325,8 @@ def create_composition(
             usable_width=usable_width,
             playlist_x=playlist_x,
             website_rect=web_rect,
+            title_x_offset=title_x_offset,
+            title_y_offset=title_y_offset,
         )
 
         title_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))

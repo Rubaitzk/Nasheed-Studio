@@ -1123,6 +1123,34 @@ class MainWindow(QMainWindow):
         pl_col_row.addWidget(self.col_spacing_spin, 1)
         layout.addLayout(pl_col_row)
 
+        pl_x_row = QHBoxLayout()
+        pl_x_row.setSpacing(6)
+        pl_x_lbl = QLabel("Track Titles X-Offset:")
+        pl_x_lbl.setObjectName("muted")
+        self.playlist_x_offset_spin = QSpinBox()
+        self.playlist_x_offset_spin.setRange(-500, 500)
+        self.playlist_x_offset_spin.setValue(0)
+        self.playlist_x_offset_spin.setSuffix(" px")
+        self.playlist_x_offset_spin.setToolTip("Fine-tune horizontal position of nasheed titles playlist (-500 to +500 px)")
+        self.playlist_x_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
+        pl_x_row.addWidget(pl_x_lbl)
+        pl_x_row.addWidget(self.playlist_x_offset_spin, 1)
+        layout.addLayout(pl_x_row)
+
+        pl_y_row = QHBoxLayout()
+        pl_y_row.setSpacing(6)
+        pl_y_lbl = QLabel("Track Titles Y-Offset:")
+        pl_y_lbl.setObjectName("muted")
+        self.playlist_y_offset_spin = QSpinBox()
+        self.playlist_y_offset_spin.setRange(-500, 500)
+        self.playlist_y_offset_spin.setValue(0)
+        self.playlist_y_offset_spin.setSuffix(" px")
+        self.playlist_y_offset_spin.setToolTip("Fine-tune vertical position of nasheed titles playlist (-500 to +500 px)")
+        self.playlist_y_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
+        pl_y_row.addWidget(pl_y_lbl)
+        pl_y_row.addWidget(self.playlist_y_offset_spin, 1)
+        layout.addLayout(pl_y_row)
+
         bg_op_row = QHBoxLayout()
         bg_op_row.setSpacing(6)
         bg_op_lbl = QLabel("Panel Opacity:")
@@ -1195,6 +1223,34 @@ class MainWindow(QMainWindow):
         t_sp_row.addWidget(self.title_spacing_lbl, 1)
         t_sp_row.addWidget(self.title_spacing_spin, 1)
         layout.addLayout(t_sp_row)
+
+        t_x_row = QHBoxLayout()
+        t_x_row.setSpacing(6)
+        t_x_lbl = QLabel("Title X-Offset:")
+        t_x_lbl.setObjectName("muted")
+        self.title_x_offset_spin = QSpinBox()
+        self.title_x_offset_spin.setRange(-500, 500)
+        self.title_x_offset_spin.setValue(0)
+        self.title_x_offset_spin.setSuffix(" px")
+        self.title_x_offset_spin.setToolTip("Fine-tune horizontal position of Big Title (-500 to +500 px)")
+        self.title_x_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
+        t_x_row.addWidget(t_x_lbl)
+        t_x_row.addWidget(self.title_x_offset_spin, 1)
+        layout.addLayout(t_x_row)
+
+        t_y_row = QHBoxLayout()
+        t_y_row.setSpacing(6)
+        t_y_lbl = QLabel("Title Y-Offset:")
+        t_y_lbl.setObjectName("muted")
+        self.title_y_offset_spin = QSpinBox()
+        self.title_y_offset_spin.setRange(-500, 500)
+        self.title_y_offset_spin.setValue(0)
+        self.title_y_offset_spin.setSuffix(" px")
+        self.title_y_offset_spin.setToolTip("Fine-tune vertical position of Big Title (-500 to +500 px)")
+        self.title_y_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
+        t_y_row.addWidget(t_y_lbl)
+        t_y_row.addWidget(self.title_y_offset_spin, 1)
+        layout.addLayout(t_y_row)
 
         top_row = QHBoxLayout()
         top_row.setSpacing(6)
@@ -1916,6 +1972,10 @@ class MainWindow(QMainWindow):
             "resource_profile": self.resource_profile_combo.currentText() if hasattr(self, "resource_profile_combo") else "Balanced",
             "export_quality": self.export_quality_combo.currentText() if hasattr(self, "export_quality_combo") else "Ultra Detail · Master Quality (Recommended)",
             "playlist_position": self.playlist_pos_combo.currentText() if hasattr(self, "playlist_pos_combo") else "Left",
+            "playlist_x_offset": self.playlist_x_offset_spin.value() if hasattr(self, "playlist_x_offset_spin") else 0,
+            "playlist_y_offset": self.playlist_y_offset_spin.value() if hasattr(self, "playlist_y_offset_spin") else 0,
+            "title_x_offset": self.title_x_offset_spin.value() if hasattr(self, "title_x_offset_spin") else 0,
+            "title_y_offset": self.title_y_offset_spin.value() if hasattr(self, "title_y_offset_spin") else 0,
             "playlist_columns": self.playlist_cols_spin.value() if hasattr(self, "playlist_cols_spin") else 1,
             "playlist_row_spacing": round(self.track_spacing_spin.value(), 2) if hasattr(self, "track_spacing_spin") else 1.85,
             "playlist_col_spacing": self.col_spacing_spin.value() if hasattr(self, "col_spacing_spin") else 50,
@@ -2710,6 +2770,10 @@ class MainWindow(QMainWindow):
             self.website_y_offset_spin.value() if hasattr(self, "website_y_offset_spin") else 0,
             getattr(self, "_previewing_intro", False),
             self.playlist_pos_combo.currentText() if hasattr(self, "playlist_pos_combo") else "Left",
+            self.playlist_x_offset_spin.value() if hasattr(self, "playlist_x_offset_spin") else 0,
+            self.playlist_y_offset_spin.value() if hasattr(self, "playlist_y_offset_spin") else 0,
+            self.title_x_offset_spin.value() if hasattr(self, "title_x_offset_spin") else 0,
+            self.title_y_offset_spin.value() if hasattr(self, "title_y_offset_spin") else 0,
             self.playlist_cols_spin.value() if hasattr(self, "playlist_cols_spin") else 1,
             col_sp,
             max_chars,
@@ -2837,6 +2901,8 @@ class MainWindow(QMainWindow):
                     website_x_offset=self.website_x_offset_spin.value() if hasattr(self, "website_x_offset_spin") else 0,
                     website_y_offset=self.website_y_offset_spin.value() if hasattr(self, "website_y_offset_spin") else 0,
                     playlist_position=self.playlist_pos_combo.currentText() if hasattr(self, "playlist_pos_combo") else "Left",
+                    playlist_x_offset=self.playlist_x_offset_spin.value() if hasattr(self, "playlist_x_offset_spin") else 0,
+                    playlist_y_offset=self.playlist_y_offset_spin.value() if hasattr(self, "playlist_y_offset_spin") else 0,
                     playlist_columns=self.playlist_cols_spin.value() if hasattr(self, "playlist_cols_spin") else 1,
                     playlist_row_spacing=round(self.track_spacing_spin.value(), 2) if hasattr(self, "track_spacing_spin") else 1.85,
                     playlist_col_spacing=col_sp,
@@ -2844,6 +2910,8 @@ class MainWindow(QMainWindow):
                     playlist_bg_opacity=round(self.playlist_bg_slider.value() / 100.0, 2) if hasattr(self, "playlist_bg_slider") else 0.0,
                     logo_cleanup_mode="auto" if (hasattr(self, "logo_cleanup_check") and self.logo_cleanup_check.isChecked()) else "none",
                     title_position=self.title_pos_combo.currentText() if hasattr(self, "title_pos_combo") else "Top-Center",
+                    title_x_offset=self.title_x_offset_spin.value() if hasattr(self, "title_x_offset_spin") else 0,
+                    title_y_offset=self.title_y_offset_spin.value() if hasattr(self, "title_y_offset_spin") else 0,
                     title_show=self.title_show_check.isChecked() if hasattr(self, "title_show_check") else True,
                     title_color=getattr(self, "title_color", (255, 255, 255)),
                     track_color=getattr(self, "track_color", (255, 255, 255)),
@@ -3412,6 +3480,14 @@ class MainWindow(QMainWindow):
                     self.website_x_offset_spin.setValue(0)
                 if hasattr(self, "website_y_offset_spin"):
                     self.website_y_offset_spin.setValue(0)
+                if hasattr(self, "playlist_x_offset_spin"):
+                    self.playlist_x_offset_spin.setValue(0)
+                if hasattr(self, "playlist_y_offset_spin"):
+                    self.playlist_y_offset_spin.setValue(0)
+                if hasattr(self, "title_x_offset_spin"):
+                    self.title_x_offset_spin.setValue(0)
+                if hasattr(self, "title_y_offset_spin"):
+                    self.title_y_offset_spin.setValue(0)
                 self.overlap_warning.setVisible(False)
             if hasattr(self, "intro_check"):
                 self.intro_check.setChecked(False)
@@ -3766,6 +3842,14 @@ class MainWindow(QMainWindow):
                 self._set_asset_label(self.sfx_label, "")
         if "playlist_position" in tmpl and hasattr(self, "playlist_pos_combo"):
             _set_combo_case_insensitive(self.playlist_pos_combo, tmpl["playlist_position"])
+        if "playlist_x_offset" in tmpl and hasattr(self, "playlist_x_offset_spin"):
+            self.playlist_x_offset_spin.setValue(int(tmpl["playlist_x_offset"]))
+        if "playlist_y_offset" in tmpl and hasattr(self, "playlist_y_offset_spin"):
+            self.playlist_y_offset_spin.setValue(int(tmpl["playlist_y_offset"]))
+        if "title_x_offset" in tmpl and hasattr(self, "title_x_offset_spin"):
+            self.title_x_offset_spin.setValue(int(tmpl["title_x_offset"]))
+        if "title_y_offset" in tmpl and hasattr(self, "title_y_offset_spin"):
+            self.title_y_offset_spin.setValue(int(tmpl["title_y_offset"]))
         tmpl_tmpl = str(tmpl.get("template", "")).strip().lower()
         if "playlist_columns" in tmpl and hasattr(self, "playlist_cols_spin"):
             self.playlist_cols_spin.setValue(int(tmpl["playlist_columns"]))
@@ -4060,6 +4144,14 @@ class MainWindow(QMainWindow):
                 _set_combo_case_insensitive(self.export_quality_combo, data["export_quality"])
             if hasattr(self, "playlist_pos_combo") and "playlist_position" in data:
                 _set_combo_case_insensitive(self.playlist_pos_combo, data["playlist_position"])
+            if hasattr(self, "playlist_x_offset_spin") and "playlist_x_offset" in data:
+                self.playlist_x_offset_spin.setValue(int(data["playlist_x_offset"]))
+            if hasattr(self, "playlist_y_offset_spin") and "playlist_y_offset" in data:
+                self.playlist_y_offset_spin.setValue(int(data["playlist_y_offset"]))
+            if hasattr(self, "title_x_offset_spin") and "title_x_offset" in data:
+                self.title_x_offset_spin.setValue(int(data["title_x_offset"]))
+            if hasattr(self, "title_y_offset_spin") and "title_y_offset" in data:
+                self.title_y_offset_spin.setValue(int(data["title_y_offset"]))
             if hasattr(self, "playlist_cols_spin") and "playlist_columns" in data:
                 self.playlist_cols_spin.setValue(int(data["playlist_columns"]))
             if hasattr(self, "track_spacing_spin") and "playlist_row_spacing" in data:
