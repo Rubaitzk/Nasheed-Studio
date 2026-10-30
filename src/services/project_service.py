@@ -115,6 +115,9 @@ TEMPLATE_DESIGN_KEYS = [
     "intro_enabled",
     "intro_duration",
     "intro_animation",
+    "intro_audio_path",
+    "intro_audio_fade_in",
+    "intro_audio_fade_out",
 
     # Video background behavior
     "background_type",
@@ -195,7 +198,7 @@ def extract_template(project_data: dict, template_name: str = "Custom Template")
                         data[key] = str(src_p)
                 else:
                     data[key] = ""
-            elif key == "transition_sfx_path":
+            elif key in ("transition_sfx_path", "intro_audio_path"):
                 if val and Path(str(val)).is_file() and not is_temp_or_obsolete_path(val):
                     data[key] = str(Path(str(val)).resolve())
                 else:
@@ -302,6 +305,11 @@ def check_missing_assets(project_data: dict) -> Dict[str, List[Dict[str, str]]]:
     if project_data.get("transition_sfx_enabled") and sfx and not Path(sfx).is_file():
         missing["sfx"].append({"path": sfx, "field": "transition_sfx_path"})
 
+    # Intro Audio
+    intro_audio = project_data.get("intro_audio_path", "")
+    if project_data.get("intro_enabled") and intro_audio and not Path(intro_audio).is_file():
+        missing.setdefault("intro_audio", []).append({"path": intro_audio, "field": "intro_audio_path"})
+
     # Custom Fonts
     for font_key in ["custom_title_font_path", "custom_track_font_path"]:
         fp = project_data.get(font_key, "")
@@ -331,7 +339,7 @@ def relink_asset(project_data: dict, old_path: str, new_path: str) -> dict:
         return updated
 
     # Check top-level asset fields
-    for field in ["background", "logo", "cursor_path", "transition_sfx_path", "custom_title_font_path", "custom_track_font_path"]:
+    for field in ["background", "logo", "cursor_path", "transition_sfx_path", "intro_audio_path", "custom_title_font_path", "custom_track_font_path"]:
         cur = updated.get(field, "")
         if cur and str(Path(cur).resolve()) == old_norm:
             updated[field] = new_norm
@@ -398,6 +406,10 @@ def bundle_managed_assets(project_data: dict, project_bundle_dir: Path) -> dict:
     # 4. SFX
     if managed.get("transition_sfx_path"):
         managed["transition_sfx_path"] = copy_file_safe(managed["transition_sfx_path"], "audio")
+
+    # 4b. Intro Audio
+    if managed.get("intro_audio_path"):
+        managed["intro_audio_path"] = copy_file_safe(managed["intro_audio_path"], "audio")
 
     # 5. Custom Fonts
     if managed.get("custom_title_font_path"):

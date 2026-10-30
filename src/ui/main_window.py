@@ -35,7 +35,7 @@ from typing import Any, Optional, Union
 
 from PySide6.QtCore import Qt, Signal, QObject, QTimer, QSettings, QEvent, QSize, QUrl
 from PySide6.QtGui import QPixmap, QAction, QIcon, QDragEnterEvent, QDropEvent, QColor, QPainter, QImage, QKeySequence, QShortcut, QKeyEvent
-from PySide6.QtMultimedia import QMediaPlayer, QVideoSink
+from PySide6.QtMultimedia import QMediaPlayer, QVideoSink, QAudioOutput
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTextEdit, QPlainTextEdit, QAbstractSpinBox,
@@ -177,6 +177,7 @@ class PlaylistListWidget(QListWidget):
         self.setItemDelegate(PlaylistDelegate(self))
         self.setAcceptDrops(True)
         self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls():
@@ -255,6 +256,9 @@ class MainWindow(QMainWindow):
         self.logo_path = ""
         self.cursor_path = ""
         self.sfx_path = ""
+        self.intro_audio_path = ""
+        self._intro_audio_player: Optional[QMediaPlayer] = None
+        self._intro_audio_output: Optional[QAudioOutput] = None
         self.highlight_color = (248, 220, 139)
         self.title_color = (255, 255, 255)
         self.track_color = (255, 255, 255)
@@ -500,7 +504,7 @@ class MainWindow(QMainWindow):
         self.remove_track_btn = QPushButton()
         self.remove_track_btn.setIcon(get_svg_icon("remove", 16, "#edf2ee"))
         self.remove_track_btn.setIconSize(QSize(16, 16))
-        self.remove_track_btn.setToolTip("Remove (Delete / Backspace) — Remove selected track from playlist")
+        self.remove_track_btn.setToolTip("Remove (Delete / Backspace) — Remove selected track(s) from playlist")
         self.remove_track_btn.setAccessibleName("Remove")
         self.remove_track_btn.setAccessibleDescription("Remove selected track from playlist")
         self.remove_track_btn.clicked.connect(self.remove_track)
@@ -1753,6 +1757,57 @@ class MainWindow(QMainWindow):
         anim_row.addWidget(self.intro_anim_combo, 1)
         layout.addLayout(anim_row)
 
+        # Intro Audio (Prompt 11)
+        layout.addSpacing(4)
+        intro_audio_sec = QLabel("INTRO AUDIO")
+        intro_audio_sec.setObjectName("muted")
+        layout.addWidget(intro_audio_sec)
+
+        self.intro_audio_label = self._make_asset_label("No intro audio selected")
+        intro_audio_row = QHBoxLayout()
+        intro_audio_row.setSpacing(6)
+        intro_audio_icon = QLabel()
+        intro_audio_icon.setPixmap(get_svg_pixmap("tab_intro", 14, "#95a399"))
+        self.intro_audio_play_btn = QPushButton("Play")
+        self.intro_audio_play_btn.clicked.connect(self.toggle_intro_audio_preview)
+        self.intro_audio_clear_btn = QPushButton("Clear")
+        self.intro_audio_clear_btn.clicked.connect(self.clear_intro_audio)
+        self.intro_audio_btn = QPushButton("Choose Intro Audio…")
+        self.intro_audio_btn.clicked.connect(self.choose_intro_audio)
+
+        intro_audio_row.addWidget(intro_audio_icon)
+        intro_audio_row.addWidget(self.intro_audio_label, 1)
+        intro_audio_row.addWidget(self.intro_audio_play_btn)
+        intro_audio_row.addWidget(self.intro_audio_clear_btn)
+        layout.addLayout(intro_audio_row)
+        layout.addWidget(self.intro_audio_btn)
+
+        fade_row = QHBoxLayout()
+        fade_row.setSpacing(6)
+        fade_in_lbl = QLabel("Fade In:")
+        fade_in_lbl.setObjectName("muted")
+        self.intro_fade_in_spin = QDoubleSpinBox()
+        self.intro_fade_in_spin.setRange(0.0, 10.0)
+        self.intro_fade_in_spin.setValue(0.5)
+        self.intro_fade_in_spin.setSingleStep(0.1)
+        self.intro_fade_in_spin.setSuffix(" s")
+        self.intro_fade_in_spin.valueChanged.connect(self._on_intro_fade_changed)
+
+        fade_out_lbl = QLabel("Fade Out:")
+        fade_out_lbl.setObjectName("muted")
+        self.intro_fade_out_spin = QDoubleSpinBox()
+        self.intro_fade_out_spin.setRange(0.0, 10.0)
+        self.intro_fade_out_spin.setValue(0.5)
+        self.intro_fade_out_spin.setSingleStep(0.1)
+        self.intro_fade_out_spin.setSuffix(" s")
+        self.intro_fade_out_spin.valueChanged.connect(self._on_intro_fade_changed)
+
+        fade_row.addWidget(fade_in_lbl)
+        fade_row.addWidget(self.intro_fade_in_spin, 1)
+        fade_row.addWidget(fade_out_lbl)
+        fade_row.addWidget(self.intro_fade_out_spin, 1)
+        layout.addLayout(fade_row)
+
         layout.addSpacing(4)
         div = QFrame()
         div.setObjectName("hairline_h")
@@ -2049,6 +2104,9 @@ class MainWindow(QMainWindow):
             "intro_enabled": self.intro_check.isChecked() if hasattr(self, "intro_check") else False,
             "intro_duration": self.intro_dur_spin.value() if hasattr(self, "intro_dur_spin") else 3.0,
             "intro_animation": self.intro_anim_combo.currentText() if hasattr(self, "intro_anim_combo") else "Fade in / out",
+            "intro_audio_path": getattr(self, "intro_audio_path", ""),
+            "intro_audio_fade_in": self.intro_fade_in_spin.value() if hasattr(self, "intro_fade_in_spin") else 0.5,
+            "intro_audio_fade_out": self.intro_fade_out_spin.value() if hasattr(self, "intro_fade_out_spin") else 0.5,
             "resource_profile": self.resource_profile_combo.currentText() if hasattr(self, "resource_profile_combo") else "Balanced",
             "export_quality": self.export_quality_combo.currentText() if hasattr(self, "export_quality_combo") else "Ultra Detail · Master Quality (Recommended)",
             "playlist_position": self.playlist_pos_combo.currentText() if hasattr(self, "playlist_pos_combo") else "Left",
@@ -2311,13 +2369,38 @@ class MainWindow(QMainWindow):
             self._schedule_preview(150)
 
     def remove_track(self) -> None:
-        idx = self.track_list.currentRow()
-        if idx >= 0 and idx < len(self.tracks):
-            self.tracks.pop(idx)
-            self._commit_undo_snapshot()
-            self._mark_dirty()
-            self._refresh_tracks()
-            self._schedule_preview(200)
+        selected_items = self.track_list.selectedItems()
+        selected_rows = sorted(list(set(self.track_list.row(item) for item in selected_items if item is not None)))
+        if not selected_rows:
+            curr = self.track_list.currentRow()
+            if 0 <= curr < len(self.tracks):
+                selected_rows = [curr]
+        if not selected_rows:
+            return
+
+        min_idx = min(selected_rows)
+        count = len(selected_rows)
+
+        # Remove in descending row order to preserve remaining indices
+        for idx in sorted(selected_rows, reverse=True):
+            if 0 <= idx < len(self.tracks):
+                self.tracks.pop(idx)
+
+        new_row = min(min_idx, len(self.tracks) - 1) if self.tracks else -1
+
+        self._commit_undo_snapshot()
+        self._mark_dirty()
+        self._refresh_tracks()
+
+        if 0 <= new_row < self.track_list.count():
+            self.track_list.setCurrentRow(new_row)
+        else:
+            self.track_list.setCurrentRow(-1)
+
+        self.statusBar().showMessage(
+            f"Removed {count} track{'s' if count > 1 else ''}. Press Ctrl+Z to undo.", 4000
+        )
+        self._schedule_preview(200)
 
     def move_track(self, delta: int) -> None:
         idx = self.track_list.currentRow()
@@ -2766,6 +2849,70 @@ class MainWindow(QMainWindow):
 
     def _on_intro_anim_changed(self, text: str) -> None:
         self._mark_dirty()
+
+    def choose_intro_audio(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose intro presentation audio", "",
+            "Audio files (*.mp3 *.wav *.m4a *.aac *.flac *.ogg *.opus *.wma);;All files (*.*)"
+        )
+        if path:
+            self.intro_audio_path = path
+            self._set_asset_label(self.intro_audio_label, path)
+            self._commit_undo_snapshot()
+            self._mark_dirty()
+
+    def clear_intro_audio(self) -> None:
+        if getattr(self, "intro_audio_path", ""):
+            self._release_intro_audio_player()
+            self.intro_audio_path = ""
+            self._set_asset_label(self.intro_audio_label, "")
+            self.intro_audio_label.setText("No intro audio selected")
+            if hasattr(self, "intro_audio_play_btn"):
+                self.intro_audio_play_btn.setText("Play")
+            self._commit_undo_snapshot()
+            self._mark_dirty()
+
+    def toggle_intro_audio_preview(self) -> None:
+        if not getattr(self, "intro_audio_path", "") or not Path(self.intro_audio_path).is_file():
+            self.statusBar().showMessage("No valid intro audio selected to preview.", 3000)
+            return
+        if not hasattr(self, "_intro_audio_player") or self._intro_audio_player is None:
+            self._intro_audio_player = QMediaPlayer(self)
+            self._intro_audio_output = QAudioOutput(self)
+            self._intro_audio_player.setAudioOutput(self._intro_audio_output)
+            self._intro_audio_player.playbackStateChanged.connect(self._on_intro_audio_playback_state_changed)
+
+        if self._intro_audio_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            self._intro_audio_player.stop()
+            if hasattr(self, "intro_audio_play_btn"):
+                self.intro_audio_play_btn.setText("Play")
+        else:
+            self._intro_audio_player.setSource(QUrl.fromLocalFile(str(Path(self.intro_audio_path).resolve())))
+            self._intro_audio_player.play()
+            if hasattr(self, "intro_audio_play_btn"):
+                self.intro_audio_play_btn.setText("Stop")
+
+    def _on_intro_audio_playback_state_changed(self, state) -> None:
+        if hasattr(self, "intro_audio_play_btn"):
+            if state == QMediaPlayer.PlaybackState.PlayingState:
+                self.intro_audio_play_btn.setText("Stop")
+            else:
+                self.intro_audio_play_btn.setText("Play")
+
+    def _on_intro_fade_changed(self, val: float) -> None:
+        self._mark_dirty()
+
+    def _release_intro_audio_player(self) -> None:
+        if hasattr(self, "_intro_audio_player") and self._intro_audio_player:
+            try:
+                self._intro_audio_player.stop()
+                self._intro_audio_player.setSource(QUrl())
+            except Exception:
+                pass
+            self._intro_audio_player = None
+            self._intro_audio_output = None
+        if hasattr(self, "intro_audio_play_btn"):
+            self.intro_audio_play_btn.setText("Play")
 
     def _toggle_intro_preview(self) -> None:
         self._previewing_intro = not getattr(self, "_previewing_intro", False)
@@ -3532,6 +3679,7 @@ class MainWindow(QMainWindow):
             self.logo_path = ""
             self.cursor_path = ""
             self.sfx_path = ""
+            self.intro_audio_path = ""
             self._previewing_intro = False
             self.tracks = []
             self.project_path = ""
@@ -3951,6 +4099,19 @@ class MainWindow(QMainWindow):
             elif not sp:
                 self.sfx_path = ""
                 self._set_asset_label(self.sfx_label, "")
+        if "intro_audio_path" in tmpl and hasattr(self, "intro_audio_label"):
+            iap = tmpl["intro_audio_path"]
+            if iap and Path(iap).is_file():
+                self.intro_audio_path = iap
+                self._set_asset_label(self.intro_audio_label, iap)
+            elif not iap:
+                self.intro_audio_path = ""
+                self._set_asset_label(self.intro_audio_label, "")
+                self.intro_audio_label.setText("No intro audio selected")
+        if "intro_audio_fade_in" in tmpl and hasattr(self, "intro_fade_in_spin"):
+            self.intro_fade_in_spin.setValue(float(tmpl["intro_audio_fade_in"]))
+        if "intro_audio_fade_out" in tmpl and hasattr(self, "intro_fade_out_spin"):
+            self.intro_fade_out_spin.setValue(float(tmpl["intro_audio_fade_out"]))
         if "playlist_position" in tmpl and hasattr(self, "playlist_pos_combo"):
             _set_combo_case_insensitive(self.playlist_pos_combo, tmpl["playlist_position"])
         if "playlist_x_offset" in tmpl and hasattr(self, "playlist_x_offset_spin"):
@@ -4253,6 +4414,18 @@ class MainWindow(QMainWindow):
                 self.intro_dur_spin.setValue(float(data.get("intro_duration", 3.0) or 3.0))
                 _set_combo_case_insensitive(self.intro_anim_combo, data.get("intro_animation", "Fade in / out"))
                 self.preview_intro_btn.setText("Preview Intro Card")
+            self.intro_audio_path = data.get("intro_audio_path", "")
+            if hasattr(self, "intro_audio_label"):
+                if self.intro_audio_path and Path(self.intro_audio_path).is_file():
+                    self._set_asset_label(self.intro_audio_label, self.intro_audio_path)
+                else:
+                    self.intro_audio_path = ""
+                    self._set_asset_label(self.intro_audio_label, "")
+                    self.intro_audio_label.setText("No intro audio selected")
+            if hasattr(self, "intro_fade_in_spin"):
+                self.intro_fade_in_spin.setValue(float(data.get("intro_audio_fade_in", 0.5) if data.get("intro_audio_fade_in") is not None else 0.5))
+            if hasattr(self, "intro_fade_out_spin"):
+                self.intro_fade_out_spin.setValue(float(data.get("intro_audio_fade_out", 0.5) if data.get("intro_audio_fade_out") is not None else 0.5))
             if hasattr(self, "sfx_check"):
                 self.sfx_check.setChecked(bool(data.get("transition_sfx_enabled", False)))
                 sfx_vol = int(float(data.get("transition_sfx_volume", 0.7) if data.get("transition_sfx_volume") is not None else 0.7) * 100)

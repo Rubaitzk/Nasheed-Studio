@@ -140,6 +140,7 @@ def build_render_command(
     nominal_out = Path(project.get("output_path") or "nasheed_collection.mp4").expanduser().resolve()
     effective_out = Path(target_path).expanduser().resolve() if target_path is not None else nominal_out
     effective_out.parent.mkdir(parents=True, exist_ok=True)
+    work_dir = Path(work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
 
     if progress_callback:
@@ -336,6 +337,26 @@ def build_render_command(
             intro_input_idx = current_input_idx
             current_input_idx += 1
 
+    # Intro Audio Input (Prompt 11)
+    intro_audio_path = project.get("intro_audio_path", "")
+    intro_fade_in = float(project.get("intro_audio_fade_in", 0.5) if project.get("intro_audio_fade_in") is not None else 0.5)
+    intro_fade_out = float(project.get("intro_audio_fade_out", 0.5) if project.get("intro_audio_fade_out") is not None else 0.5)
+    has_valid_intro_audio = False
+    intro_audio_input_idx = None
+    if intro_enabled and intro_audio_path and Path(intro_audio_path).is_file():
+        try:
+            from .media_probe import get_duration
+            dur = get_duration(intro_audio_path)
+            if dur > 0:
+                has_valid_intro_audio = True
+        except Exception:
+            has_valid_intro_audio = False
+
+    if intro_enabled and has_valid_intro_audio:
+        command += ["-i", str(intro_audio_path)]
+        intro_audio_input_idx = current_input_idx
+        current_input_idx += 1
+
     # Audio Tracks
     track_input_indices = []
     for track in tracks:
@@ -454,11 +475,39 @@ def build_render_command(
 
     concat_inputs = []
     if intro_enabled:
-        # Prepend exact silence during intro
-        filters.append(
-            f"anullsrc=channel_layout=stereo:sample_rate=44100,atrim=duration={intro_dur:.3f}[a_intro_silence]"
-        )
-        concat_inputs.append("[a_intro_silence]")
+        if has_valid_intro_audio and intro_audio_input_idx is not None:
+            # Handle invalid/extreme fade durations safely
+            fade_in = max(0.0, float(intro_fade_in))
+            fade_out = max(0.0, float(intro_fade_out))
+            if fade_in + fade_out > intro_dur:
+                if fade_in + fade_out > 0:
+                    scale = intro_dur / (fade_in + fade_out)
+                    fade_in *= scale
+                    fade_out *= scale
+                else:
+                    fade_in = 0.0
+                    fade_out = 0.0
+            fade_out_st = max(0.0, intro_dur - fade_out)
+
+            intro_filter_chain = [
+                f"[{intro_audio_input_idx}:a:0]asetpts=PTS-STARTPTS",
+                f"apad=whole_dur={intro_dur:.3f}",
+                f"atrim=0:{intro_dur:.3f}",
+            ]
+            if fade_in > 0:
+                intro_filter_chain.append(f"afade=t=in:st=0:d={fade_in:.3f}")
+            if fade_out > 0:
+                intro_filter_chain.append(f"afade=t=out:st={fade_out_st:.3f}:d={fade_out:.3f}")
+            intro_filter_chain.append("aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a_intro_prep]")
+
+            filters.append(",".join(intro_filter_chain))
+            concat_inputs.append("[a_intro_prep]")
+        else:
+            # Prepend exact silence during intro (Prompt 11 default)
+            filters.append(
+                f"anullsrc=channel_layout=stereo:sample_rate=44100,atrim=duration={intro_dur:.3f}[a_intro_silence]"
+            )
+            concat_inputs.append("[a_intro_silence]")
 
     for i in range(len(tracks)):
         concat_inputs.append(f"[a_norm_{i}]")
