@@ -1073,6 +1073,8 @@ def create_composition(
     website_font_family: Optional[str] = None,
     website_font_style: Optional[str] = None,
     website_color: Optional[Union[str, tuple, list]] = None,
+    website_x_offset: int = 0,
+    website_y_offset: int = 0,
     playlist_position: str = "Left",
     playlist_x_offset: int = 0,
     playlist_y_offset: int = 0,
@@ -1254,9 +1256,14 @@ def create_composition(
                     if wy + th > height - margin_y:
                         wy = ly1 - th - int(height * 0.015)
 
+        eff_web_x_off = int(round(website_x_offset * res_scale))
+        eff_web_y_off = int(round(website_y_offset * res_scale))
+        wx += eff_web_x_off
+        wy += eff_web_y_off
+
         # Boundary clamping to preserve frame safety margins
-        wx = max(margin, min(wx, width - margin - tw))
-        wy = max(margin_y, min(wy, height - margin_y - th))
+        wx = max(0, min(wx, width - tw))
+        wy = max(0, min(wy, height - th))
         web_rect = (wx, wy, wx + tw, wy + th)
 
         # Dedicated transparent RGBA layer for linear alpha compositing

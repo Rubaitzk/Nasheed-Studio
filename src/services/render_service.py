@@ -210,6 +210,8 @@ def build_render_command(
         website_font_family=website_font_family,
         website_font_style=website_font_style,
         website_color=website_color,
+        website_x_offset=int(project.get("website_x_offset", 0) or 0),
+        website_y_offset=int(project.get("website_y_offset", 0) or 0),
         playlist_position=playlist_position,
         playlist_x_offset=playlist_x_offset,
         playlist_y_offset=playlist_y_offset,

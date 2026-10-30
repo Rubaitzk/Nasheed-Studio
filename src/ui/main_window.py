@@ -303,6 +303,7 @@ class MainWindow(QMainWindow):
         self._update_highlight_color_btn()
         self._update_title_color_btn()
         self._update_track_color_btn()
+        self._update_website_color_btn()
         self._update_project_ui_indicators()
         self._refresh_preview()
 
@@ -1569,6 +1570,48 @@ class MainWindow(QMainWindow):
         web_op_row.addWidget(self.website_opacity_val)
         layout.addLayout(web_op_row)
 
+        web_col_row = QHBoxLayout()
+        web_col_row.setSpacing(6)
+        web_col_lbl = QLabel("Color:")
+        web_col_lbl.setObjectName("muted")
+        self.website_color_btn = QPushButton(" Auto (Adaptive)")
+        self.website_color_btn.clicked.connect(self.choose_website_color)
+        self.website_color_reset_btn = QPushButton("Reset")
+        self.website_color_reset_btn.setToolTip("Reset watermark color to automatic contrast adaptive mode")
+        self.website_color_reset_btn.clicked.connect(self.reset_website_color)
+        web_col_row.addWidget(web_col_lbl)
+        web_col_row.addWidget(self.website_color_btn, 1)
+        web_col_row.addWidget(self.website_color_reset_btn)
+        layout.addLayout(web_col_row)
+
+        web_x_row = QHBoxLayout()
+        web_x_row.setSpacing(6)
+        web_x_lbl = QLabel("Watermark X-Offset:")
+        web_x_lbl.setObjectName("muted")
+        self.website_x_offset_spin = QSpinBox()
+        self.website_x_offset_spin.setRange(-500, 500)
+        self.website_x_offset_spin.setValue(0)
+        self.website_x_offset_spin.setSuffix(" px")
+        self.website_x_offset_spin.setToolTip("Fine-tune horizontal positioning of watermark from corner (-500 to +500 px)")
+        self.website_x_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
+        web_x_row.addWidget(web_x_lbl)
+        web_x_row.addWidget(self.website_x_offset_spin, 1)
+        layout.addLayout(web_x_row)
+
+        web_y_row = QHBoxLayout()
+        web_y_row.setSpacing(6)
+        web_y_lbl = QLabel("Watermark Y-Offset:")
+        web_y_lbl.setObjectName("muted")
+        self.website_y_offset_spin = QSpinBox()
+        self.website_y_offset_spin.setRange(-500, 500)
+        self.website_y_offset_spin.setValue(0)
+        self.website_y_offset_spin.setSuffix(" px")
+        self.website_y_offset_spin.setToolTip("Fine-tune vertical positioning of watermark from corner (-500 to +500 px)")
+        self.website_y_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
+        web_y_row.addWidget(web_y_lbl)
+        web_y_row.addWidget(self.website_y_offset_spin, 1)
+        layout.addLayout(web_y_row)
+
         self.overlap_warning = QLabel("Logo and website share the same corner. Position will adjust automatically.")
         self.overlap_warning.setObjectName("warning")
         self.overlap_warning.setWordWrap(True)
@@ -1862,6 +1905,8 @@ class MainWindow(QMainWindow):
             "website_font_family": getattr(self, "website_font_family", None) or (self.track_font_combo.currentText() if hasattr(self, "track_font_combo") else "Segoe UI"),
             "website_font_style": getattr(self, "website_font_style", "Regular"),
             "website_color": getattr(self, "website_color", None),
+            "website_x_offset": self.website_x_offset_spin.value() if hasattr(self, "website_x_offset_spin") else 0,
+            "website_y_offset": self.website_y_offset_spin.value() if hasattr(self, "website_y_offset_spin") else 0,
             "transition_sfx_enabled": self.sfx_check.isChecked() if hasattr(self, "sfx_check") else False,
             "transition_sfx_path": self.sfx_path,
             "transition_sfx_volume": round(self.sfx_vol_slider.value() / 100.0, 2) if hasattr(self, "sfx_vol_slider") else 0.7,
@@ -2481,6 +2526,46 @@ class MainWindow(QMainWindow):
         self._commit_undo_snapshot()
         self._on_layout_param_changed()
 
+    def _update_website_color_btn(self) -> None:
+        if not hasattr(self, "website_color_btn"):
+            return
+        if getattr(self, "website_color", None) is None:
+            self.website_color_btn.setIcon(QIcon())
+            self.website_color_btn.setText(" Auto (Adaptive)")
+            self.website_color_btn.setToolTip("Click to set explicit watermark color (currently automatic contrast)")
+            return
+        rgb = _hex_to_rgb(self.website_color, (240, 244, 242))
+        hex_code = f"#{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"
+        pix = QPixmap(14, 14)
+        pix.fill(QColor(rgb[0], rgb[1], rgb[2]))
+        self.website_color_btn.setIcon(QIcon(pix))
+        self.website_color_btn.setText(f" {hex_code}")
+        self.website_color_btn.setToolTip(f"Click to change watermark color ({hex_code})")
+
+    def choose_website_color(self) -> None:
+        rgb = _hex_to_rgb(getattr(self, "website_color", None) or (240, 244, 242))
+        init_color = QColor(rgb[0], rgb[1], rgb[2])
+        col = QColorDialog.getColor(init_color, self, "Choose Watermark Color")
+        if col.isValid():
+            new_rgb = (col.red(), col.green(), col.blue())
+            self.set_website_color(new_rgb)
+
+    def reset_website_color(self) -> None:
+        self.set_website_color(None)
+
+    def set_website_color(self, color: Optional[Union[str, tuple, list]]) -> None:
+        if color is not None:
+            try:
+                rgb = _hex_to_rgb(color)
+                self.website_color = rgb
+            except Exception:
+                self.website_color = None
+        else:
+            self.website_color = None
+        self._update_website_color_btn()
+        self._commit_undo_snapshot()
+        self._on_layout_param_changed()
+
     def choose_sfx(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self, "Choose transition sound effect", "",
@@ -2620,6 +2705,9 @@ class MainWindow(QMainWindow):
             self.logo_x_offset_spin.value() if hasattr(self, "logo_x_offset_spin") else 0,
             self.logo_y_offset_spin.value() if hasattr(self, "logo_y_offset_spin") else 0,
             web_txt, web_pos, web_sz, web_show, web_op,
+            getattr(self, "website_color", None),
+            self.website_x_offset_spin.value() if hasattr(self, "website_x_offset_spin") else 0,
+            self.website_y_offset_spin.value() if hasattr(self, "website_y_offset_spin") else 0,
             getattr(self, "_previewing_intro", False),
             self.playlist_pos_combo.currentText() if hasattr(self, "playlist_pos_combo") else "Left",
             self.playlist_cols_spin.value() if hasattr(self, "playlist_cols_spin") else 1,
@@ -2746,6 +2834,8 @@ class MainWindow(QMainWindow):
                     website_font_family=getattr(self, "website_font_family", None) or track_fam,
                     website_font_style=getattr(self, "website_font_style", "Regular"),
                     website_color=getattr(self, "website_color", None),
+                    website_x_offset=self.website_x_offset_spin.value() if hasattr(self, "website_x_offset_spin") else 0,
+                    website_y_offset=self.website_y_offset_spin.value() if hasattr(self, "website_y_offset_spin") else 0,
                     playlist_position=self.playlist_pos_combo.currentText() if hasattr(self, "playlist_pos_combo") else "Left",
                     playlist_columns=self.playlist_cols_spin.value() if hasattr(self, "playlist_cols_spin") else 1,
                     playlist_row_spacing=round(self.track_spacing_spin.value(), 2) if hasattr(self, "track_spacing_spin") else 1.85,
@@ -3317,6 +3407,11 @@ class MainWindow(QMainWindow):
                 self.website_font_family = None
                 self.website_font_style = "Regular"
                 self.website_color = None
+                self._update_website_color_btn()
+                if hasattr(self, "website_x_offset_spin"):
+                    self.website_x_offset_spin.setValue(0)
+                if hasattr(self, "website_y_offset_spin"):
+                    self.website_y_offset_spin.setValue(0)
                 self.overlap_warning.setVisible(False)
             if hasattr(self, "intro_check"):
                 self.intro_check.setChecked(False)
@@ -3645,6 +3740,11 @@ class MainWindow(QMainWindow):
         if "website_color" in tmpl:
             wc = tmpl["website_color"]
             self.website_color = tuple(wc) if isinstance(wc, (list, tuple)) else wc
+            self._update_website_color_btn()
+        if "website_x_offset" in tmpl and hasattr(self, "website_x_offset_spin"):
+            self.website_x_offset_spin.setValue(int(tmpl["website_x_offset"]))
+        if "website_y_offset" in tmpl and hasattr(self, "website_y_offset_spin"):
+            self.website_y_offset_spin.setValue(int(tmpl["website_y_offset"]))
         if "intro_enabled" in tmpl:
             self.intro_check.setChecked(bool(tmpl["intro_enabled"]))
         if "intro_duration" in tmpl:
@@ -3940,6 +4040,11 @@ class MainWindow(QMainWindow):
                 self.website_font_style = data.get("website_font_style", "Regular")
                 raw_wc = data.get("website_color", None)
                 self.website_color = tuple(raw_wc) if isinstance(raw_wc, (list, tuple)) else raw_wc
+                self._update_website_color_btn()
+                if hasattr(self, "website_x_offset_spin") and "website_x_offset" in data:
+                    self.website_x_offset_spin.setValue(int(data["website_x_offset"]))
+                if hasattr(self, "website_y_offset_spin") and "website_y_offset" in data:
+                    self.website_y_offset_spin.setValue(int(data["website_y_offset"]))
             if hasattr(self, "intro_check"):
                 self.intro_check.setChecked(bool(data.get("intro_enabled", False)))
                 self.intro_dur_spin.setValue(float(data.get("intro_duration", 3.0) or 3.0))

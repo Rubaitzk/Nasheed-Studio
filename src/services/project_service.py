@@ -104,6 +104,8 @@ TEMPLATE_DESIGN_KEYS = [
     "website_font_family",
     "website_font_style",
     "website_color",
+    "website_x_offset",
+    "website_y_offset",
 
     # Intro presentation card & animations
     "intro_enabled",
