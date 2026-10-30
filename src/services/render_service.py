@@ -253,6 +253,7 @@ def build_render_command(
         highlight_padding_x=(int(project["highlight_padding_x"]) if project.get("highlight_padding_x") is not None else None),
         highlight_padding_y=(int(project["highlight_padding_y"]) if project.get("highlight_padding_y") is not None else None),
         highlight_opacity=float(project.get("highlight_opacity", 1.0) if project.get("highlight_opacity") is not None else 1.0),
+        cursor_x_offset=int(project.get("cursor_x_offset", 0) or 0),
         cursor_y_offset=int(project.get("cursor_y_offset", 0) or 0),
         highlight_y_offset=int(project.get("highlight_y_offset", 0) or 0),
     )

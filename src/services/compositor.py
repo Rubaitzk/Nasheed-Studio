@@ -1119,6 +1119,7 @@ def create_composition(
     highlight_padding_x: Optional[int] = None,
     highlight_padding_y: Optional[int] = None,
     highlight_opacity: float = 1.0,
+    cursor_x_offset: int = 0,
     cursor_y_offset: int = 0,
     highlight_y_offset: int = 0,
 ) -> tuple[str, list[str]]:
@@ -1460,9 +1461,10 @@ def create_composition(
         tb_active = od.textbbox((cursor_ref_x, active_item["y"]), first_line, font=row_font)
         text_visual_cy = (tb_active[1] + tb_active[3]) // 2
 
-        # Apply resolution-scaled vertical offset adjustments
+        # Apply resolution-scaled horizontal and vertical offset adjustments
         eff_hl_y_off = int(round(highlight_y_offset * res_scale))
         eff_cur_y_off = int(round(cursor_y_offset * res_scale))
+        eff_cur_x_off = int(round(cursor_x_offset * res_scale))
         hl_cy = text_visual_cy + eff_hl_y_off
         cur_cy = text_visual_cy + eff_cur_y_off
 
@@ -1560,9 +1562,10 @@ def create_composition(
 
             # If highlight surrounds text, position cursor cleanly to the left of the highlight box boundary to avoid crossing
             if show_highlight and (str(highlight_target or "row").lower().strip() == "text"):
-                cx = max(4, hl_box[0] - cur_dim - gap)
+                base_cx = max(4, hl_box[0] - cur_dim - gap)
             else:
-                cx = max(4, cursor_ref_x - cur_dim - gap)
+                base_cx = max(4, cursor_ref_x - cur_dim - gap)
+            cx = base_cx + eff_cur_x_off
 
             if custom_cursor_img is not None:
                 cw, ch = custom_cursor_img.size

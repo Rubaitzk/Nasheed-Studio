@@ -1355,6 +1355,20 @@ class MainWindow(QMainWindow):
         sz_row.addWidget(self.cursor_size_spin, 1)
         layout.addLayout(sz_row)
 
+        cur_x_row = QHBoxLayout()
+        cur_x_row.setSpacing(6)
+        cur_x_lbl = QLabel("Cursor X-Offset:")
+        cur_x_lbl.setObjectName("muted")
+        self.cursor_x_offset_spin = QSpinBox()
+        self.cursor_x_offset_spin.setRange(-100, 100)
+        self.cursor_x_offset_spin.setValue(0)
+        self.cursor_x_offset_spin.setSuffix(" px")
+        self.cursor_x_offset_spin.setToolTip("Fine-tune horizontal positioning of the cursor relative to track text (-100 to +100 px)")
+        self.cursor_x_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
+        cur_x_row.addWidget(cur_x_lbl)
+        cur_x_row.addWidget(self.cursor_x_offset_spin, 1)
+        layout.addLayout(cur_x_row)
+
         cur_y_row = QHBoxLayout()
         cur_y_row.setSpacing(6)
         cur_y_lbl = QLabel("Cursor Y-Offset:")
@@ -1829,6 +1843,7 @@ class MainWindow(QMainWindow):
             "highlight_corner_radius": (0 if (hasattr(self, "highlight_corner_combo") and self.highlight_corner_combo.currentText() == "Square (Sharp)") else None),
             "highlight_target": ("text" if (hasattr(self, "highlight_target_combo") and self.highlight_target_combo.currentText() == "Surround Text") else "row"),
             "highlight_opacity": 1.0,
+            "cursor_x_offset": self.cursor_x_offset_spin.value() if hasattr(self, "cursor_x_offset_spin") else 0,
             "cursor_y_offset": self.cursor_y_offset_spin.value() if hasattr(self, "cursor_y_offset_spin") else 0,
             "highlight_y_offset": self.highlight_y_offset_spin.value() if hasattr(self, "highlight_y_offset_spin") else 0,
             "output_path": self.output_edit.text().strip(),
@@ -2582,6 +2597,7 @@ class MainWindow(QMainWindow):
             self.highlight_outline_spin.value() if hasattr(self, "highlight_outline_spin") else 2,
             self.highlight_corner_combo.currentText() if hasattr(self, "highlight_corner_combo") else "Rounded",
             self.highlight_target_combo.currentText() if hasattr(self, "highlight_target_combo") else "Full Row",
+            self.cursor_x_offset_spin.value() if hasattr(self, "cursor_x_offset_spin") else 0,
             self.cursor_y_offset_spin.value() if hasattr(self, "cursor_y_offset_spin") else 0,
             self.highlight_y_offset_spin.value() if hasattr(self, "highlight_y_offset_spin") else 0,
             getattr(self, "title_color", (255, 255, 255)),
@@ -2689,6 +2705,7 @@ class MainWindow(QMainWindow):
                     title_show=self.title_show_check.isChecked() if hasattr(self, "title_show_check") else True,
                     title_color=getattr(self, "title_color", (255, 255, 255)),
                     track_color=getattr(self, "track_color", (255, 255, 255)),
+                    cursor_x_offset=self.cursor_x_offset_spin.value() if hasattr(self, "cursor_x_offset_spin") else 0,
                     cursor_y_offset=self.cursor_y_offset_spin.value() if hasattr(self, "cursor_y_offset_spin") else 0,
                     highlight_y_offset=self.highlight_y_offset_spin.value() if hasattr(self, "highlight_y_offset_spin") else 0,
                     active_track_color=getattr(self, "active_track_color", None),
@@ -3258,6 +3275,8 @@ class MainWindow(QMainWindow):
             self.track_color = (255, 255, 255)
             self._update_track_color_btn()
             self.active_track_color = None
+            if hasattr(self, "cursor_x_offset_spin"):
+                self.cursor_x_offset_spin.setValue(0)
             if hasattr(self, "cursor_y_offset_spin"):
                 self.cursor_y_offset_spin.setValue(0)
             if hasattr(self, "highlight_y_offset_spin"):
@@ -3623,6 +3642,8 @@ class MainWindow(QMainWindow):
         if "track_color" in tmpl:
             self.track_color = tmpl["track_color"]
             self._update_track_color_btn()
+        if "cursor_x_offset" in tmpl and hasattr(self, "cursor_x_offset_spin"):
+            self.cursor_x_offset_spin.setValue(int(tmpl["cursor_x_offset"]))
         if "cursor_y_offset" in tmpl and hasattr(self, "cursor_y_offset_spin"):
             self.cursor_y_offset_spin.setValue(int(tmpl["cursor_y_offset"]))
         if "highlight_y_offset" in tmpl and hasattr(self, "highlight_y_offset_spin"):
@@ -3889,6 +3910,8 @@ class MainWindow(QMainWindow):
                 self._update_track_color_btn()
             if "active_track_color" in data:
                 self.active_track_color = data["active_track_color"]
+            if hasattr(self, "cursor_x_offset_spin") and "cursor_x_offset" in data:
+                self.cursor_x_offset_spin.setValue(int(data["cursor_x_offset"]))
             if hasattr(self, "cursor_y_offset_spin") and "cursor_y_offset" in data:
                 self.cursor_y_offset_spin.setValue(int(data["cursor_y_offset"]))
             if hasattr(self, "highlight_y_offset_spin") and "highlight_y_offset" in data:

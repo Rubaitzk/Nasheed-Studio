@@ -85,6 +85,7 @@ TEMPLATE_DESIGN_KEYS = [
     "highlight_padding_x",
     "highlight_padding_y",
     "highlight_opacity",
+    "cursor_x_offset",
     "cursor_y_offset",
     "highlight_y_offset",
 
