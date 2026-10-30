@@ -1103,6 +1103,8 @@ def create_composition(
     highlight_bg_opacity: float = 0.25,
     logo_cleanup_mode: str = "auto",
     logo_scale: float = 1.0,
+    logo_x_offset: int = 0,
+    logo_y_offset: int = 0,
     video_start_time: float = 0.0,
     video_fit_mode: str = "fill/crop",
     video_wash_opacity: float = 0.20,
@@ -1180,13 +1182,29 @@ def create_composition(
         try:
             with Image.open(logo_path) as logo_src:
                 raw_logo = clean_logo_image(logo_src, mode=logo_cleanup_mode)
-                eff_scale = max(0.4, min(2.5, float(logo_scale or 1.0)))
-                max_w = int(width * 0.13 * eff_scale)
-                max_h = int(height * 0.11 * eff_scale)
-                raw_logo.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
-                lx, ly = _calculate_corner_position(
+                eff_scale = max(0.1, min(5.0, float(logo_scale or 1.0)))
+                orig_w, orig_h = raw_logo.size
+                aspect = orig_w / max(1, orig_h)
+                target_box_w = max(10, int(round(width * 0.13 * eff_scale)))
+                target_box_h = max(10, int(round(height * 0.11 * eff_scale)))
+
+                if (target_box_w / target_box_h) > aspect:
+                    new_h = target_box_h
+                    new_w = max(1, int(round(new_h * aspect)))
+                else:
+                    new_w = target_box_w
+                    new_h = max(1, int(round(new_w / aspect)))
+
+                raw_logo = raw_logo.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+                base_lx, base_ly = _calculate_corner_position(
                     logo_position, raw_logo.width, raw_logo.height, width, height, margin, int(height * 0.045)
                 )
+                eff_logo_x_off = int(round(logo_x_offset * res_scale))
+                eff_logo_y_off = int(round(logo_y_offset * res_scale))
+                lx = base_lx + eff_logo_x_off
+                ly = base_ly + eff_logo_y_off
+
                 bg.alpha_composite(raw_logo, (lx, ly))
                 fg.alpha_composite(raw_logo, (lx, ly))
                 logo_rect = (lx, ly, lx + raw_logo.width, ly + raw_logo.height)

@@ -92,6 +92,8 @@ TEMPLATE_DESIGN_KEYS = [
     # Logo placement & cleanup
     "logo_position",
     "logo_scale",
+    "logo_x_offset",
+    "logo_y_offset",
     "logo_cleanup_mode",
 
     # Website watermark placement & styling

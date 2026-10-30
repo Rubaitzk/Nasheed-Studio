@@ -239,6 +239,8 @@ def build_render_command(
         highlight_bg_opacity=highlight_bg_opacity,
         logo_cleanup_mode=logo_cleanup_mode,
         logo_scale=logo_scale,
+        logo_x_offset=int(project.get("logo_x_offset", 0) or 0),
+        logo_y_offset=int(project.get("logo_y_offset", 0) or 0),
         video_start_time=video_start_time,
         video_fit_mode=video_fit_mode,
         title_playlist_spacing=project.get("title_playlist_spacing", 40),

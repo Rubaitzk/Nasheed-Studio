@@ -1029,6 +1029,48 @@ class MainWindow(QMainWindow):
         logo_pos_row.addWidget(self.logo_pos_combo, 1)
         layout.addLayout(logo_pos_row)
 
+        logo_sz_row = QHBoxLayout()
+        logo_sz_row.setSpacing(6)
+        logo_sz_lbl = QLabel("Logo Size:")
+        logo_sz_lbl.setObjectName("muted")
+        self.logo_scale_spin = QSpinBox()
+        self.logo_scale_spin.setRange(20, 300)
+        self.logo_scale_spin.setValue(100)
+        self.logo_scale_spin.setSuffix(" %")
+        self.logo_scale_spin.setToolTip("Scale logo size relative to default bounding box (20% to 300%)")
+        self.logo_scale_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
+        logo_sz_row.addWidget(logo_sz_lbl)
+        logo_sz_row.addWidget(self.logo_scale_spin, 1)
+        layout.addLayout(logo_sz_row)
+
+        logo_x_row = QHBoxLayout()
+        logo_x_row.setSpacing(6)
+        logo_x_lbl = QLabel("Logo X-Offset:")
+        logo_x_lbl.setObjectName("muted")
+        self.logo_x_offset_spin = QSpinBox()
+        self.logo_x_offset_spin.setRange(-500, 500)
+        self.logo_x_offset_spin.setValue(0)
+        self.logo_x_offset_spin.setSuffix(" px")
+        self.logo_x_offset_spin.setToolTip("Horizontal position offset for logo from selected corner (-500 to +500 px)")
+        self.logo_x_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
+        logo_x_row.addWidget(logo_x_lbl)
+        logo_x_row.addWidget(self.logo_x_offset_spin, 1)
+        layout.addLayout(logo_x_row)
+
+        logo_y_row = QHBoxLayout()
+        logo_y_row.setSpacing(6)
+        logo_y_lbl = QLabel("Logo Y-Offset:")
+        logo_y_lbl.setObjectName("muted")
+        self.logo_y_offset_spin = QSpinBox()
+        self.logo_y_offset_spin.setRange(-500, 500)
+        self.logo_y_offset_spin.setValue(0)
+        self.logo_y_offset_spin.setSuffix(" px")
+        self.logo_y_offset_spin.setToolTip("Vertical position offset for logo from selected corner (-500 to +500 px)")
+        self.logo_y_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
+        logo_y_row.addWidget(logo_y_lbl)
+        logo_y_row.addWidget(self.logo_y_offset_spin, 1)
+        layout.addLayout(logo_y_row)
+
         self.logo_cleanup_check = QCheckBox("Remove solid white / checkerboard background")
         self.logo_cleanup_check.setChecked(True)
         self.logo_cleanup_check.toggled.connect(lambda _: self._on_layout_param_changed())
@@ -1789,6 +1831,9 @@ class MainWindow(QMainWindow):
             "video_mute_audio": self.video_mute_check.isChecked() if hasattr(self, "video_mute_check") else getattr(self, "video_mute_audio", True),
             "logo": self.logo_path,
             "logo_position": self.logo_pos_combo.currentText() if hasattr(self, "logo_pos_combo") else "Bottom-Right",
+            "logo_scale": round(self.logo_scale_spin.value() / 100.0, 2) if hasattr(self, "logo_scale_spin") else 1.0,
+            "logo_x_offset": self.logo_x_offset_spin.value() if hasattr(self, "logo_x_offset_spin") else 0,
+            "logo_y_offset": self.logo_y_offset_spin.value() if hasattr(self, "logo_y_offset_spin") else 0,
             "tracks": self.tracks,
             "template": self.template_combo.currentText(),
             "resolution": self.resolution_combo.currentText(),
@@ -2570,7 +2615,11 @@ class MainWindow(QMainWindow):
             self.template_combo.currentText() if hasattr(self, "template_combo") else "",
             title_fam, title_style, title_sz,
             track_fam, track_style, track_sz,
-            logo_pos, web_txt, web_pos, web_sz, web_show, web_op,
+            logo_pos,
+            self.logo_scale_spin.value() if hasattr(self, "logo_scale_spin") else 100,
+            self.logo_x_offset_spin.value() if hasattr(self, "logo_x_offset_spin") else 0,
+            self.logo_y_offset_spin.value() if hasattr(self, "logo_y_offset_spin") else 0,
+            web_txt, web_pos, web_sz, web_show, web_op,
             getattr(self, "_previewing_intro", False),
             self.playlist_pos_combo.currentText() if hasattr(self, "playlist_pos_combo") else "Left",
             self.playlist_cols_spin.value() if hasattr(self, "playlist_cols_spin") else 1,
@@ -2686,6 +2735,9 @@ class MainWindow(QMainWindow):
                     track_font_style=track_style,
                     track_font_size=track_sz,
                     logo_position=logo_pos,
+                    logo_scale=round(self.logo_scale_spin.value() / 100.0, 2) if hasattr(self, "logo_scale_spin") else 1.0,
+                    logo_x_offset=self.logo_x_offset_spin.value() if hasattr(self, "logo_x_offset_spin") else 0,
+                    logo_y_offset=self.logo_y_offset_spin.value() if hasattr(self, "logo_y_offset_spin") else 0,
                     website_text=web_txt,
                     website_position=web_pos,
                     website_font_size=web_sz,
@@ -3231,6 +3283,12 @@ class MainWindow(QMainWindow):
             self.cursor_size_spin.setValue(32)
             if hasattr(self, "logo_pos_combo"):
                 self.logo_pos_combo.setCurrentText("Bottom-Right")
+            if hasattr(self, "logo_scale_spin"):
+                self.logo_scale_spin.setValue(100)
+            if hasattr(self, "logo_x_offset_spin"):
+                self.logo_x_offset_spin.setValue(0)
+            if hasattr(self, "logo_y_offset_spin"):
+                self.logo_y_offset_spin.setValue(0)
             if hasattr(self, "title_font_combo"):
                 self.title_font_combo.setCurrentText("Segoe UI" if "Segoe UI" in [self.title_font_combo.itemText(i) for i in range(self.title_font_combo.count())] else self.title_font_combo.itemText(0))
                 self.title_style_combo.setCurrentText("Bold")
@@ -3566,6 +3624,12 @@ class MainWindow(QMainWindow):
                     pass
         if "logo_position" in tmpl:
             _set_combo_case_insensitive(self.logo_pos_combo, tmpl["logo_position"])
+        if "logo_scale" in tmpl and hasattr(self, "logo_scale_spin"):
+            self.logo_scale_spin.setValue(int(float(tmpl["logo_scale"]) * 100))
+        if "logo_x_offset" in tmpl and hasattr(self, "logo_x_offset_spin"):
+            self.logo_x_offset_spin.setValue(int(tmpl["logo_x_offset"]))
+        if "logo_y_offset" in tmpl and hasattr(self, "logo_y_offset_spin"):
+            self.logo_y_offset_spin.setValue(int(tmpl["logo_y_offset"]))
         if "website_position" in tmpl:
             _set_combo_case_insensitive(self.website_pos_combo, tmpl["website_position"])
         if "website_font_size" in tmpl:
@@ -3836,6 +3900,12 @@ class MainWindow(QMainWindow):
 
             if hasattr(self, "logo_pos_combo"):
                 _set_combo_case_insensitive(self.logo_pos_combo, data.get("logo_position", "Bottom-Right"))
+            if hasattr(self, "logo_scale_spin") and "logo_scale" in data:
+                self.logo_scale_spin.setValue(int(float(data["logo_scale"]) * 100))
+            if hasattr(self, "logo_x_offset_spin") and "logo_x_offset" in data:
+                self.logo_x_offset_spin.setValue(int(data["logo_x_offset"]))
+            if hasattr(self, "logo_y_offset_spin") and "logo_y_offset" in data:
+                self.logo_y_offset_spin.setValue(int(data["logo_y_offset"]))
             if hasattr(self, "title_font_combo"):
                 _set_combo_case_insensitive(self.title_font_combo, data.get("title_font_family", "Segoe UI"))
                 self._update_title_styles()
