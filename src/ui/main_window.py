@@ -28,6 +28,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import tempfile
 import uuid
 from pathlib import Path
@@ -275,6 +276,9 @@ class MainWindow(QMainWindow):
         self.website_font_family: Optional[str] = None
         self.website_font_style: str = "Regular"
         self.website_color = None
+        self.intro_title_color = (255, 255, 255)
+        self.intro_website_color = (204, 204, 204)
+        self._last_video_frame_time = 0.0
         self._previewing_intro = False
         self.tracks: list[dict] = []
         self.project_path = ""
@@ -312,10 +316,13 @@ class MainWindow(QMainWindow):
 
         clean_stale_temp_dirs()
         self._build_ui()
+        self._refresh_system_fonts(initial=True)
         self._update_highlight_color_btn()
         self._update_title_color_btn()
         self._update_track_color_btn()
         self._update_website_color_btn()
+        self._update_intro_title_color_btn()
+        self._update_intro_website_color_btn()
         self._update_project_ui_indicators()
         self._refresh_preview()
 
@@ -1776,6 +1783,148 @@ class MainWindow(QMainWindow):
         anim_row.addWidget(self.intro_anim_combo, 1)
         layout.addLayout(anim_row)
 
+        # Intro Presentation Card Visual Controls
+        layout.addSpacing(6)
+        card_sec = QLabel("PRESENTATION CARD VISUALS")
+        card_sec.setObjectName("section")
+        layout.addWidget(card_sec)
+
+        # Blur and Frosted Plate Opacity
+        blur_row = QHBoxLayout()
+        blur_lbl = QLabel("Card Blur:")
+        blur_lbl.setObjectName("muted")
+        self.intro_blur_spin = QSpinBox()
+        self.intro_blur_spin.setRange(0, 60)
+        self.intro_blur_spin.setValue(28)
+        self.intro_blur_spin.setSuffix(" px")
+        self.intro_blur_spin.setToolTip("Gaussian blur radius for the presentation card background (0-60 px)")
+        self.intro_blur_spin.valueChanged.connect(self._on_intro_param_changed)
+        blur_row.addWidget(blur_lbl)
+        blur_row.addWidget(self.intro_blur_spin, 1)
+        layout.addLayout(blur_row)
+
+        card_op_row = QHBoxLayout()
+        card_op_lbl = QLabel("Plate Tint:")
+        card_op_lbl.setObjectName("muted")
+        self.intro_card_opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.intro_card_opacity_slider.setRange(0, 100)
+        self.intro_card_opacity_slider.setValue(70)
+        self.intro_card_opacity_slider.valueChanged.connect(self._on_intro_card_opacity_changed)
+        self.intro_card_opacity_val = QLabel("70%")
+        self.intro_card_opacity_val.setMinimumWidth(36)
+        card_op_row.addWidget(card_op_lbl)
+        card_op_row.addWidget(self.intro_card_opacity_slider, 1)
+        card_op_row.addWidget(self.intro_card_opacity_val)
+        layout.addLayout(card_op_row)
+
+        # Intro Title Typography (Independent of Main Video)
+        layout.addSpacing(4)
+        intro_title_sec = QLabel("INTRO TITLE TYPOGRAPHY")
+        intro_title_sec.setObjectName("muted")
+        layout.addWidget(intro_title_sec)
+
+        self.intro_title_edit = QLineEdit()
+        self.intro_title_edit.setPlaceholderText("Custom title (blank uses project title)")
+        self.intro_title_edit.setToolTip("Independent title for the intro card. Leave blank to match collection title.")
+        self.intro_title_edit.textChanged.connect(self._on_intro_param_changed)
+        layout.addWidget(self.intro_title_edit)
+
+        intro_font_row = QHBoxLayout()
+        self.intro_title_font_combo = QComboBox()
+        self.intro_title_font_combo.currentTextChanged.connect(self._on_intro_title_font_changed)
+        self.intro_title_style_combo = QComboBox()
+        self.intro_title_style_combo.currentTextChanged.connect(self._on_intro_param_changed)
+        intro_font_row.addWidget(self.intro_title_font_combo, 2)
+        intro_font_row.addWidget(self.intro_title_style_combo, 1)
+        layout.addLayout(intro_font_row)
+
+        intro_title_style_row = QHBoxLayout()
+        intro_title_sz_lbl = QLabel("Size:")
+        intro_title_sz_lbl.setObjectName("muted")
+        self.intro_title_size_spin = QSpinBox()
+        self.intro_title_size_spin.setRange(16, 160)
+        self.intro_title_size_spin.setValue(56)
+        self.intro_title_size_spin.setSuffix(" pt")
+        self.intro_title_size_spin.setToolTip("Intro card title font size in points (independent of playlist title)")
+        self.intro_title_size_spin.valueChanged.connect(self._on_intro_param_changed)
+        self.intro_title_color_btn = QPushButton(" #FFFFFF")
+        self.intro_title_color_btn.clicked.connect(self.choose_intro_title_color)
+        intro_title_style_row.addWidget(intro_title_sz_lbl)
+        intro_title_style_row.addWidget(self.intro_title_size_spin, 1)
+        intro_title_style_row.addWidget(self.intro_title_color_btn, 1)
+        layout.addLayout(intro_title_style_row)
+
+        # Intro Logo Controls
+        layout.addSpacing(4)
+        intro_logo_sec = QLabel("INTRO LOGO")
+        intro_logo_sec.setObjectName("muted")
+        layout.addWidget(intro_logo_sec)
+
+        intro_logo_row = QHBoxLayout()
+        self.intro_logo_show_check = QCheckBox("Show Logo")
+        self.intro_logo_show_check.setChecked(True)
+        self.intro_logo_show_check.toggled.connect(self._on_intro_param_changed)
+        intro_logo_scale_lbl = QLabel("Scale:")
+        intro_logo_scale_lbl.setObjectName("muted")
+        self.intro_logo_scale_spin = QSpinBox()
+        self.intro_logo_scale_spin.setRange(20, 300)
+        self.intro_logo_scale_spin.setValue(100)
+        self.intro_logo_scale_spin.setSuffix("%")
+        self.intro_logo_scale_spin.setToolTip("Intro card logo scale percentage (independent of main video logo)")
+        self.intro_logo_scale_spin.valueChanged.connect(self._on_intro_param_changed)
+        intro_logo_row.addWidget(self.intro_logo_show_check)
+        intro_logo_row.addWidget(intro_logo_scale_lbl)
+        intro_logo_row.addWidget(self.intro_logo_scale_spin, 1)
+        layout.addLayout(intro_logo_row)
+
+        # Intro Watermark / Website Controls
+        layout.addSpacing(4)
+        intro_web_sec = QLabel("INTRO WATERMARK / WEBSITE")
+        intro_web_sec.setObjectName("muted")
+        layout.addWidget(intro_web_sec)
+
+        self.intro_website_show_check = QCheckBox("Show Watermark / URL")
+        self.intro_website_show_check.setChecked(True)
+        self.intro_website_show_check.toggled.connect(self._on_intro_param_changed)
+        layout.addWidget(self.intro_website_show_check)
+
+        self.intro_website_edit = QLineEdit()
+        self.intro_website_edit.setPlaceholderText("Custom watermark (blank uses project watermark)")
+        self.intro_website_edit.setToolTip("Override watermark on intro card. Blank uses general watermark text.")
+        self.intro_website_edit.textChanged.connect(self._on_intro_param_changed)
+        layout.addWidget(self.intro_website_edit)
+
+        intro_web_opt_row = QHBoxLayout()
+        intro_web_sz_lbl = QLabel("Size:")
+        intro_web_sz_lbl.setObjectName("muted")
+        self.intro_website_size_spin = QSpinBox()
+        self.intro_website_size_spin.setRange(10, 60)
+        self.intro_website_size_spin.setValue(20)
+        self.intro_website_size_spin.setSuffix(" pt")
+        self.intro_website_size_spin.setToolTip("Intro watermark font size in points")
+        self.intro_website_size_spin.valueChanged.connect(self._on_intro_param_changed)
+        self.intro_website_color_btn = QPushButton(" #CCCCCC")
+        self.intro_website_color_btn.clicked.connect(self.choose_intro_website_color)
+        intro_web_opt_row.addWidget(intro_web_sz_lbl)
+        intro_web_opt_row.addWidget(self.intro_website_size_spin, 1)
+        intro_web_opt_row.addWidget(self.intro_website_color_btn, 1)
+        layout.addLayout(intro_web_opt_row)
+
+        intro_web_op_row = QHBoxLayout()
+        intro_web_op_lbl = QLabel("Opacity:")
+        intro_web_op_lbl.setObjectName("muted")
+        self.intro_website_opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.intro_website_opacity_slider.setRange(0, 100)
+        self.intro_website_opacity_slider.setValue(90)
+        self.intro_website_opacity_slider.valueChanged.connect(self._on_intro_website_opacity_changed)
+        self.intro_website_opacity_val = QLabel("90%")
+        self.intro_website_opacity_val.setMinimumWidth(36)
+        intro_web_op_row.addWidget(intro_web_op_lbl)
+        intro_web_op_row.addWidget(self.intro_website_opacity_slider, 1)
+        intro_web_op_row.addWidget(self.intro_website_opacity_val)
+        layout.addLayout(intro_web_op_row)
+
+        layout.addSpacing(6)
         # Intro Audio (Prompt 11)
         layout.addSpacing(4)
         intro_audio_sec = QLabel("INTRO AUDIO")
@@ -2126,6 +2275,20 @@ class MainWindow(QMainWindow):
             "intro_audio_path": getattr(self, "intro_audio_path", ""),
             "intro_audio_fade_in": self.intro_fade_in_spin.value() if hasattr(self, "intro_fade_in_spin") else 0.5,
             "intro_audio_fade_out": self.intro_fade_out_spin.value() if hasattr(self, "intro_fade_out_spin") else 0.5,
+            "intro_title_text": self.intro_title_edit.text().strip() if hasattr(self, "intro_title_edit") else "",
+            "intro_title_font_family": self.intro_title_font_combo.currentText() if hasattr(self, "intro_title_font_combo") else "Segoe UI",
+            "intro_title_font_style": self.intro_title_style_combo.currentText() if hasattr(self, "intro_title_style_combo") else "Bold",
+            "intro_title_font_size": self.intro_title_size_spin.value() if hasattr(self, "intro_title_size_spin") else 56,
+            "intro_title_color": getattr(self, "intro_title_color", (255, 255, 255)),
+            "intro_logo_show": self.intro_logo_show_check.isChecked() if hasattr(self, "intro_logo_show_check") else True,
+            "intro_logo_scale": round(self.intro_logo_scale_spin.value() / 100.0, 2) if hasattr(self, "intro_logo_scale_spin") else 1.0,
+            "intro_website_show": self.intro_website_show_check.isChecked() if hasattr(self, "intro_website_show_check") else True,
+            "intro_website_text": self.intro_website_edit.text().strip() if hasattr(self, "intro_website_edit") else "",
+            "intro_website_font_size": self.intro_website_size_spin.value() if hasattr(self, "intro_website_size_spin") else 20,
+            "intro_website_opacity": round(self.intro_website_opacity_slider.value() / 100.0, 2) if hasattr(self, "intro_website_opacity_slider") else 0.9,
+            "intro_website_color": getattr(self, "intro_website_color", (204, 204, 204)),
+            "intro_blur_radius": self.intro_blur_spin.value() if hasattr(self, "intro_blur_spin") else 28,
+            "intro_card_opacity": round(self.intro_card_opacity_slider.value() / 100.0, 2) if hasattr(self, "intro_card_opacity_slider") else 0.70,
             "resource_profile": self.resource_profile_combo.currentText() if hasattr(self, "resource_profile_combo") else "Balanced",
             "export_quality": self.export_quality_combo.currentText() if hasattr(self, "export_quality_combo") else "Ultra Detail · Master Quality (Recommended)",
             "playlist_position": self.playlist_pos_combo.currentText() if hasattr(self, "playlist_pos_combo") else "Left",
@@ -2515,6 +2678,18 @@ class MainWindow(QMainWindow):
         self.title_font_combo.blockSignals(False)
         self.track_font_combo.blockSignals(False)
 
+        if hasattr(self, "intro_title_font_combo"):
+            cur_intro = self.intro_title_font_combo.currentText() if self.intro_title_font_combo.count() else "Segoe UI"
+            self.intro_title_font_combo.blockSignals(True)
+            self.intro_title_font_combo.clear()
+            self.intro_title_font_combo.addItems(families)
+            if cur_intro in families:
+                self.intro_title_font_combo.setCurrentText(cur_intro)
+            else:
+                self.intro_title_font_combo.setCurrentText("Segoe UI" if "Segoe UI" in families else families[0])
+            self.intro_title_font_combo.blockSignals(False)
+            self._update_intro_title_styles()
+
         self._update_title_styles()
         self._update_track_styles()
 
@@ -2869,6 +3044,82 @@ class MainWindow(QMainWindow):
     def _on_intro_anim_changed(self, text: str) -> None:
         self._mark_dirty()
 
+    def _on_intro_param_changed(self, *args) -> None:
+        self._mark_dirty()
+        if getattr(self, "_previewing_intro", False):
+            self._schedule_preview(150)
+
+    def _on_intro_card_opacity_changed(self, val: int) -> None:
+        if hasattr(self, "intro_card_opacity_val"):
+            self.intro_card_opacity_val.setText(f"{val}%")
+        self._on_intro_param_changed()
+
+    def _on_intro_website_opacity_changed(self, val: int) -> None:
+        if hasattr(self, "intro_website_opacity_val"):
+            self.intro_website_opacity_val.setText(f"{val}%")
+        self._on_intro_param_changed()
+
+    def _on_intro_title_font_changed(self, text: str) -> None:
+        self._update_intro_title_styles()
+        self._on_intro_param_changed()
+
+    def _update_intro_title_styles(self) -> None:
+        if not hasattr(self, "intro_title_font_combo") or not hasattr(self, "intro_title_style_combo"):
+            return
+        fam = self.intro_title_font_combo.currentText()
+        styles = list_family_styles(fam)
+        cur = self.intro_title_style_combo.currentText()
+        self.intro_title_style_combo.blockSignals(True)
+        self.intro_title_style_combo.clear()
+        self.intro_title_style_combo.addItems(styles)
+        if cur in styles:
+            self.intro_title_style_combo.setCurrentText(cur)
+        elif "Bold" in styles:
+            self.intro_title_style_combo.setCurrentText("Bold")
+        elif "Regular" in styles:
+            self.intro_title_style_combo.setCurrentText("Regular")
+        self.intro_title_style_combo.blockSignals(False)
+
+    def _update_intro_title_color_btn(self) -> None:
+        if not hasattr(self, "intro_title_color_btn"):
+            return
+        rgb = _hex_to_rgb(getattr(self, "intro_title_color", (255, 255, 255)))
+        hex_code = f"#{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"
+        pix = QPixmap(14, 14)
+        pix.fill(QColor(rgb[0], rgb[1], rgb[2]))
+        self.intro_title_color_btn.setIcon(QIcon(pix))
+        self.intro_title_color_btn.setText(f" {hex_code}")
+
+    def choose_intro_title_color(self) -> None:
+        rgb = _hex_to_rgb(getattr(self, "intro_title_color", (255, 255, 255)))
+        init_color = QColor(rgb[0], rgb[1], rgb[2])
+        col = QColorDialog.getColor(init_color, self, "Choose Intro Title Color")
+        if col.isValid():
+            self.intro_title_color = (col.red(), col.green(), col.blue())
+            self._update_intro_title_color_btn()
+            self._commit_undo_snapshot()
+            self._on_intro_param_changed()
+
+    def _update_intro_website_color_btn(self) -> None:
+        if not hasattr(self, "intro_website_color_btn"):
+            return
+        rgb = _hex_to_rgb(getattr(self, "intro_website_color", (204, 204, 204)))
+        hex_code = f"#{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"
+        pix = QPixmap(14, 14)
+        pix.fill(QColor(rgb[0], rgb[1], rgb[2]))
+        self.intro_website_color_btn.setIcon(QIcon(pix))
+        self.intro_website_color_btn.setText(f" {hex_code}")
+
+    def choose_intro_website_color(self) -> None:
+        rgb = _hex_to_rgb(getattr(self, "intro_website_color", (204, 204, 204)))
+        init_color = QColor(rgb[0], rgb[1], rgb[2])
+        col = QColorDialog.getColor(init_color, self, "Choose Intro Watermark Color")
+        if col.isValid():
+            self.intro_website_color = (col.red(), col.green(), col.blue())
+            self._update_intro_website_color_btn()
+            self._commit_undo_snapshot()
+            self._on_intro_param_changed()
+
     def choose_intro_audio(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self, "Choose intro presentation audio", "",
@@ -3094,25 +3345,93 @@ class MainWindow(QMainWindow):
         # If user is previewing intro presentation card
         if getattr(self, "_previewing_intro", False):
             try:
+                intro_title_txt = (
+                    self.intro_title_edit.text().strip()
+                    if hasattr(self, "intro_title_edit") and self.intro_title_edit.text().strip()
+                    else (self._committed_title or "Nasheed Collection")
+                )
+                intro_title_fam = (
+                    self.intro_title_font_combo.currentText()
+                    if hasattr(self, "intro_title_font_combo") and self.intro_title_font_combo.count()
+                    else title_fam
+                )
+                intro_title_sty = (
+                    self.intro_title_style_combo.currentText()
+                    if hasattr(self, "intro_title_style_combo") and self.intro_title_style_combo.count()
+                    else "Bold"
+                )
+                intro_title_sz = (
+                    self.intro_title_size_spin.value()
+                    if hasattr(self, "intro_title_size_spin")
+                    else 56
+                )
+                intro_title_col = getattr(self, "intro_title_color", (255, 255, 255))
+                intro_logo_show = (
+                    self.intro_logo_show_check.isChecked()
+                    if hasattr(self, "intro_logo_show_check")
+                    else True
+                )
+                intro_logo_scale = (
+                    self.intro_logo_scale_spin.value() / 100.0
+                    if hasattr(self, "intro_logo_scale_spin")
+                    else 1.0
+                )
+                intro_blur = (
+                    self.intro_blur_spin.value()
+                    if hasattr(self, "intro_blur_spin")
+                    else 28
+                )
+                intro_card_op = (
+                    self.intro_card_opacity_slider.value() / 100.0
+                    if hasattr(self, "intro_card_opacity_slider")
+                    else 0.70
+                )
+                intro_web_show = (
+                    self.intro_website_show_check.isChecked()
+                    if hasattr(self, "intro_website_show_check")
+                    else web_show
+                )
+                intro_web_txt = (
+                    self.intro_website_edit.text().strip()
+                    if hasattr(self, "intro_website_edit") and self.intro_website_edit.text().strip()
+                    else web_txt
+                )
+                intro_web_sz = (
+                    self.intro_website_size_spin.value()
+                    if hasattr(self, "intro_website_size_spin")
+                    else 20
+                )
+                intro_web_op = (
+                    self.intro_website_opacity_slider.value() / 100.0
+                    if hasattr(self, "intro_website_opacity_slider")
+                    else 0.90
+                )
+                intro_web_col = getattr(self, "intro_website_color", None) or getattr(self, "website_color", None)
+
                 with tempfile.TemporaryDirectory(prefix="nasheed_intro_prev_") as tmp:
                     card_path = create_intro_card(
                         width=1280,
                         height=720,
                         background_path=valid_bg,
                         logo_path=self.logo_path or None,
-                        collection_title=self._committed_title or "Nasheed Collection",
+                        collection_title=intro_title_txt,
                         template=self.template_combo.currentText(),
                         out_dir=tmp,
-                        title_font_family=title_fam,
-                        title_font_style=title_style,
-                        title_font_size=title_sz,
-                        website_text=web_txt,
-                        website_show=web_show,
-                        website_opacity=web_op,
-                        website_font_size=web_sz,
-                        website_font_family=getattr(self, "website_font_family", None) or title_fam,
+                        title_font_family=intro_title_fam,
+                        title_font_style=intro_title_sty,
+                        title_font_size=intro_title_sz,
+                        title_color=intro_title_col,
+                        logo_show=intro_logo_show,
+                        logo_scale=intro_logo_scale,
+                        website_text=intro_web_txt,
+                        website_show=intro_web_show,
+                        website_opacity=intro_web_op,
+                        website_font_size=intro_web_sz,
+                        website_font_family=getattr(self, "website_font_family", None) or intro_title_fam,
                         website_font_style=getattr(self, "website_font_style", "Regular"),
-                        website_color=getattr(self, "website_color", None),
+                        website_color=intro_web_col,
+                        blur_radius=intro_blur,
+                        card_opacity=intro_card_op,
                     )
                     pix = QPixmap(card_path)
                     scaled_pix = pix.scaled(
@@ -3313,6 +3632,12 @@ class MainWindow(QMainWindow):
         """Render live video frame with playlist typography overlay composited on top."""
         if not self._is_preview_playing or frame is None or not frame.isValid():
             return
+
+        now = time.monotonic()
+        if now - getattr(self, "_last_video_frame_time", 0.0) < 0.033:
+            return
+        self._last_video_frame_time = now
+
         qimg = frame.toImage()
         if qimg.isNull():
             return
@@ -3324,7 +3649,7 @@ class MainWindow(QMainWindow):
         w, h = target_size.width(), target_size.height()
 
         if "pad" in fit or "letterbox" in fit:
-            scaled = qimg.scaled(target_size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            scaled = qimg.scaled(target_size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.FastTransformation)
             canvas = QImage(target_size, QImage.Format.Format_ARGB32_Premultiplied)
             canvas.fill(Qt.GlobalColor.black)
             p = QPainter(canvas)
@@ -3332,10 +3657,10 @@ class MainWindow(QMainWindow):
             oy = (h - scaled.height()) // 2
             p.drawImage(ox, oy, scaled)
         elif "stretch" in fit:
-            canvas = qimg.scaled(target_size, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            canvas = qimg.scaled(target_size, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.FastTransformation)
             p = QPainter(canvas)
         else:  # "fill / crop (cover)"
-            scaled = qimg.scaled(target_size, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
+            scaled = qimg.scaled(target_size, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.FastTransformation)
             ox = max(0, (scaled.width() - w) // 2)
             oy = max(0, (scaled.height() - h) // 2)
             canvas = scaled.copy(ox, oy, w, h)
@@ -3775,6 +4100,30 @@ class MainWindow(QMainWindow):
             if hasattr(self, "sfx_check"):
                 self.sfx_check.setChecked(False)
                 self.sfx_vol_slider.setValue(70)
+            if hasattr(self, "intro_title_edit"):
+                self.intro_title_edit.setText("")
+            if hasattr(self, "intro_title_size_spin"):
+                self.intro_title_size_spin.setValue(56)
+            self.intro_title_color = (255, 255, 255)
+            self._update_intro_title_color_btn()
+            if hasattr(self, "intro_logo_show_check"):
+                self.intro_logo_show_check.setChecked(True)
+            if hasattr(self, "intro_logo_scale_spin"):
+                self.intro_logo_scale_spin.setValue(100)
+            if hasattr(self, "intro_website_show_check"):
+                self.intro_website_show_check.setChecked(True)
+            if hasattr(self, "intro_website_edit"):
+                self.intro_website_edit.setText("")
+            if hasattr(self, "intro_website_size_spin"):
+                self.intro_website_size_spin.setValue(20)
+            if hasattr(self, "intro_website_opacity_slider"):
+                self.intro_website_opacity_slider.setValue(90)
+            self.intro_website_color = (204, 204, 204)
+            self._update_intro_website_color_btn()
+            if hasattr(self, "intro_blur_spin"):
+                self.intro_blur_spin.setValue(28)
+            if hasattr(self, "intro_card_opacity_slider"):
+                self.intro_card_opacity_slider.setValue(70)
             self.highlight_color = (248, 220, 139)
             self._update_highlight_color_btn()
             self.title_color = (255, 255, 255)
@@ -4181,6 +4530,35 @@ class MainWindow(QMainWindow):
         if "highlight_color" in tmpl:
             self.highlight_color = tmpl["highlight_color"]
             self._update_highlight_color_btn()
+        if "intro_title_font_family" in tmpl and hasattr(self, "intro_title_font_combo"):
+            _set_combo_case_insensitive(self.intro_title_font_combo, tmpl["intro_title_font_family"])
+            self._update_intro_title_styles()
+            if "intro_title_font_style" in tmpl and hasattr(self, "intro_title_style_combo"):
+                _set_combo_case_insensitive(self.intro_title_style_combo, tmpl["intro_title_font_style"])
+        if "intro_title_font_size" in tmpl and hasattr(self, "intro_title_size_spin"):
+            self.intro_title_size_spin.setValue(int(tmpl["intro_title_font_size"]))
+        if "intro_title_color" in tmpl:
+            raw_itc = tmpl["intro_title_color"]
+            self.intro_title_color = tuple(raw_itc) if isinstance(raw_itc, (list, tuple)) else raw_itc
+            self._update_intro_title_color_btn()
+        if "intro_logo_show" in tmpl and hasattr(self, "intro_logo_show_check"):
+            self.intro_logo_show_check.setChecked(bool(tmpl["intro_logo_show"]))
+        if "intro_logo_scale" in tmpl and hasattr(self, "intro_logo_scale_spin"):
+            self.intro_logo_scale_spin.setValue(int(round(float(tmpl["intro_logo_scale"]) * 100)))
+        if "intro_website_show" in tmpl and hasattr(self, "intro_website_show_check"):
+            self.intro_website_show_check.setChecked(bool(tmpl["intro_website_show"]))
+        if "intro_website_font_size" in tmpl and hasattr(self, "intro_website_size_spin"):
+            self.intro_website_size_spin.setValue(int(tmpl["intro_website_font_size"]))
+        if "intro_website_opacity" in tmpl and hasattr(self, "intro_website_opacity_slider"):
+            self.intro_website_opacity_slider.setValue(int(round(float(tmpl["intro_website_opacity"]) * 100)))
+        if "intro_website_color" in tmpl:
+            raw_iwc = tmpl["intro_website_color"]
+            self.intro_website_color = tuple(raw_iwc) if isinstance(raw_iwc, (list, tuple)) else raw_iwc
+            self._update_intro_website_color_btn()
+        if "intro_blur_radius" in tmpl and hasattr(self, "intro_blur_spin"):
+            self.intro_blur_spin.setValue(int(tmpl["intro_blur_radius"]))
+        if "intro_card_opacity" in tmpl and hasattr(self, "intro_card_opacity_slider"):
+            self.intro_card_opacity_slider.setValue(int(round(float(tmpl["intro_card_opacity"]) * 100)))
         if "highlight_bg_opacity" in tmpl and hasattr(self, "highlight_opacity_slider"):
             self.highlight_opacity_slider.setValue(int(float(tmpl["highlight_bg_opacity"]) * 100))
         if "title_color" in tmpl:
@@ -4445,6 +4823,36 @@ class MainWindow(QMainWindow):
                 self.intro_fade_in_spin.setValue(float(data.get("intro_audio_fade_in", 0.5) if data.get("intro_audio_fade_in") is not None else 0.5))
             if hasattr(self, "intro_fade_out_spin"):
                 self.intro_fade_out_spin.setValue(float(data.get("intro_audio_fade_out", 0.5) if data.get("intro_audio_fade_out") is not None else 0.5))
+            if hasattr(self, "intro_blur_spin") and "intro_blur_radius" in data:
+                self.intro_blur_spin.setValue(int(data.get("intro_blur_radius", 28) or 28))
+            if hasattr(self, "intro_card_opacity_slider") and "intro_card_opacity" in data:
+                self.intro_card_opacity_slider.setValue(int(float(data.get("intro_card_opacity", 0.70) or 0.70) * 100))
+            if hasattr(self, "intro_title_edit"):
+                self.intro_title_edit.setText(data.get("intro_title_text", ""))
+            if hasattr(self, "intro_title_font_combo"):
+                _set_combo_case_insensitive(self.intro_title_font_combo, data.get("intro_title_font_family", "Segoe UI"))
+                self._update_intro_title_styles()
+                _set_combo_case_insensitive(self.intro_title_style_combo, data.get("intro_title_font_style", "Bold"))
+            if hasattr(self, "intro_title_size_spin"):
+                self.intro_title_size_spin.setValue(int(data.get("intro_title_font_size", 56) or 56))
+            raw_itc = data.get("intro_title_color", (255, 255, 255))
+            self.intro_title_color = tuple(raw_itc) if isinstance(raw_itc, (list, tuple)) else raw_itc
+            self._update_intro_title_color_btn()
+            if hasattr(self, "intro_logo_show_check"):
+                self.intro_logo_show_check.setChecked(bool(data.get("intro_logo_show", True)))
+            if hasattr(self, "intro_logo_scale_spin"):
+                self.intro_logo_scale_spin.setValue(int(round(float(data.get("intro_logo_scale", 1.0) or 1.0) * 100)))
+            if hasattr(self, "intro_website_show_check"):
+                self.intro_website_show_check.setChecked(bool(data.get("intro_website_show", True)))
+            if hasattr(self, "intro_website_edit"):
+                self.intro_website_edit.setText(data.get("intro_website_text", ""))
+            if hasattr(self, "intro_website_size_spin"):
+                self.intro_website_size_spin.setValue(int(data.get("intro_website_font_size", 20) or 20))
+            if hasattr(self, "intro_website_opacity_slider") and "intro_website_opacity" in data:
+                self.intro_website_opacity_slider.setValue(int(float(data.get("intro_website_opacity", 0.90) or 0.90) * 100))
+            raw_iwc = data.get("intro_website_color", (204, 204, 204))
+            self.intro_website_color = tuple(raw_iwc) if isinstance(raw_iwc, (list, tuple)) else raw_iwc
+            self._update_intro_website_color_btn()
             if hasattr(self, "sfx_check"):
                 self.sfx_check.setChecked(bool(data.get("transition_sfx_enabled", False)))
                 sfx_vol = int(float(data.get("transition_sfx_volume", 0.7) if data.get("transition_sfx_volume") is not None else 0.7) * 100)

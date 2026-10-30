@@ -948,6 +948,9 @@ def create_intro_card(
     title_font_family: str = "Segoe UI",
     title_font_style: str = "Bold",
     title_font_size: int = 56,
+    title_color: Optional[Union[str, tuple, list]] = None,
+    logo_show: bool = True,
+    logo_scale: float = 1.0,
     website_text: str = "",
     website_show: bool = True,
     website_opacity: float = 1.0,
@@ -955,6 +958,8 @@ def create_intro_card(
     website_font_family: Optional[str] = None,
     website_font_style: Optional[str] = None,
     website_color: Optional[Union[str, tuple, list]] = None,
+    blur_radius: int = 28,
+    card_opacity: float = 0.70,
 ) -> str:
     """
     Generate an intro title card image featuring the collection title and logo presentation.
@@ -978,9 +983,16 @@ def create_intro_card(
     else:
         bg = Image.new("RGBA", (width, height), (23, 28, 26, 255))
 
-    # 1. Background Cinematic Blur (Depth-of-field)
-    blur_radius = max(16, int(28 * res_scale))
-    blurred_bg = bg.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+    # 1. Background Cinematic Blur (Fast two-pass photographic bokeh)
+    eff_blur = max(0, int(blur_radius * res_scale))
+    if eff_blur > 0:
+        down_w = max(320, width // 3)
+        down_h = max(180, height // 3)
+        small_bg = bg.resize((down_w, down_h), Image.Resampling.BILINEAR)
+        blurred_small = small_bg.filter(ImageFilter.GaussianBlur(radius=max(2, eff_blur // 3)))
+        blurred_bg = blurred_small.resize((width, height), Image.Resampling.BILINEAR)
+    else:
+        blurred_bg = bg
 
     # 2. Rich atmospheric darkening wash
     wash = Image.new("RGBA", (width, height), (10, 14, 16, 155))
@@ -1001,14 +1013,16 @@ def create_intro_card(
     card_draw.rounded_rectangle(
         [card_x - 2, card_y + shadow_offset, card_x + card_w + 2, card_y + card_h + shadow_offset],
         radius=card_radius,
-        fill=(0, 0, 0, 95),
+        fill=(0, 0, 0, int(95 * card_opacity / 0.70)),
     )
     # Frosted glass body with translucent fill and crisp glass border
+    plate_alpha = max(0, min(255, int(255 * card_opacity)))
+    border_alpha = max(0, min(255, int(65 * card_opacity / 0.70)))
     card_draw.rounded_rectangle(
         [card_x, card_y, card_x + card_w, card_y + card_h],
         radius=card_radius,
-        fill=(16, 22, 24, 175),
-        outline=(255, 255, 255, 45),
+        fill=(16, 22, 24, plate_alpha),
+        outline=(255, 255, 255, border_alpha),
         width=max(1, int(1.5 * res_scale)),
     )
 
@@ -1022,17 +1036,19 @@ def create_intro_card(
 
     # Centered Logo Presentation inside upper part of card
     logo_bottom = card_y + int(card_h * 0.12)
-    if logo_path and Path(logo_path).is_file():
+    if logo_show and logo_path and Path(logo_path).is_file():
         try:
             with Image.open(logo_path) as logo_src:
                 logo = clean_logo_image(logo_src).convert("RGBA")
-                max_w = int(card_w * 0.35)
-                max_h = int(card_h * 0.30)
-                logo.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
-                lx = (width - logo.width) // 2
-                ly = card_y + int(card_h * 0.08)
-                overlay.alpha_composite(logo, (lx, ly))
-                logo_bottom = ly + logo.height
+                eff_scale = max(0.1, float(logo_scale))
+                max_w = int(card_w * 0.35 * eff_scale)
+                max_h = int(card_h * 0.30 * eff_scale)
+                if max_w > 0 and max_h > 0:
+                    logo.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
+                    lx = (width - logo.width) // 2
+                    ly = card_y + int(card_h * 0.08)
+                    overlay.alpha_composite(logo, (lx, ly))
+                    logo_bottom = ly + logo.height
         except Exception:
             pass
 
@@ -1102,12 +1118,13 @@ def create_intro_card(
         lw = bb[2] - bb[0]
         lx = max(int(width * 0.05), (width - lw) // 2)
         ly = start_ty + idx * line_h
+        fill_col = _hex_to_rgb(title_color, (255, 255, 252)) if title_color is not None else (255, 255, 252)
         _draw_text_with_outline_and_shadow(
             draw=over_draw,
             xy=(lx, ly),
             text=line_text,
             font=title_font,
-            fill=(255, 255, 252, 255),
+            fill=(*fill_col, 255),
             stroke_width=max(0, int(height * 0.0015)),
             stroke_fill=(0, 0, 0, 160),
             shadow=True,
