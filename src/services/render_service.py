@@ -406,7 +406,7 @@ def build_render_command(
         # 1. Stationary dimmed background wash to conceal playlist tracks during intro
         if intro_bg_input_idx is not None:
             filters.append(
-                f"[{intro_bg_input_idx}:v]trim=duration={intro_dur:.3f},"
+                f"[{intro_bg_input_idx}:v]trim=duration={intro_dur:.3f},format=rgba,"
                 f"fade=t=out:st={intro_out_st:.3f}:d={intro_fade_d:.3f}:alpha=1[intro_bg_fx]"
             )
             filters.append(

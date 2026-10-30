@@ -211,6 +211,14 @@ class PlaylistListWidget(QListWidget):
             self.main_window.remove_track()
             event.accept()
             return
+        if event.key() == Qt.Key.Key_O and (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            self.main_window.add_tracks()
+            event.accept()
+            return
+        if event.key() == Qt.Key.Key_I and (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            self.main_window.add_tracks()
+            event.accept()
+            return
         if event.key() == Qt.Key.Key_F2:
             self.main_window._on_rename_track_clicked()
             event.accept()
@@ -488,7 +496,7 @@ class MainWindow(QMainWindow):
         self.add_tracks_btn = QPushButton()
         self.add_tracks_btn.setIcon(get_svg_icon("add", 16, "#edf2ee"))
         self.add_tracks_btn.setIconSize(QSize(16, 16))
-        self.add_tracks_btn.setToolTip("Add Audio (Ctrl+O) — Add audio files (MP3, WAV, M4A, AAC, FLAC)")
+        self.add_tracks_btn.setToolTip("Add Audio (Ctrl+Shift+O / Ctrl+I) — Add audio files (MP3, WAV, M4A, AAC, FLAC)")
         self.add_tracks_btn.setAccessibleName("Add Audio")
         self.add_tracks_btn.setAccessibleDescription("Add audio files to the playlist")
         self.add_tracks_btn.clicked.connect(self.add_tracks)
@@ -836,6 +844,17 @@ class MainWindow(QMainWindow):
         # Edit Menu (Undo/Redo & Track Shortcuts)
         # --------------------------------------------------------------
         edit_menu = self.menuBar().addMenu("Edit")
+
+        self.add_tracks_act = QAction("Add Audio Tracks…", self)
+        self.add_tracks_act.setShortcut("Ctrl+Shift+O")
+        self.add_tracks_act.setToolTip("Add audio files to playlist (Ctrl+Shift+O or Ctrl+I)")
+        self.add_tracks_act.triggered.connect(self.add_tracks)
+        edit_menu.addAction(self.add_tracks_act)
+
+        self._add_audio_shortcut_alt = QShortcut(QKeySequence("Ctrl+I"), self)
+        self._add_audio_shortcut_alt.activated.connect(self.add_tracks)
+
+        edit_menu.addSeparator()
 
         self.undo_act = QAction("Undo", self)
         self.undo_act.setShortcut("Ctrl+Z")

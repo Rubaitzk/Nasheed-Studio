@@ -958,10 +958,13 @@ def create_intro_card(
 ) -> str:
     """
     Generate an intro title card image featuring the collection title and logo presentation.
+    Applies cinematic background Gaussian blur, atmospheric vignette, and a frosted glass
+    presentation container to ensure the intro screen is presentable and non-translucent.
     Returns the file path to intro_card.png.
     """
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
+    res_scale = height / 1080.0
 
     if background_path and Path(background_path).is_file():
         if is_video_file(background_path):
@@ -975,43 +978,83 @@ def create_intro_card(
     else:
         bg = Image.new("RGBA", (width, height), (23, 28, 26, 255))
 
-    # A darker, cinematic wash for the intro
-    wash = Image.new("RGBA", bg.size, (0, 0, 0, 110))
-    intro_bg = Image.alpha_composite(bg, wash)
+    # 1. Background Cinematic Blur (Depth-of-field)
+    blur_radius = max(16, int(28 * res_scale))
+    blurred_bg = bg.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+
+    # 2. Rich atmospheric darkening wash
+    wash = Image.new("RGBA", (width, height), (10, 14, 16, 155))
+    comp_bg = Image.alpha_composite(blurred_bg, wash)
+
+    # 3. Frosted Glass Center Presentation Container
+    card_w = int(width * 0.74)
+    card_h = int(height * 0.64)
+    card_x = (width - card_w) // 2
+    card_y = (height - card_h) // 2 - int(height * 0.015)
+    card_radius = int(24 * res_scale)
+
+    card_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    card_draw = ImageDraw.Draw(card_layer, "RGBA")
+
+    # Soft ambient drop shadow behind card
+    shadow_offset = int(8 * res_scale)
+    card_draw.rounded_rectangle(
+        [card_x - 2, card_y + shadow_offset, card_x + card_w + 2, card_y + card_h + shadow_offset],
+        radius=card_radius,
+        fill=(0, 0, 0, 95),
+    )
+    # Frosted glass body with translucent fill and crisp glass border
+    card_draw.rounded_rectangle(
+        [card_x, card_y, card_x + card_w, card_y + card_h],
+        radius=card_radius,
+        fill=(16, 22, 24, 175),
+        outline=(255, 255, 255, 45),
+        width=max(1, int(1.5 * res_scale)),
+    )
+
+    intro_bg = Image.alpha_composite(comp_bg, card_layer)
     intro_bg_path = str(out / "intro_bg.png")
     intro_bg.save(intro_bg_path)
 
-    # Dedicated transparent overlay for foreground elements (logo, title, website)
+    # 4. Foreground Overlay (Logo, Divider, Title, Website)
     overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    res_scale = height / 1080.0
+    over_draw = ImageDraw.Draw(overlay, "RGBA")
 
-    # Centered Logo Presentation
-    logo_bottom = int(height * 0.38)
+    # Centered Logo Presentation inside upper part of card
+    logo_bottom = card_y + int(card_h * 0.12)
     if logo_path and Path(logo_path).is_file():
         try:
             with Image.open(logo_path) as logo_src:
                 logo = clean_logo_image(logo_src).convert("RGBA")
-                max_w, max_h = int(width * 0.28), int(height * 0.22)
+                max_w = int(card_w * 0.35)
+                max_h = int(card_h * 0.30)
                 logo.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
                 lx = (width - logo.width) // 2
-                ly = int(height * 0.18)
+                ly = card_y + int(card_h * 0.08)
                 overlay.alpha_composite(logo, (lx, ly))
                 logo_bottom = ly + logo.height
         except Exception:
             pass
 
-    # Title safe frame bounds and intelligent multi-line fitting
+    # Decorative accent divider
+    div_y = logo_bottom + int(card_h * 0.05)
+    div_w = int(card_w * 0.22)
+    div_x1 = (width - div_w) // 2
+    div_x2 = div_x1 + div_w
+    over_draw.line([(div_x1, div_y), (div_x2, div_y)], fill=(248, 220, 139, 130), width=max(1, int(2 * res_scale)))
+
+    # Title safe frame bounds and intelligent multi-line fitting inside card
     norm_title_sz = get_normalized_font_size(title_font_family, title_font_style, title_font_size)
-    base_title_size = max(20, int(norm_title_sz * res_scale))
+    base_title_size = max(22, int(norm_title_sz * res_scale))
 
     web_text_clean = website_text.strip()
     web_op = max(0.0, min(1.0, float(website_opacity if website_opacity is not None else 1.0)))
     has_web = bool(web_text_clean and website_show and web_op > 0.0)
 
-    max_title_w = int(width * 0.84)
-    min_title_y = logo_bottom + int(height * 0.03)
-    max_title_y = int(height * 0.82) if has_web else int(height * 0.88)
-    available_title_h = max(60, max_title_y - min_title_y)
+    max_title_w = int(card_w * 0.88)
+    min_title_y = div_y + int(card_h * 0.05)
+    max_title_y = card_y + card_h - (int(card_h * 0.16) if has_web else int(card_h * 0.08))
+    available_title_h = max(50, max_title_y - min_title_y)
 
     curr_sz = base_title_size
     clean_col_title = collection_title.strip()
@@ -1054,29 +1097,26 @@ def create_intro_card(
     total_th = len(lines) * line_h
     start_ty = min_title_y + max(0, (available_title_h - total_th) // 2)
 
-    c_draw = ImageDraw.Draw(overlay, "RGBA")
     for idx, line_text in enumerate(lines):
         bb = title_font.getbbox(line_text)
         lw = bb[2] - bb[0]
         lx = max(int(width * 0.05), (width - lw) // 2)
         ly = start_ty + idx * line_h
         _draw_text_with_outline_and_shadow(
-            draw=c_draw,
+            draw=over_draw,
             xy=(lx, ly),
             text=line_text,
             font=title_font,
-            fill=(255, 255, 250, 255),
+            fill=(255, 255, 252, 255),
             stroke_width=max(0, int(height * 0.0015)),
             stroke_fill=(0, 0, 0, 160),
             shadow=True,
             shadow_offset=(max(2, int(3 * res_scale)), max(2, int(3 * res_scale))),
-            shadow_fill=(0, 0, 0, 180),
+            shadow_fill=(0, 0, 0, 190),
         )
 
-    # Optional Website Address at bottom center
-    web_text_clean = website_text.strip()
-    web_op = max(0.0, min(1.0, float(website_opacity if website_opacity is not None else 1.0)))
-    if web_text_clean and website_show and web_op > 0.0:
+    # 5. Website Address inside bottom of card
+    if has_web:
         web_size = max(12, int(website_font_size * res_scale))
         web_family = website_font_family or title_font_family or "Segoe UI"
         web_style = website_font_style or "Regular"
@@ -1085,18 +1125,14 @@ def create_intro_card(
         ww = wb[2] - wb[0]
         wh = wb[3] - wb[1]
         wx = (width - ww) // 2
-        wy = int(height * 0.88)
+        wy = card_y + card_h - int(card_h * 0.12)
         web_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         w_draw = ImageDraw.Draw(web_layer, "RGBA")
 
-        # Contrast-adaptive color
         if website_color is not None:
-            text_rgb = _hex_to_rgb(website_color, (240, 244, 242))
+            text_rgb = _hex_to_rgb(website_color, (220, 230, 225))
         else:
-            crop = intro_bg.crop((wx, wy, wx + ww, wy + wh)).convert("L")
-            pixels = list(crop.get_flattened_data() if hasattr(crop, "get_flattened_data") else crop.getdata())
-            avg_lum = sum(pixels) / max(1, len(pixels))
-            text_rgb = (35, 40, 42) if avg_lum > 140 else (240, 244, 242)
+            text_rgb = (220, 230, 225)
 
         text_alpha = max(0, min(255, int(round(255 * web_op))))
         w_draw.text((wx - wb[0], wy - wb[1]), web_text_clean, font=web_font, fill=(*text_rgb, text_alpha))
@@ -1109,7 +1145,6 @@ def create_intro_card(
     full_card = Image.alpha_composite(intro_bg, overlay)
     intro_path = str(out / "intro_card.png")
     full_card.save(intro_path)
-    return intro_path
     return intro_path
 
 
