@@ -154,6 +154,8 @@ def build_render_command(
     playlist_y_offset = int(project.get("playlist_y_offset", 0) or 0)
     playlist_width_ratio = float(project.get("playlist_width_ratio", 0.47) or 0.47)
     playlist_columns = int(project.get("playlist_columns", 1) or 1)
+    playlist_column_distribution_mode = project.get("playlist_column_distribution_mode") or project.get("column_distribution_mode", "auto")
+    playlist_column_distribution = project.get("playlist_column_distribution") or project.get("column_distribution", "")
     playlist_row_spacing = float(project.get("playlist_row_spacing", 1.85) or 1.85)
     playlist_bg_opacity = float(project.get("playlist_bg_opacity", 0.0) if project.get("playlist_bg_opacity") is not None else 0.0)
     playlist_bg_color = project.get("playlist_bg_color", (0, 0, 0))
@@ -217,6 +219,8 @@ def build_render_command(
         playlist_y_offset=playlist_y_offset,
         playlist_width_ratio=playlist_width_ratio,
         playlist_columns=playlist_columns,
+        playlist_column_distribution_mode=playlist_column_distribution_mode,
+        playlist_column_distribution=playlist_column_distribution,
         playlist_row_spacing=playlist_row_spacing,
         playlist_col_spacing=project.get("playlist_col_spacing", None),
         track_max_chars=int(project.get("track_max_chars", 0) or 0),

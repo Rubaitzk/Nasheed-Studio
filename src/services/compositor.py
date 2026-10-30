@@ -491,6 +491,10 @@ def compute_reference_playlist_layout(
     template: str = "Two-column",
     width_ratio: Optional[float] = None,
     title_playlist_spacing: Optional[int] = None,
+    column_distribution_mode: str = "auto",
+    column_distribution: Optional[Union[str, List[int]]] = None,
+    playlist_column_distribution_mode: Optional[str] = None,
+    playlist_column_distribution: Optional[Union[str, List[int]]] = None,
 ) -> PlaylistLayoutResult:
     """
     Reference-accurate playlist layout solver:
@@ -585,11 +589,52 @@ def compute_reference_playlist_layout(
             raw = raw[:max_title_chars].rstrip() + "…"
         formatted_tracks.append(raw)
 
-    # 3. Determine Rows Per Column & Split Tracks (Matching refer 2.jpg)
+    # 3. Determine Rows Per Column & Split Tracks (Matching refer 2.jpg & Manual Distribution)
     font_size = max(11, int(requested_font_size * res_scale))
     norm_fill = str(fill_mode or "top_to_bottom").lower()
+
+    # Resolve column distribution mode & counts
+    eff_dist_mode = (playlist_column_distribution_mode or column_distribution_mode or "auto").strip().lower()
+    eff_dist_val = playlist_column_distribution if playlist_column_distribution is not None else column_distribution
+
+    manual_counts: List[int] = []
+    if eff_dist_val is not None:
+        if isinstance(eff_dist_val, (list, tuple)):
+            for v in eff_dist_val:
+                try:
+                    manual_counts.append(max(0, int(v)))
+                except (ValueError, TypeError):
+                    pass
+        elif isinstance(eff_dist_val, str):
+            for num_str in re.findall(r"\d+", eff_dist_val):
+                try:
+                    manual_counts.append(max(0, int(num_str)))
+                except (ValueError, TypeError):
+                    pass
+
     columns_tracks: List[List[Tuple[int, str]]] = []
-    if actual_cols == 1:
+    if eff_dist_mode == "manual" and manual_counts:
+        # User-defined manual distribution across columns
+        target_cols = max(cols if cols >= 2 else 0, len(manual_counts))
+        actual_cols = max(1, min(4, target_cols))
+
+        curr_idx = 0
+        for c in range(actual_cols):
+            if c < len(manual_counts):
+                req_count = manual_counts[c]
+            else:
+                req_count = max(0, n_tracks - curr_idx)
+
+            # If last column, safely flow all remaining unassigned tracks
+            if c == actual_cols - 1:
+                take = max(0, n_tracks - curr_idx)
+            else:
+                take = min(req_count, max(0, n_tracks - curr_idx))
+
+            col_items = [(i, formatted_tracks[i]) for i in range(curr_idx, curr_idx + take)]
+            columns_tracks.append(col_items)
+            curr_idx += take
+    elif actual_cols == 1:
         columns_tracks.append([(i, formatted_tracks[i]) for i in range(n_tracks)])
     elif actual_cols == 2 and norm_fill == "top_to_bottom" and n_tracks >= 14:
         # refer 2.jpg style: fill Column 1 top-to-bottom first up to 14 rows
@@ -665,9 +710,14 @@ def compute_reference_playlist_layout(
         ind_reserve = (int(f_size * 0.65) + 10) if indicator_enabled else 0
         col_w_list = []
         for col in wrapped_columns_tracks:
+            if not col:
+                col_w_list.append(0)
+                continue
             max_w = max((_measure_item_width(text, f_size) for _, text in col), default=100)
             col_w_list.append(max_w + pad_x * 2 + ind_reserve)
-        total_w = sum(col_w_list) + max(0, actual_cols - 1) * col_gap
+        non_empty_cols = sum(1 for w in col_w_list if w > 0)
+        gap_count = max(0, non_empty_cols - 1)
+        total_w = sum(col_w_list) + gap_count * col_gap
         return col_w_list, total_w
 
     col_widths, total_width = measure_columns(font_size)
@@ -697,7 +747,8 @@ def compute_reference_playlist_layout(
     curr_x = start_x
     for w in col_widths:
         col_x_positions.append(curr_x)
-        curr_x += w + col_gap
+        if w > 0:
+            curr_x += w + col_gap
 
     # 7. Build Row Coordinates, Highlight Boxes, and Indicator Positions
     rows_out: List[TrackRowLayout] = []
@@ -706,6 +757,8 @@ def compute_reference_playlist_layout(
     ind_offset = (ind_size + 10) if indicator_enabled else 0
 
     for c_idx, col in enumerate(wrapped_columns_tracks):
+        if not col:
+            continue
         col_x = col_x_positions[c_idx]
         col_w = col_widths[c_idx]
         curr_row_y = top_y
@@ -787,6 +840,10 @@ def calculate_playlist_layout(
     website_rect: Optional[Tuple[int, int, int, int]] = None,
     playlist_col_spacing: Optional[int] = None,
     track_max_chars: int = 0,
+    playlist_column_distribution_mode: str = "auto",
+    playlist_column_distribution: Optional[Union[str, List[int]]] = None,
+    column_distribution_mode: Optional[str] = None,
+    column_distribution: Optional[Union[str, List[int]]] = None,
     logo_rect: Optional[Tuple[int, int, int, int]] = None,
     logo_position: str = "Bottom-Right",
     indicator_enabled: bool = False,
@@ -830,6 +887,8 @@ def calculate_playlist_layout(
         template=template,
         width_ratio=playlist_width_ratio,
         title_playlist_spacing=title_playlist_spacing,
+        column_distribution_mode=column_distribution_mode or playlist_column_distribution_mode,
+        column_distribution=column_distribution if column_distribution is not None else playlist_column_distribution,
     )
 
     row_font = _get_font(track_font_family, track_font_style, layout_res.effective_font_size)
@@ -1093,6 +1152,10 @@ def create_composition(
     playlist_row_spacing: float = 1.85,
     playlist_col_spacing: Optional[int] = None,
     track_max_chars: int = 0,
+    playlist_column_distribution_mode: str = "auto",
+    playlist_column_distribution: Optional[Union[str, List[int]]] = None,
+    column_distribution_mode: Optional[str] = None,
+    column_distribution: Optional[Union[str, List[int]]] = None,
     playlist_bg_opacity: float = 0.0,
     playlist_bg_color: Union[str, tuple, list] = (0, 0, 0),
     playlist_bg_radius: int = 6,
@@ -1396,6 +1459,8 @@ def create_composition(
         logo_rect=logo_rect,
         logo_position=logo_position,
         indicator_enabled=(show_cursor or show_highlight),
+        playlist_column_distribution_mode=playlist_column_distribution_mode or column_distribution_mode or "auto",
+        playlist_column_distribution=playlist_column_distribution if playlist_column_distribution is not None else column_distribution,
     )
 
     track_items = layout_info["track_items"]

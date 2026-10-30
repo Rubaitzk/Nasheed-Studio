@@ -1140,6 +1140,33 @@ class MainWindow(QMainWindow):
         pl_col_row.addWidget(self.col_spacing_spin, 1)
         layout.addLayout(pl_col_row)
 
+        # Column distribution mode (Automatic vs Manual)
+        dist_mode_row = QHBoxLayout()
+        dist_mode_row.setSpacing(6)
+        dist_mode_lbl = QLabel("Distribution:")
+        dist_mode_lbl.setObjectName("muted")
+        self.playlist_col_mode_combo = QComboBox()
+        self.playlist_col_mode_combo.addItems(["Automatic", "Manual"])
+        self.playlist_col_mode_combo.setToolTip("Control how tracks are distributed across columns (Automatic or Manual)")
+        self.playlist_col_mode_combo.currentTextChanged.connect(self._on_col_distribution_mode_changed)
+        dist_mode_row.addWidget(dist_mode_lbl)
+        dist_mode_row.addWidget(self.playlist_col_mode_combo, 1)
+        layout.addLayout(dist_mode_row)
+
+        self.dist_manual_row = QHBoxLayout()
+        self.dist_manual_row.setSpacing(6)
+        self.dist_manual_lbl = QLabel("Items Per Col:")
+        self.dist_manual_lbl.setObjectName("muted")
+        self.playlist_col_dist_edit = QLineEdit("12, 12")
+        self.playlist_col_dist_edit.setPlaceholderText("e.g. 12, 12")
+        self.playlist_col_dist_edit.setToolTip("Items per column (comma-separated, e.g. '12, 12' or '10, 8'). Unassigned tracks safely flow into the last column.")
+        self.playlist_col_dist_edit.textChanged.connect(lambda _: self._on_layout_param_changed())
+        self.dist_manual_row.addWidget(self.dist_manual_lbl)
+        self.dist_manual_row.addWidget(self.playlist_col_dist_edit, 1)
+        layout.addLayout(self.dist_manual_row)
+        self.dist_manual_lbl.setVisible(False)
+        self.playlist_col_dist_edit.setVisible(False)
+
         pl_x_row = QHBoxLayout()
         pl_x_row.setSpacing(6)
         pl_x_lbl = QLabel("Track Titles X-Offset:")
@@ -1779,6 +1806,42 @@ class MainWindow(QMainWindow):
     # Inspector Toggle & Workspace Reveal
     # ------------------------------------------------------------------
 
+    def is_playlist_expanded(self) -> bool:
+        """Check whether Playlist & Audio section is expanded/visible."""
+        return not self.playlist_panel.isHidden()
+
+    def set_playlist_expanded(self, expanded: bool) -> None:
+        """Expand or collapse the Playlist & Audio section in the main splitter."""
+        if expanded:
+            self.playlist_panel.show()
+            w = max(260, getattr(self, "_last_playlist_width", 300))
+            sizes = self.splitter.sizes()
+            if len(sizes) >= 3:
+                total = sum(sizes)
+                left = w
+                right = sizes[2]
+                center = max(400, total - left - right)
+                self.splitter.setSizes([left, center, right])
+        else:
+            sizes = self.splitter.sizes()
+            if len(sizes) >= 1 and sizes[0] > 0:
+                self._last_playlist_width = max(260, sizes[0])
+            self.playlist_panel.hide()
+
+    def toggle_playlist(self) -> None:
+        """Toggle Playlist & Audio section expanded/collapsed."""
+        self.set_playlist_expanded(not self.is_playlist_expanded())
+
+    def _on_col_distribution_mode_changed(self, mode_text: str) -> None:
+        """Handle Automatic vs Manual playlist column distribution mode switch."""
+        is_manual = (str(mode_text).strip().lower() == "manual")
+        if hasattr(self, "dist_manual_lbl"):
+            self.dist_manual_lbl.setVisible(is_manual)
+        if hasattr(self, "playlist_col_dist_edit"):
+            self.playlist_col_dist_edit.setVisible(is_manual)
+        if not getattr(self, "_loading_project", False) and hasattr(self, "_undo_stack"):
+            self._on_layout_param_changed()
+
     def toggle_inspector(self) -> None:
         """Collapse or restore the inspector pane in the main splitter."""
         is_visible = self.inspector_panel.isVisible()
@@ -1994,6 +2057,8 @@ class MainWindow(QMainWindow):
             "title_x_offset": self.title_x_offset_spin.value() if hasattr(self, "title_x_offset_spin") else 0,
             "title_y_offset": self.title_y_offset_spin.value() if hasattr(self, "title_y_offset_spin") else 0,
             "playlist_columns": self.playlist_cols_spin.value() if hasattr(self, "playlist_cols_spin") else 1,
+            "playlist_column_distribution_mode": self.playlist_col_mode_combo.currentText().lower() if hasattr(self, "playlist_col_mode_combo") else "automatic",
+            "playlist_column_distribution": self.playlist_col_dist_edit.text().strip() if hasattr(self, "playlist_col_dist_edit") else "",
             "playlist_row_spacing": round(self.track_spacing_spin.value(), 2) if hasattr(self, "track_spacing_spin") else 1.85,
             "playlist_col_spacing": self.col_spacing_spin.value() if hasattr(self, "col_spacing_spin") else 50,
             "track_max_chars": self.track_max_chars_spin.value() if hasattr(self, "track_max_chars_spin") else 0,
@@ -2137,19 +2202,37 @@ class MainWindow(QMainWindow):
             self._schedule_preview(200)
 
     def _refresh_tracks(self) -> None:
+        # Preserve scroll position and selection across refreshes (Prompt 9)
+        scroll_val = self.track_list.verticalScrollBar().value()
+        curr_row = self.track_list.currentRow()
         self.track_list.blockSignals(True)
-        self.track_list.clear()
-        for i, track in enumerate(self.tracks):
-            track.setdefault("_id", uuid.uuid4().hex)
-            mins, secs = divmod(int(track.get("duration", 0)), 60)
-            item = QListWidgetItem(
-                f"{i+1:02d}   {track['title']}\n       {mins:02d}:{secs:02d}  ·  {Path(track['path']).name}"
-            )
-            item.setData(Qt.ItemDataRole.UserRole, track["path"])
-            item.setData(Qt.ItemDataRole.UserRole + 1, track["_id"])
-            item.setToolTip(track["path"])
-            self.track_list.addItem(item)
+        if self.track_list.count() == len(self.tracks):
+            for i, track in enumerate(self.tracks):
+                track.setdefault("_id", uuid.uuid4().hex)
+                mins, secs = divmod(int(track.get("duration", 0)), 60)
+                item = self.track_list.item(i)
+                item.setText(
+                    f"{i+1:02d}   {track['title']}\n       {mins:02d}:{secs:02d}  ·  {Path(track['path']).name}"
+                )
+                item.setData(Qt.ItemDataRole.UserRole, track["path"])
+                item.setData(Qt.ItemDataRole.UserRole + 1, track["_id"])
+                item.setToolTip(track["path"])
+        else:
+            self.track_list.clear()
+            for i, track in enumerate(self.tracks):
+                track.setdefault("_id", uuid.uuid4().hex)
+                mins, secs = divmod(int(track.get("duration", 0)), 60)
+                item = QListWidgetItem(
+                    f"{i+1:02d}   {track['title']}\n       {mins:02d}:{secs:02d}  ·  {Path(track['path']).name}"
+                )
+                item.setData(Qt.ItemDataRole.UserRole, track["path"])
+                item.setData(Qt.ItemDataRole.UserRole + 1, track["_id"])
+                item.setToolTip(track["path"])
+                self.track_list.addItem(item)
+        if 0 <= curr_row < self.track_list.count():
+            self.track_list.setCurrentRow(curr_row)
         self.track_list.blockSignals(False)
+        self.track_list.verticalScrollBar().setValue(scroll_val)
         self._refresh_tracks_labels()
 
     def _refresh_tracks_labels(self) -> None:
@@ -2214,10 +2297,17 @@ class MainWindow(QMainWindow):
             text=cur_title
         )
         if ok and title.strip():
-            self.tracks[idx]["title"] = title.strip()
+            new_title = title.strip()
+            self.tracks[idx]["title"] = new_title
             self._commit_undo_snapshot()
             self._mark_dirty()
-            self._refresh_tracks()
+            # Update only the specific item in place without wiping selection or resetting scroll (Prompt 9)
+            mins, secs = divmod(int(self.tracks[idx].get("duration", 0)), 60)
+            item.setText(
+                f"{idx+1:02d}   {new_title}\n       {mins:02d}:{secs:02d}  ·  {Path(self.tracks[idx]['path']).name}"
+            )
+            self.track_list.setCurrentRow(idx)
+            self._refresh_tracks_labels()
             self._schedule_preview(150)
 
     def remove_track(self) -> None:
@@ -2792,6 +2882,8 @@ class MainWindow(QMainWindow):
             self.title_x_offset_spin.value() if hasattr(self, "title_x_offset_spin") else 0,
             self.title_y_offset_spin.value() if hasattr(self, "title_y_offset_spin") else 0,
             self.playlist_cols_spin.value() if hasattr(self, "playlist_cols_spin") else 1,
+            self.playlist_col_mode_combo.currentText().lower() if hasattr(self, "playlist_col_mode_combo") else "automatic",
+            self.playlist_col_dist_edit.text().strip() if hasattr(self, "playlist_col_dist_edit") else "",
             col_sp,
             max_chars,
             round(self.track_spacing_spin.value(), 2) if hasattr(self, "track_spacing_spin") else 1.85,
@@ -2921,6 +3013,8 @@ class MainWindow(QMainWindow):
                     playlist_x_offset=self.playlist_x_offset_spin.value() if hasattr(self, "playlist_x_offset_spin") else 0,
                     playlist_y_offset=self.playlist_y_offset_spin.value() if hasattr(self, "playlist_y_offset_spin") else 0,
                     playlist_columns=self.playlist_cols_spin.value() if hasattr(self, "playlist_cols_spin") else 1,
+                    playlist_column_distribution_mode=self.playlist_col_mode_combo.currentText().lower() if hasattr(self, "playlist_col_mode_combo") else "automatic",
+                    playlist_column_distribution=self.playlist_col_dist_edit.text().strip() if hasattr(self, "playlist_col_dist_edit") else "",
                     playlist_row_spacing=round(self.track_spacing_spin.value(), 2) if hasattr(self, "track_spacing_spin") else 1.85,
                     playlist_col_spacing=col_sp,
                     track_max_chars=max_chars,
@@ -3870,6 +3964,14 @@ class MainWindow(QMainWindow):
         tmpl_tmpl = str(tmpl.get("template", "")).strip().lower()
         if "playlist_columns" in tmpl and hasattr(self, "playlist_cols_spin"):
             self.playlist_cols_spin.setValue(int(tmpl["playlist_columns"]))
+        if "playlist_column_distribution_mode" in tmpl and hasattr(self, "playlist_col_mode_combo"):
+            _set_combo_case_insensitive(self.playlist_col_mode_combo, tmpl["playlist_column_distribution_mode"])
+            self._on_col_distribution_mode_changed(self.playlist_col_mode_combo.currentText())
+        if "playlist_column_distribution" in tmpl and hasattr(self, "playlist_col_dist_edit"):
+            d_val = tmpl["playlist_column_distribution"]
+            if isinstance(d_val, (list, tuple)):
+                d_val = ", ".join(str(x) for x in d_val)
+            self.playlist_col_dist_edit.setText(str(d_val))
         elif tmpl_tmpl in ("two-column", "two column", "2-column") or (hasattr(self, "template_combo") and self.template_combo.currentText() == "Two-column"):
             if hasattr(self, "playlist_cols_spin"):
                 self.playlist_cols_spin.setValue(2)
@@ -4171,6 +4273,15 @@ class MainWindow(QMainWindow):
                 self.title_y_offset_spin.setValue(int(data["title_y_offset"]))
             if hasattr(self, "playlist_cols_spin") and "playlist_columns" in data:
                 self.playlist_cols_spin.setValue(int(data["playlist_columns"]))
+            if hasattr(self, "playlist_col_mode_combo"):
+                dist_mode = data.get("playlist_column_distribution_mode") or data.get("column_distribution_mode", "Automatic")
+                _set_combo_case_insensitive(self.playlist_col_mode_combo, dist_mode)
+                self._on_col_distribution_mode_changed(self.playlist_col_mode_combo.currentText())
+            if hasattr(self, "playlist_col_dist_edit"):
+                dist_val = data.get("playlist_column_distribution") or data.get("column_distribution", "12, 12")
+                if isinstance(dist_val, (list, tuple)):
+                    dist_val = ", ".join(str(x) for x in dist_val)
+                self.playlist_col_dist_edit.setText(str(dist_val))
             if hasattr(self, "track_spacing_spin") and "playlist_row_spacing" in data:
                 self.track_spacing_spin.setValue(float(data["playlist_row_spacing"]))
             if hasattr(self, "col_spacing_spin") and "playlist_col_spacing" in data:

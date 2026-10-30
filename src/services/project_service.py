@@ -29,6 +29,8 @@ TEMPLATE_DESIGN_KEYS = [
     # Playlist layout, positioning, dimensions & density
     "playlist_position",
     "playlist_columns",
+    "playlist_column_distribution_mode",
+    "playlist_column_distribution",
     "playlist_row_spacing",
     "playlist_col_spacing",
     "playlist_width_ratio",
