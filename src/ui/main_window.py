@@ -261,6 +261,20 @@ class MainWindow(QMainWindow):
         self._video_player: Optional[QMediaPlayer] = None
         self._video_sink: Optional[QVideoSink] = None
         self._is_preview_playing = False
+        self._preview_current_time = 0.0
+        self._preview_timeline_timer = QTimer(self)
+        self._preview_timeline_timer.setInterval(100)
+        self._preview_timeline_timer.timeout.connect(self._on_preview_timeline_tick)
+        self._preview_audio_player: Optional[QMediaPlayer] = None
+        self._preview_audio_output: Optional[QAudioOutput] = None
+        self._preview_audio_current_src: str = ""
+        self._preview_audio_current_track_idx: Optional[int] = None
+        self._cached_composition_pixmaps: list[QPixmap] = []
+        self._cached_video_overlays: list[QPixmap] = []
+        self._cached_intro_pixmap: Optional[QPixmap] = None
+        self._preview_active_visual_idx: int = 0
+        self._preview_user_seeking: bool = False
+        self._last_playback_tick: float = 0.0
         self._current_overlay_pixmap: Optional[QPixmap] = None
         self.logo_path = ""
         self.cursor_path = ""
@@ -580,11 +594,11 @@ class MainWindow(QMainWindow):
         self.preview_intro_btn.clicked.connect(self._toggle_intro_preview)
         pv_hdr.addWidget(self.preview_intro_btn)
 
-        self.play_preview_btn = QPushButton("Play Video Preview")
+        self.play_preview_btn = QPushButton("Play Preview")
         self.play_preview_btn.setIcon(get_svg_icon("play", 13, "#edf2ee"))
-        self.play_preview_btn.setToolTip("Toggle live playback of video background preview")
-        self.play_preview_btn.clicked.connect(self._toggle_video_preview)
-        self.play_preview_btn.setVisible(False)
+        self.play_preview_btn.setToolTip("Play interactive preview of project audio and composition (Space)")
+        self.play_preview_btn.clicked.connect(self._toggle_preview_playback)
+        self.play_preview_btn.setVisible(True)
         pv_hdr.addWidget(self.play_preview_btn)
         pv_layout.addLayout(pv_hdr)
 
@@ -603,17 +617,35 @@ class MainWindow(QMainWindow):
         self.preview_container = AspectRatioContainer(self.preview_frame)
         pv_layout.addWidget(self.preview_container, 1)
 
-        # Reserved Scrubber Row (Inert until Stage 3)
+        # Interactive Scrubber Row (Prompt 13)
         scrubber_row = QHBoxLayout()
         scrubber_row.setSpacing(8)
+
+        self.scrubber_play_btn = QPushButton()
+        self.scrubber_play_btn.setIcon(get_svg_icon("play", 13, "#edf2ee"))
+        self.scrubber_play_btn.setToolTip("Play / Pause interactive preview (Space)")
+        self.scrubber_play_btn.setFixedWidth(32)
+        self.scrubber_play_btn.clicked.connect(self._toggle_preview_playback)
+        scrubber_row.addWidget(self.scrubber_play_btn)
+
+        self.scrubber_stop_btn = QPushButton()
+        self.scrubber_stop_btn.setIcon(get_svg_icon("stop", 13, "#edf2ee"))
+        self.scrubber_stop_btn.setToolTip("Stop preview and return to start")
+        self.scrubber_stop_btn.setFixedWidth(32)
+        self.scrubber_stop_btn.clicked.connect(self._stop_preview_playback)
+        scrubber_row.addWidget(self.scrubber_stop_btn)
+
         self.scrubber_cur_label = QLabel("00:00")
         self.scrubber_cur_label.setObjectName("subtle")
 
         self.timeline_scrubber = QSlider(Qt.Orientation.Horizontal)
         self.timeline_scrubber.setRange(0, 100)
         self.timeline_scrubber.setValue(0)
-        self.timeline_scrubber.setEnabled(False)  # Inert until Stage 3
-        self.timeline_scrubber.setToolTip("Timeline navigation (available in Stage 3)")
+        self.timeline_scrubber.setEnabled(True)
+        self.timeline_scrubber.setToolTip("Interactive timeline scrubber (approximate preview)")
+        self.timeline_scrubber.sliderMoved.connect(self._on_scrubber_user_seek)
+        self.timeline_scrubber.sliderReleased.connect(self._on_scrubber_user_release)
+        self.timeline_scrubber.valueChanged.connect(self._on_scrubber_value_changed)
 
         self.scrubber_total_label = QLabel("00:00")
         self.scrubber_total_label.setObjectName("subtle")
@@ -916,6 +948,10 @@ class MainWindow(QMainWindow):
         self.refresh_preview_act.setShortcut("F5")
         self.refresh_preview_act.triggered.connect(self._refresh_preview)
         self.addAction(self.refresh_preview_act)
+
+        # Spacebar preview playback shortcut (Prompt 13)
+        self._space_preview_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Space), self)
+        self._space_preview_shortcut.activated.connect(self._on_shortcut_space_preview)
 
         help_menu = self.menuBar().addMenu("Help")
         about = QAction("About Nasheed Studio", self)
@@ -1757,6 +1793,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(intro_sec)
 
         self.intro_check = QCheckBox("Enable intro sequence")
+        self.intro_enabled_check = self.intro_check
         self.intro_check.toggled.connect(self._on_intro_toggled)
         layout.addWidget(self.intro_check)
 
@@ -2149,7 +2186,7 @@ class MainWindow(QMainWindow):
             if hasattr(self, "video_controls_group"):
                 self.video_controls_group.setVisible(False)
             if hasattr(self, "play_preview_btn"):
-                self.play_preview_btn.setVisible(False)
+                self.play_preview_btn.setVisible(True)
             self._commit_undo_snapshot()
             self._mark_dirty()
             self._refresh_preview()
@@ -2375,7 +2412,7 @@ class MainWindow(QMainWindow):
                 if hasattr(self, "video_controls_group"):
                     self.video_controls_group.setVisible(False)
                 if hasattr(self, "play_preview_btn"):
-                    self.play_preview_btn.setVisible(False)
+                    self.play_preview_btn.setVisible(True)
                 self._stop_video_preview()
                 self._mark_dirty()
                 self._refresh_preview()
@@ -2488,8 +2525,14 @@ class MainWindow(QMainWindow):
             self.playlist_summary_label.setText(
                 f"{len(self.tracks)} tracks · {m:02d}:{s:02d}" if self.tracks else "0 tracks · Add audio files"
             )
+        tot_d = self._get_project_timeline_duration()
+        tm, ts = divmod(int(tot_d), 60)
         if hasattr(self, "scrubber_total_label"):
-            self.scrubber_total_label.setText(f"{m:02d}:{s:02d}")
+            self.scrubber_total_label.setText(f"{tm:02d}:{ts:02d}")
+        if hasattr(self, "timeline_scrubber"):
+            self.timeline_scrubber.blockSignals(True)
+            self.timeline_scrubber.setRange(0, int(round(tot_d * 10)))
+            self.timeline_scrubber.blockSignals(False)
 
     def _on_rows_moved(self, *args) -> None:
         by_id = {t.get("_id"): t for t in self.tracks if "_id" in t}
@@ -2819,6 +2862,18 @@ class MainWindow(QMainWindow):
 
     def _on_track_row_changed(self, row: int) -> None:
         if not getattr(self, "_loading_project", False):
+            if not getattr(self, "_is_preview_playing", False) and 0 <= row < len(self.tracks):
+                intro_enabled = (hasattr(self, "intro_enabled_check") and self.intro_enabled_check.isChecked())
+                intro_dur = float(self.intro_dur_spin.value()) if (intro_enabled and hasattr(self, "intro_dur_spin")) else 0.0
+                track_st = intro_dur + sum(float(self.tracks[i].get("duration", 0.0)) for i in range(row))
+                self._preview_current_time = track_st
+                if hasattr(self, "timeline_scrubber"):
+                    self.timeline_scrubber.blockSignals(True)
+                    self.timeline_scrubber.setValue(int(round(track_st * 10)))
+                    self.timeline_scrubber.blockSignals(False)
+                if hasattr(self, "scrubber_cur_label"):
+                    m, s = divmod(int(track_st), 60)
+                    self.scrubber_cur_label.setText(f"{m:02d}:{s:02d}")
             self._schedule_preview(120)
 
     def _on_website_pos_changed(self, text: str) -> None:
@@ -3231,6 +3286,9 @@ class MainWindow(QMainWindow):
             self._refresh_preview()
 
     def _update_resolution_badge(self) -> None:
+        if getattr(self, "_is_preview_playing", False):
+            self.preview_badge.setText("PREVIEW · Interactive (Approximate)")
+            return
         if getattr(self, "_previewing_intro", False):
             self.preview_badge.setText("PREVIEW · INTRO CARD")
             return
@@ -3245,6 +3303,121 @@ class MainWindow(QMainWindow):
             self.preview_badge.setText(f"PREVIEW · {size[0]}×{size[1]} · SAMPLE LAYOUT")
         else:
             self.preview_badge.setText(f"PREVIEW · 16:9 · {size[0]}×{size[1]}")
+
+    def _get_project_timeline_duration(self) -> float:
+        intro_enabled = (hasattr(self, "intro_enabled_check") and self.intro_enabled_check.isChecked())
+        intro_dur = float(self.intro_dur_spin.value()) if (intro_enabled and hasattr(self, "intro_dur_spin")) else 0.0
+        playlist_dur = sum(float(t.get("duration", 0.0)) for t in self.tracks)
+        if playlist_dur <= 0.0:
+            if self.background_path and is_video_file(self.background_path):
+                try:
+                    from src.services.render_service import get_duration
+                    vdur = get_duration(self.background_path)
+                    if vdur > 0:
+                        return max(1.0, intro_dur + vdur)
+                except Exception:
+                    pass
+            return max(1.0, intro_dur + 30.0)
+        return max(1.0, intro_dur + playlist_dur)
+
+    def _render_intro_card_pixmap(self, valid_bg: str) -> Optional[QPixmap]:
+        try:
+            intro_title_txt = (
+                self.intro_title_edit.text().strip()
+                if hasattr(self, "intro_title_edit") and self.intro_title_edit.text().strip()
+                else (self._committed_title or "Nasheed Collection")
+            )
+            title_fam = self.title_font_combo.currentText() if hasattr(self, "title_font_combo") else "Segoe UI"
+            intro_title_fam = (
+                self.intro_title_font_combo.currentText()
+                if hasattr(self, "intro_title_font_combo") and self.intro_title_font_combo.count()
+                else title_fam
+            )
+            intro_title_sty = (
+                self.intro_title_style_combo.currentText()
+                if hasattr(self, "intro_title_style_combo") and self.intro_title_style_combo.count()
+                else "Bold"
+            )
+            intro_title_sz = (
+                self.intro_title_size_spin.value()
+                if hasattr(self, "intro_title_size_spin")
+                else 56
+            )
+            intro_title_col = getattr(self, "intro_title_color", (255, 255, 255))
+            intro_logo_show = (
+                self.intro_logo_show_check.isChecked()
+                if hasattr(self, "intro_logo_show_check")
+                else True
+            )
+            intro_logo_scale = (
+                self.intro_logo_scale_spin.value() / 100.0
+                if hasattr(self, "intro_logo_scale_spin")
+                else 1.0
+            )
+            intro_blur = (
+                self.intro_blur_spin.value()
+                if hasattr(self, "intro_blur_spin")
+                else 28
+            )
+            intro_card_op = (
+                self.intro_card_opacity_slider.value() / 100.0
+                if hasattr(self, "intro_card_opacity_slider")
+                else 0.70
+            )
+            web_show = self.website_show_check.isChecked() if hasattr(self, "website_show_check") else True
+            intro_web_show = (
+                self.intro_website_show_check.isChecked()
+                if hasattr(self, "intro_website_show_check")
+                else web_show
+            )
+            web_txt = self.website_edit.text().strip() if hasattr(self, "website_edit") else ""
+            intro_web_txt = (
+                self.intro_website_edit.text().strip()
+                if hasattr(self, "intro_website_edit") and self.intro_website_edit.text().strip()
+                else web_txt
+            )
+            intro_web_sz = (
+                self.intro_website_size_spin.value()
+                if hasattr(self, "intro_website_size_spin")
+                else 20
+            )
+            intro_web_op = (
+                self.intro_website_opacity_slider.value() / 100.0
+                if hasattr(self, "intro_website_opacity_slider")
+                else 0.90
+            )
+            intro_web_col = getattr(self, "intro_website_color", None) or getattr(self, "website_color", None)
+
+            with tempfile.TemporaryDirectory(prefix="nasheed_intro_prev_") as tmp:
+                card_path = create_intro_card(
+                    width=1280,
+                    height=720,
+                    background_path=valid_bg,
+                    logo_path=self.logo_path or None,
+                    collection_title=intro_title_txt,
+                    template=self.template_combo.currentText(),
+                    out_dir=tmp,
+                    title_font_family=intro_title_fam,
+                    title_font_style=intro_title_sty,
+                    title_font_size=intro_title_sz,
+                    title_color=intro_title_col,
+                    logo_show=intro_logo_show,
+                    logo_scale=intro_logo_scale,
+                    website_text=intro_web_txt,
+                    website_show=intro_web_show,
+                    website_opacity=intro_web_op,
+                    website_font_size=intro_web_sz,
+                    website_font_family=getattr(self, "website_font_family", None) or intro_title_fam,
+                    website_font_style=getattr(self, "website_font_style", "Regular"),
+                    website_color=intro_web_col,
+                    blur_radius=intro_blur,
+                    card_opacity=intro_card_op,
+                )
+                self._cached_intro_pixmap = QPixmap(card_path)
+                return self._cached_intro_pixmap
+        except Exception:
+            self._cached_intro_pixmap = None
+            return None
 
     def _refresh_preview(self) -> None:
         self._update_resolution_badge()
@@ -3333,117 +3506,34 @@ class MainWindow(QMainWindow):
         )
 
         if getattr(self, "_cached_preview_key", None) == cache_key and self._cached_preview_pixmap:
-            scaled_pix = self._cached_preview_pixmap.scaled(
-                target_size,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            self.preview_image.setPixmap(scaled_pix)
-            self.preview_image.setText("")
+            if not getattr(self, "_is_preview_playing", False):
+                scaled_pix = self._cached_preview_pixmap.scaled(
+                    target_size,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                self.preview_image.setPixmap(scaled_pix)
+                self.preview_image.setText("")
             return
 
-        # If user is previewing intro presentation card
-        if getattr(self, "_previewing_intro", False):
-            try:
-                intro_title_txt = (
-                    self.intro_title_edit.text().strip()
-                    if hasattr(self, "intro_title_edit") and self.intro_title_edit.text().strip()
-                    else (self._committed_title or "Nasheed Collection")
-                )
-                intro_title_fam = (
-                    self.intro_title_font_combo.currentText()
-                    if hasattr(self, "intro_title_font_combo") and self.intro_title_font_combo.count()
-                    else title_fam
-                )
-                intro_title_sty = (
-                    self.intro_title_style_combo.currentText()
-                    if hasattr(self, "intro_title_style_combo") and self.intro_title_style_combo.count()
-                    else "Bold"
-                )
-                intro_title_sz = (
-                    self.intro_title_size_spin.value()
-                    if hasattr(self, "intro_title_size_spin")
-                    else 56
-                )
-                intro_title_col = getattr(self, "intro_title_color", (255, 255, 255))
-                intro_logo_show = (
-                    self.intro_logo_show_check.isChecked()
-                    if hasattr(self, "intro_logo_show_check")
-                    else True
-                )
-                intro_logo_scale = (
-                    self.intro_logo_scale_spin.value() / 100.0
-                    if hasattr(self, "intro_logo_scale_spin")
-                    else 1.0
-                )
-                intro_blur = (
-                    self.intro_blur_spin.value()
-                    if hasattr(self, "intro_blur_spin")
-                    else 28
-                )
-                intro_card_op = (
-                    self.intro_card_opacity_slider.value() / 100.0
-                    if hasattr(self, "intro_card_opacity_slider")
-                    else 0.70
-                )
-                intro_web_show = (
-                    self.intro_website_show_check.isChecked()
-                    if hasattr(self, "intro_website_show_check")
-                    else web_show
-                )
-                intro_web_txt = (
-                    self.intro_website_edit.text().strip()
-                    if hasattr(self, "intro_website_edit") and self.intro_website_edit.text().strip()
-                    else web_txt
-                )
-                intro_web_sz = (
-                    self.intro_website_size_spin.value()
-                    if hasattr(self, "intro_website_size_spin")
-                    else 20
-                )
-                intro_web_op = (
-                    self.intro_website_opacity_slider.value() / 100.0
-                    if hasattr(self, "intro_website_opacity_slider")
-                    else 0.90
-                )
-                intro_web_col = getattr(self, "intro_website_color", None) or getattr(self, "website_color", None)
+        # Pre-render intro card if intro enabled or user is previewing intro
+        intro_enabled = (hasattr(self, "intro_enabled_check") and self.intro_enabled_check.isChecked())
+        if intro_enabled or getattr(self, "_previewing_intro", False):
+            self._render_intro_card_pixmap(valid_bg)
 
-                with tempfile.TemporaryDirectory(prefix="nasheed_intro_prev_") as tmp:
-                    card_path = create_intro_card(
-                        width=1280,
-                        height=720,
-                        background_path=valid_bg,
-                        logo_path=self.logo_path or None,
-                        collection_title=intro_title_txt,
-                        template=self.template_combo.currentText(),
-                        out_dir=tmp,
-                        title_font_family=intro_title_fam,
-                        title_font_style=intro_title_sty,
-                        title_font_size=intro_title_sz,
-                        title_color=intro_title_col,
-                        logo_show=intro_logo_show,
-                        logo_scale=intro_logo_scale,
-                        website_text=intro_web_txt,
-                        website_show=intro_web_show,
-                        website_opacity=intro_web_op,
-                        website_font_size=intro_web_sz,
-                        website_font_family=getattr(self, "website_font_family", None) or intro_title_fam,
-                        website_font_style=getattr(self, "website_font_style", "Regular"),
-                        website_color=intro_web_col,
-                        blur_radius=intro_blur,
-                        card_opacity=intro_card_op,
-                    )
-                    pix = QPixmap(card_path)
-                    scaled_pix = pix.scaled(
-                        target_size,
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation,
-                    )
-                    self.preview_image.setPixmap(scaled_pix)
-                    self.preview_image.setText("")
-            except Exception as exc:
+        # If user explicitly toggled "Preview Intro Card", display intro card and return
+        if getattr(self, "_previewing_intro", False):
+            if self._cached_intro_pixmap and not self._cached_intro_pixmap.isNull():
+                scaled_pix = self._cached_intro_pixmap.scaled(
+                    target_size,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                self.preview_image.setPixmap(scaled_pix)
+                self.preview_image.setText("")
+            else:
                 self.preview_image.setPixmap(QPixmap())
-                self.preview_image.setText(f"Intro preview unavailable: {exc}")
+                self.preview_image.setText("Intro preview unavailable.")
             return
 
         try:
@@ -3472,7 +3562,7 @@ class MainWindow(QMainWindow):
                     indicator_mode=cur_mode,
                     cursor_path=self.cursor_path or None,
                     cursor_size=cur_cursor_size,
-                    preview_only_first_overlay=True,
+                    preview_only_first_overlay=False,
                     active_track_index=cur_track_row,
                     title_font_family=title_fam,
                     title_font_style=title_style,
@@ -3530,68 +3620,162 @@ class MainWindow(QMainWindow):
                     track_softening=text_soft,
                 )
 
-                # Cache transparent foreground overlay for real-time video playback preview
                 fg_path = Path(tmp) / "composition_fg.png"
-                if fg_path.is_file():
-                    try:
-                        fg_img = Image.open(fg_path).convert("RGBA")
-                        if overlays:
-                            fg_img = Image.alpha_composite(fg_img, Image.open(overlays[0]).convert("RGBA"))
-                        fg_cached = Path(tmp) / "cached_live_overlay.png"
-                        fg_img.save(fg_cached)
-                        self._current_overlay_pixmap = QPixmap(str(fg_cached))
-                    except Exception:
-                        self._current_overlay_pixmap = None
+                fg_img = Image.open(fg_path).convert("RGBA") if fg_path.is_file() else None
+                base_img = Image.open(base).convert("RGBA")
 
-                img = Image.open(base).convert("RGBA")
+                self._cached_composition_pixmaps = []
+                self._cached_video_overlays = []
+
+                def _pil_to_pixmap(im: Image.Image) -> QPixmap:
+                    if im.mode != "RGBA":
+                        im = im.convert("RGBA")
+                    data = im.tobytes("raw", "RGBA")
+                    qimg = QImage(data, im.width, im.height, QImage.Format.Format_RGBA8888).copy()
+                    return QPixmap.fromImage(qimg)
+
                 if overlays:
-                    img = Image.alpha_composite(img, Image.open(overlays[0]).convert("RGBA"))
-                preview_path = Path(tmp) / "preview.png"
-                img.save(preview_path)
-                pix = QPixmap(str(preview_path))
+                    for ov_p in overlays:
+                        try:
+                            ov_img = Image.open(ov_p).convert("RGBA")
+                            comp_img = Image.alpha_composite(base_img.copy(), ov_img)
+                            self._cached_composition_pixmaps.append(_pil_to_pixmap(comp_img))
+                            if fg_img:
+                                vid_overlay = Image.alpha_composite(fg_img.copy(), ov_img)
+                                self._cached_video_overlays.append(_pil_to_pixmap(vid_overlay))
+                            else:
+                                self._cached_video_overlays.append(_pil_to_pixmap(ov_img))
+                        except Exception:
+                            pass
+                else:
+                    self._cached_composition_pixmaps.append(_pil_to_pixmap(base_img))
+                    if fg_img:
+                        self._cached_video_overlays.append(_pil_to_pixmap(fg_img))
+
+                if self._cached_composition_pixmaps:
+                    sel_idx = min(cur_track_row, len(self._cached_composition_pixmaps) - 1)
+                    self._cached_preview_pixmap = self._cached_composition_pixmaps[sel_idx]
+                if self._cached_video_overlays:
+                    sel_idx = min(cur_track_row, len(self._cached_video_overlays) - 1)
+                    self._current_overlay_pixmap = self._cached_video_overlays[sel_idx]
+
                 self._cached_preview_key = cache_key
-                self._cached_preview_pixmap = pix
+
+                tot_d = self._get_project_timeline_duration()
+                if hasattr(self, "timeline_scrubber"):
+                    self.timeline_scrubber.blockSignals(True)
+                    self.timeline_scrubber.setRange(0, int(round(tot_d * 10)))
+                    self.timeline_scrubber.blockSignals(False)
+                if hasattr(self, "scrubber_total_label"):
+                    tm, ts = divmod(int(tot_d), 60)
+                    self.scrubber_total_label.setText(f"{tm:02d}:{ts:02d}")
 
                 if not getattr(self, "_is_preview_playing", False):
-                    scaled_pix = pix.scaled(
-                        target_size,
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation,
-                    )
-                    self.preview_image.setPixmap(scaled_pix)
-                    self.preview_image.setText("")
+                    pix = self._cached_preview_pixmap
+                    if pix and not pix.isNull():
+                        scaled_pix = pix.scaled(
+                            target_size,
+                            Qt.AspectRatioMode.KeepAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation,
+                        )
+                        self.preview_image.setPixmap(scaled_pix)
+                        self.preview_image.setText("")
         except Exception as exc:
             self.preview_image.setPixmap(QPixmap())
             self.preview_image.setText(f"Preview unavailable: {exc}")
 
     def _toggle_video_preview(self) -> None:
-        """Toggle live playback preview of video background."""
-        if not self.background_path or not is_video_file(self.background_path):
-            return
-        if self._is_preview_playing:
-            self._stop_video_preview()
+        """Backwards-compatible wrapper for preview playback."""
+        self._toggle_preview_playback()
+
+    def _toggle_preview_playback(self) -> None:
+        """Toggle interactive live playback preview of composition and audio (Prompt 13)."""
+        if getattr(self, "_is_preview_playing", False):
+            self._pause_preview_playback()
         else:
-            self._start_video_preview()
+            self._start_preview_playback()
 
     def _start_video_preview(self) -> None:
-        """Start playing moving background video preview."""
-        if not self.background_path or not Path(self.background_path).is_file():
-            return
-        if not self._video_player:
-            self._video_player = QMediaPlayer(self)
-            self._video_sink = QVideoSink(self)
-            self._video_player.setVideoSink(self._video_sink)
-            self._video_sink.videoFrameChanged.connect(self._on_video_frame_received)
-            self._video_player.setLoops(QMediaPlayer.Loops.Infinite)
+        """Backwards-compatible wrapper for starting preview playback."""
+        self._start_preview_playback()
 
-        st_ms = int(self.video_start_spin.value() * 1000.0) if hasattr(self, "video_start_spin") else 0
-        self._video_player.setSource(QUrl.fromLocalFile(str(Path(self.background_path).resolve())))
-        self._video_player.setPosition(st_ms)
-        self._video_player.play()
+    def _start_preview_playback(self) -> None:
+        """Start interactive preview playback of audio and video/image composition."""
         self._is_preview_playing = True
         if hasattr(self, "play_preview_btn"):
-            self.play_preview_btn.setText("Pause Video Preview")
+            self.play_preview_btn.setText("Pause Preview")
             self.play_preview_btn.setIcon(get_svg_icon("pause", 13, "#edf2ee"))
+        if hasattr(self, "scrubber_play_btn"):
+            self.scrubber_play_btn.setIcon(get_svg_icon("pause", 13, "#edf2ee"))
+        if hasattr(self, "preview_badge"):
+            self.preview_badge.setText("PREVIEW · Interactive (Approximate)")
+
+        tot_d = self._get_project_timeline_duration()
+        if getattr(self, "_preview_current_time", 0.0) >= tot_d - 0.2:
+            self._preview_current_time = 0.0
+
+        if self.background_path and is_video_file(self.background_path) and Path(self.background_path).is_file():
+            if not self._video_player:
+                self._video_player = QMediaPlayer(self)
+                self._video_sink = QVideoSink(self)
+                self._video_player.setVideoSink(self._video_sink)
+                self._video_sink.videoFrameChanged.connect(self._on_video_frame_received)
+                self._video_player.setLoops(QMediaPlayer.Loops.Infinite)
+
+            st_ms = int(self.video_start_spin.value() * 1000.0) if hasattr(self, "video_start_spin") else 0
+            intro_enabled = (hasattr(self, "intro_enabled_check") and self.intro_enabled_check.isChecked())
+            intro_dur = float(self.intro_dur_spin.value()) if (intro_enabled and hasattr(self, "intro_dur_spin")) else 0.0
+            vid_pos = st_ms + max(0, int((self._preview_current_time - intro_dur) * 1000))
+            self._video_player.setSource(QUrl.fromLocalFile(str(Path(self.background_path).resolve())))
+            self._video_player.setPosition(vid_pos)
+            self._video_player.play()
+
+        self._last_playback_tick = time.monotonic()
+        if hasattr(self, "_preview_timeline_timer"):
+            self._preview_timeline_timer.start(100)
+
+        self._sync_playback_state(self._preview_current_time, is_playing=True)
+
+    def _pause_preview_playback(self) -> None:
+        """Pause preview playback and retain current timestamp."""
+        self._is_preview_playing = False
+        if hasattr(self, "_preview_timeline_timer") and self._preview_timeline_timer.isActive():
+            self._preview_timeline_timer.stop()
+
+        if hasattr(self, "play_preview_btn"):
+            self.play_preview_btn.setText("Play Preview")
+            self.play_preview_btn.setIcon(get_svg_icon("play", 13, "#edf2ee"))
+        if hasattr(self, "scrubber_play_btn"):
+            self.scrubber_play_btn.setIcon(get_svg_icon("play", 13, "#edf2ee"))
+        self._update_resolution_badge()
+
+        if hasattr(self, "_preview_audio_player") and self._preview_audio_player:
+            try:
+                self._preview_audio_player.pause()
+            except Exception:
+                pass
+
+        if hasattr(self, "_video_player") and self._video_player:
+            try:
+                self._video_player.pause()
+            except Exception:
+                pass
+
+    def _stop_video_preview(self) -> None:
+        """Backwards-compatible wrapper for stopping preview playback."""
+        self._stop_preview_playback()
+
+    def _stop_preview_playback(self) -> None:
+        """Stop preview playback, reset timeline to beginning, and update view."""
+        self._pause_preview_playback()
+        self._seek_preview(0.0)
+        if hasattr(self, "_preview_audio_player") and self._preview_audio_player:
+            try:
+                self._preview_audio_player.stop()
+            except Exception:
+                pass
+            self._preview_audio_current_src = ""
+            self._preview_audio_current_track_idx = None
 
     def _release_video_player(self) -> None:
         """Fully stop and release QMediaPlayer decoder resources."""
@@ -3604,33 +3788,242 @@ class MainWindow(QMainWindow):
             self._video_player = None
         self._is_preview_playing = False
 
-    def _stop_video_preview(self) -> None:
-        """Stop/pause live moving video preview and restore static representative frame."""
-        if self._video_player:
+    def _release_preview_player(self) -> None:
+        """Fully stop preview playback and release audio player resources."""
+        if hasattr(self, "_preview_timeline_timer") and self._preview_timeline_timer.isActive():
+            self._preview_timeline_timer.stop()
+        if hasattr(self, "_preview_audio_player") and self._preview_audio_player:
             try:
-                self._video_player.pause()
+                self._preview_audio_player.stop()
+                self._preview_audio_player.setSource(QUrl())
             except Exception:
                 pass
+            self._preview_audio_player = None
+            self._preview_audio_output = None
         self._is_preview_playing = False
-        if hasattr(self, "play_preview_btn"):
-            self.play_preview_btn.setText("Play Video Preview")
-            self.play_preview_btn.setIcon(get_svg_icon("play", 13, "#edf2ee"))
-        # Refresh to pristine representative frame
-        if getattr(self, "_cached_preview_pixmap", None) and not self._cached_preview_pixmap.isNull():
-            target_size = self.preview_frame.size()
-            if target_size.width() <= 10 or target_size.height() <= 10:
-                target_size = QSize(640, 360)
-            scaled_pix = self._cached_preview_pixmap.scaled(
-                target_size,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            self.preview_image.setPixmap(scaled_pix)
-            self.preview_image.setText("")
+        self._preview_audio_current_src = ""
+        self._preview_audio_current_track_idx = None
+
+    def _seek_preview(self, time_sec: float) -> None:
+        """Seek preview audio and visual composition to specified timeline position in seconds."""
+        total_d = self._get_project_timeline_duration()
+        self._preview_current_time = max(0.0, min(total_d, time_sec))
+
+        if hasattr(self, "timeline_scrubber"):
+            self.timeline_scrubber.blockSignals(True)
+            self.timeline_scrubber.setValue(int(round(self._preview_current_time * 10)))
+            self.timeline_scrubber.blockSignals(False)
+
+        if hasattr(self, "scrubber_cur_label"):
+            m, s = divmod(int(self._preview_current_time), 60)
+            self.scrubber_cur_label.setText(f"{m:02d}:{s:02d}")
+
+        self._sync_playback_state(self._preview_current_time, is_playing=getattr(self, "_is_preview_playing", False))
+        if not getattr(self, "_is_preview_playing", False):
+            self._update_preview_visual_at_time(self._preview_current_time)
+
+    def _on_scrubber_user_seek(self, val: int) -> None:
+        self._preview_user_seeking = True
+        t = val / 10.0
+        self._seek_preview(t)
+
+    def _on_scrubber_user_release(self) -> None:
+        self._preview_user_seeking = False
+
+    def _on_scrubber_value_changed(self, val: int) -> None:
+        if (hasattr(self, "timeline_scrubber") and self.timeline_scrubber.isSliderDown()) or getattr(self, "_preview_user_seeking", False):
+            t = val / 10.0
+            self._seek_preview(t)
+
+    def _on_preview_timeline_tick(self) -> None:
+        if not getattr(self, "_is_preview_playing", False):
+            return
+        now = time.monotonic()
+        dt = now - getattr(self, "_last_playback_tick", now)
+        self._last_playback_tick = now
+
+        if dt > 1.0:
+            dt = 0.1
+
+        self._preview_current_time += dt
+        total_d = self._get_project_timeline_duration()
+
+        if self._preview_current_time >= total_d:
+            self._preview_current_time = total_d
+            self._pause_preview_playback()
+            self._seek_preview(0.0)
+            return
+
+        if hasattr(self, "timeline_scrubber") and not self.timeline_scrubber.isSliderDown():
+            self.timeline_scrubber.blockSignals(True)
+            self.timeline_scrubber.setValue(int(round(self._preview_current_time * 10)))
+            self.timeline_scrubber.blockSignals(False)
+
+        if hasattr(self, "scrubber_cur_label"):
+            m, s = divmod(int(self._preview_current_time), 60)
+            self.scrubber_cur_label.setText(f"{m:02d}:{s:02d}")
+
+        self._sync_playback_state(self._preview_current_time, is_playing=True)
+        if not (self.background_path and is_video_file(self.background_path)):
+            self._update_preview_visual_at_time(self._preview_current_time)
+
+    def _sync_playback_state(self, time_sec: float, is_playing: bool) -> None:
+        intro_enabled = (hasattr(self, "intro_enabled_check") and self.intro_enabled_check.isChecked())
+        intro_dur = float(self.intro_dur_spin.value()) if (intro_enabled and hasattr(self, "intro_dur_spin")) else 0.0
+
+        if not hasattr(self, "_preview_audio_player") or self._preview_audio_player is None:
+            self._preview_audio_player = QMediaPlayer(self)
+            self._preview_audio_output = QAudioOutput(self)
+            self._preview_audio_player.setAudioOutput(self._preview_audio_output)
+
+        if time_sec < intro_dur:
+            self._preview_active_visual_idx = -1
+            if intro_enabled and self.intro_audio_path and Path(self.intro_audio_path).is_file():
+                resolved_iap = str(Path(self.intro_audio_path).resolve())
+                if self._preview_audio_current_track_idx != -1 or self._preview_audio_current_src != resolved_iap:
+                    self._preview_audio_player.setSource(QUrl.fromLocalFile(resolved_iap))
+                    self._preview_audio_current_src = resolved_iap
+                    self._preview_audio_current_track_idx = -1
+                    self._preview_audio_player.setPosition(int(time_sec * 1000))
+                    if is_playing:
+                        self._preview_audio_player.play()
+                else:
+                    cur_p = self._preview_audio_player.position()
+                    target_p = int(time_sec * 1000)
+                    if abs(cur_p - target_p) > 300:
+                        self._preview_audio_player.setPosition(target_p)
+                    if is_playing and self._preview_audio_player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
+                        self._preview_audio_player.play()
+
+                fade_in = float(self.intro_fade_in_spin.value()) if hasattr(self, "intro_fade_in_spin") else 0.5
+                fade_out = float(self.intro_fade_out_spin.value()) if hasattr(self, "intro_fade_out_spin") else 0.5
+                v = 1.0
+                if fade_in > 0 and time_sec < fade_in:
+                    v = min(v, max(0.0, time_sec / fade_in))
+                rem = intro_dur - time_sec
+                if fade_out > 0 and rem < fade_out:
+                    v = min(v, max(0.0, rem / fade_out))
+                if self._preview_audio_output:
+                    self._preview_audio_output.setVolume(v)
+            else:
+                if self._preview_audio_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+                    self._preview_audio_player.pause()
+        else:
+            playlist_t = max(0.0, time_sec - intro_dur)
+            active_idx = 0
+            track_offset = 0.0
+            if self.tracks:
+                accum = 0.0
+                for i, trk in enumerate(self.tracks):
+                    dur = float(trk.get("duration", 0.0))
+                    if playlist_t < accum + dur or i == len(self.tracks) - 1:
+                        active_idx = i
+                        track_offset = max(0.0, playlist_t - accum)
+                        break
+                    accum += dur
+
+            self._preview_active_visual_idx = active_idx
+
+            if self.tracks and active_idx < len(self.tracks):
+                trk = self.tracks[active_idx]
+                trk_path = trk.get("path")
+                if trk_path and Path(trk_path).is_file():
+                    resolved_tp = str(Path(trk_path).resolve())
+                    if self._preview_audio_current_track_idx != active_idx or self._preview_audio_current_src != resolved_tp:
+                        if self._preview_audio_current_src != resolved_tp:
+                            self._preview_audio_player.setSource(QUrl.fromLocalFile(resolved_tp))
+                            self._preview_audio_current_src = resolved_tp
+                        self._preview_audio_current_track_idx = active_idx
+                        self._preview_audio_player.setPosition(int(track_offset * 1000))
+                        if self._preview_audio_output:
+                            self._preview_audio_output.setVolume(1.0)
+                        if is_playing:
+                            self._preview_audio_player.play()
+                    else:
+                        cur_p = self._preview_audio_player.position()
+                        target_p = int(track_offset * 1000)
+                        if abs(cur_p - target_p) > 300:
+                            self._preview_audio_player.setPosition(target_p)
+                        if self._preview_audio_output:
+                            self._preview_audio_output.setVolume(1.0)
+                        if is_playing and self._preview_audio_player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
+                            self._preview_audio_player.play()
+                else:
+                    if self._preview_audio_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+                        self._preview_audio_player.pause()
+            else:
+                if self._preview_audio_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+                    self._preview_audio_player.pause()
+
+    def _update_preview_visual_at_time(self, time_sec: float) -> None:
+        intro_enabled = (hasattr(self, "intro_enabled_check") and self.intro_enabled_check.isChecked())
+        intro_dur = float(self.intro_dur_spin.value()) if (intro_enabled and hasattr(self, "intro_dur_spin")) else 0.0
+
+        target_size = self.preview_frame.size()
+        if target_size.width() <= 10 or target_size.height() <= 10:
+            target_size = QSize(640, 360)
+
+        if time_sec < intro_dur:
+            if getattr(self, "_cached_intro_pixmap", None) and not self._cached_intro_pixmap.isNull():
+                scaled_pix = self._cached_intro_pixmap.scaled(
+                    target_size,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                self.preview_image.setPixmap(scaled_pix)
+                self.preview_image.setText("")
+        else:
+            playlist_t = max(0.0, time_sec - intro_dur)
+            active_idx = 0
+            if self.tracks:
+                accum = 0.0
+                for i, trk in enumerate(self.tracks):
+                    dur = float(trk.get("duration", 0.0))
+                    if playlist_t < accum + dur or i == len(self.tracks) - 1:
+                        active_idx = i
+                        break
+                    accum += dur
+
+            self._preview_active_visual_idx = active_idx
+
+            if self.background_path and is_video_file(self.background_path):
+                if self._video_player:
+                    st_ms = int(self.video_start_spin.value() * 1000.0) if hasattr(self, "video_start_spin") else 0
+                    self._video_player.setPosition(st_ms + int(playlist_t * 1000))
+                if getattr(self, "_cached_video_overlays", None):
+                    sel_idx = min(active_idx, len(self._cached_video_overlays) - 1)
+                    self._current_overlay_pixmap = self._cached_video_overlays[sel_idx]
+            else:
+                if getattr(self, "_cached_composition_pixmaps", None) and self._cached_composition_pixmaps:
+                    sel_idx = min(active_idx, len(self._cached_composition_pixmaps) - 1)
+                    pix = self._cached_composition_pixmaps[sel_idx]
+                    scaled_pix = pix.scaled(
+                        target_size,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                    self.preview_image.setPixmap(scaled_pix)
+                    self.preview_image.setText("")
+                elif getattr(self, "_cached_preview_pixmap", None) and not self._cached_preview_pixmap.isNull():
+                    scaled_pix = self._cached_preview_pixmap.scaled(
+                        target_size,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                    self.preview_image.setPixmap(scaled_pix)
+                    self.preview_image.setText("")
+
+    def _on_shortcut_space_preview(self) -> None:
+        """Spacebar shortcut toggle: ignore if user is actively editing text."""
+        from PySide6.QtWidgets import QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox
+        focus_w = QApplication.focusWidget()
+        if focus_w and isinstance(focus_w, (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox)):
+            return
+        self._toggle_preview_playback()
 
     def _on_video_frame_received(self, frame) -> None:
         """Render live video frame with playlist typography overlay composited on top."""
-        if not self._is_preview_playing or frame is None or not frame.isValid():
+        if not getattr(self, "_is_preview_playing", False) or frame is None or not frame.isValid():
             return
 
         now = time.monotonic()
@@ -3638,12 +4031,27 @@ class MainWindow(QMainWindow):
             return
         self._last_video_frame_time = now
 
-        qimg = frame.toImage()
-        if qimg.isNull():
-            return
         target_size = self.preview_frame.size()
         if target_size.width() <= 10 or target_size.height() <= 10:
             target_size = QSize(640, 360)
+
+        intro_enabled = (hasattr(self, "intro_enabled_check") and self.intro_enabled_check.isChecked())
+        intro_dur = float(self.intro_dur_spin.value()) if (intro_enabled and hasattr(self, "intro_dur_spin")) else 0.0
+
+        if getattr(self, "_preview_current_time", 0.0) < intro_dur:
+            if getattr(self, "_cached_intro_pixmap", None) and not self._cached_intro_pixmap.isNull():
+                scaled_intro = self._cached_intro_pixmap.scaled(
+                    target_size,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                self.preview_image.setPixmap(scaled_intro)
+                self.preview_image.setText("")
+                return
+
+        qimg = frame.toImage()
+        if qimg.isNull():
+            return
 
         fit = self.video_fit_combo.currentText().lower() if hasattr(self, "video_fit_combo") else "fill"
         w, h = target_size.width(), target_size.height()
@@ -3666,11 +4074,19 @@ class MainWindow(QMainWindow):
             canvas = scaled.copy(ox, oy, w, h)
             p = QPainter(canvas)
 
-        if getattr(self, "_current_overlay_pixmap", None) and not self._current_overlay_pixmap.isNull():
-            ov_cache_key = (id(self._current_overlay_pixmap), w, h)
+        active_idx = getattr(self, "_preview_active_visual_idx", 0)
+        ov_pix = None
+        if getattr(self, "_cached_video_overlays", None):
+            sel_idx = min(max(0, active_idx), len(self._cached_video_overlays) - 1)
+            ov_pix = self._cached_video_overlays[sel_idx]
+        elif getattr(self, "_current_overlay_pixmap", None) and not self._current_overlay_pixmap.isNull():
+            ov_pix = self._current_overlay_pixmap
+
+        if ov_pix and not ov_pix.isNull():
+            ov_cache_key = (id(ov_pix), w, h)
             if getattr(self, "_scaled_overlay_cache_key", None) != ov_cache_key or not hasattr(self, "_scaled_overlay_pixmap"):
                 self._scaled_overlay_cache_key = ov_cache_key
-                self._scaled_overlay_pixmap = self._current_overlay_pixmap.scaled(
+                self._scaled_overlay_pixmap = ov_pix.scaled(
                     target_size,
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation,
@@ -3873,6 +4289,8 @@ class MainWindow(QMainWindow):
 
             # 3b. Stop and release media player decoder and clean up child processes
             self._release_video_player()
+            self._release_preview_player()
+            self._release_intro_audio_player()
             from src.services.process_manager import cleanup_all_processes
             cleanup_all_processes(timeout_per_process=1.5)
 

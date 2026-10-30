@@ -1165,6 +1165,59 @@ def create_intro_card(
     return intro_path
 
 
+def _draw_smooth_rounded_rect(
+    target_image: Image.Image,
+    box: Tuple[int, int, int, int],
+    radius: int,
+    fill: Optional[Tuple[int, int, int, int]] = None,
+    outline: Optional[Tuple[int, int, int, int]] = None,
+    width: int = 1,
+) -> None:
+    """
+    Render an antialiased rounded rectangle (with optional antialiased outline)
+    using 4x supersampled vector rasterization onto target_image.
+    Completely eliminates harsh uncut white step-pixels and aliased corner artifacts.
+    """
+    x1, y1, x2, y2 = [int(round(v)) for v in box]
+    w = x2 - x1
+    h = y2 - y1
+    if w <= 0 or h <= 0:
+        return
+
+    # If corner radius is 0, draw crisp standard rectangle
+    if radius <= 0:
+        d = ImageDraw.Draw(target_image, "RGBA")
+        d.rectangle((x1, y1, x2, y2), fill=fill, outline=outline, width=width)
+        return
+
+    scale = 4
+    bw = w * scale
+    bh = h * scale
+    bradius = min(min(bw, bh) // 2, max(1, int(round(radius * scale))))
+    bwidth = max(1, int(round(width * scale))) if (outline and width > 0) else 0
+
+    mask = Image.new("L", (bw, bh), 0)
+    md = ImageDraw.Draw(mask)
+    md.rounded_rectangle((0, 0, bw - 1, bh - 1), radius=bradius, fill=255)
+    smooth_alpha_mask = mask.resize((w, h), Image.Resampling.LANCZOS)
+
+    rect_layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+
+    if fill and len(fill) == 4 and fill[3] > 0:
+        fill_img = Image.new("RGBA", (w, h), fill)
+        rect_layer = Image.composite(fill_img, rect_layer, smooth_alpha_mask)
+
+    if outline and len(outline) == 4 and outline[3] > 0 and bwidth > 0:
+        out_mask = Image.new("L", (bw, bh), 0)
+        od = ImageDraw.Draw(out_mask)
+        od.rounded_rectangle((0, 0, bw - 1, bh - 1), radius=bradius, outline=255, fill=0, width=bwidth)
+        smooth_out_mask = out_mask.resize((w, h), Image.Resampling.LANCZOS)
+        out_img = Image.new("RGBA", (w, h), outline)
+        rect_layer = Image.composite(out_img, rect_layer, smooth_out_mask)
+
+    target_image.alpha_composite(rect_layer, (x1, y1))
+
+
 def create_composition(
     width: int,
     height: int,
@@ -1610,23 +1663,29 @@ def create_composition(
         active_item = track_items[i]
         x1, y1, x2, y2 = active_item["box"]
 
-        # Calculate exact text visual vertical center for active track item
         cursor_ref_x = active_item.get("text_x", x1)
         item_text = active_item["text"]
+        line_spacing = int(eff_track_size * 0.25)
+        # Measure full item bounds across all wrapped/multi-line lines
+        tb_all = od.textbbox((cursor_ref_x, active_item["y"]), item_text, font=row_font, spacing=line_spacing)
         first_line = item_text.split("\n")[0] if "\n" in item_text else item_text
-        tb_active = od.textbbox((cursor_ref_x, active_item["y"]), first_line, font=row_font)
-        text_visual_cy = (tb_active[1] + tb_active[3]) // 2
+        tb_line1 = od.textbbox((cursor_ref_x, active_item["y"]), first_line, font=row_font)
 
         # Apply resolution-scaled horizontal and vertical offset adjustments
         eff_hl_y_off = int(round(highlight_y_offset * res_scale))
         eff_cur_y_off = int(round(cursor_y_offset * res_scale))
         eff_cur_x_off = int(round(cursor_x_offset * res_scale))
-        hl_cy = text_visual_cy + eff_hl_y_off
-        cur_cy = text_visual_cy + eff_cur_y_off
 
+        # Consistent visual vertical center for the full text item
+        text_visual_cy = (tb_all[1] + tb_all[3]) // 2
+        hl_cy = text_visual_cy + eff_hl_y_off
+        # Cursor aligns with visual center of the first line where track numbering/title starts
+        cur_cy = (tb_line1[1] + tb_line1[3]) // 2 + eff_cur_y_off
+
+        bar_x1 = x1
         # Moving highlight
         if show_highlight:
-            # Vertically center the row highlight box symmetrically around the active text + offset
+            # Row-spanning highlight box centered symmetrically around the active text
             row_h = y2 - y1
             half_h = row_h // 2
             hl_box = (x1, hl_cy - half_h, x2, hl_cy - half_h + row_h)
@@ -1635,7 +1694,6 @@ def create_composition(
             if str(highlight_target or "row").lower().strip() == "text":
                 pad_x = highlight_padding_x if highlight_padding_x is not None else int(18 * res_scale)
                 pad_y = highlight_padding_y if highlight_padding_y is not None else int(6 * res_scale)
-                tb_all = od.textbbox((cursor_ref_x, active_item["y"]), item_text, font=row_font) if "\n" in item_text else tb_active
                 half_th = (tb_all[3] - tb_all[1]) // 2
                 hl_box = (
                     max(margin, tb_all[0] - pad_x),
@@ -1657,58 +1715,53 @@ def create_composition(
 
             if norm_hl_style == "Accent Bar":
                 bar_w = max(4, int(width * 0.0035))
-                od.rounded_rectangle(
-                    (x1, hl_box[1], x1 + bar_w, hl_box[3]),
+                bar_x1 = hl_box[0]
+                bar_x2 = bar_x1 + bar_w
+                _draw_smooth_rounded_rect(
+                    overlay,
+                    (bar_x1, hl_box[1], bar_x2, hl_box[3]),
                     radius=max(1, bar_w // 2),
                     fill=(*hl_rgb, stroke_a),
                 )
-                od.rounded_rectangle(hl_box, radius=eff_radius, fill=(*hl_rgb, max(15, fill_a // 2)))
-
-            elif norm_hl_style == "Outline":
-                # Crisp border outline only - completely transparent interior without inner shading/tint
-                if eff_radius == 0:
-                    od.rectangle(
-                        hl_box,
-                        outline=(*hl_rgb, stroke_a),
-                        fill=None,
-                        width=eff_outline_w,
-                    )
-                else:
-                    od.rounded_rectangle(
+                if fill_a > 0:
+                    _draw_smooth_rounded_rect(
+                        overlay,
                         hl_box,
                         radius=eff_radius,
-                        outline=(*hl_rgb, stroke_a),
-                        fill=None,
-                        width=eff_outline_w,
+                        fill=(*hl_rgb, max(15, fill_a // 2)),
                     )
+
+            elif norm_hl_style == "Outline":
+                # Crisp border outline only - antialiased smooth rounded corners without uncut pixels
+                _draw_smooth_rounded_rect(
+                    overlay,
+                    hl_box,
+                    radius=eff_radius,
+                    outline=(*hl_rgb, stroke_a),
+                    fill=None,
+                    width=eff_outline_w,
+                )
 
             elif norm_hl_style == "Underline":
                 item_tx = active_item.get("text_x", x1)
-                tb = od.textbbox((item_tx, active_item["y"]), active_item["text"], font=row_font)
-                line_y = tb[3] + max(3, int(4 * res_scale)) + eff_hl_y_off
+                line_y = tb_all[3] + max(3, int(4 * res_scale)) + eff_hl_y_off
                 line_h = max(2, eff_outline_w)
-                od.rounded_rectangle(
-                    (item_tx, line_y, min(x2, tb[2] + int(width * 0.008)), line_y + line_h),
+                _draw_smooth_rounded_rect(
+                    overlay,
+                    (item_tx, line_y, min(x2, tb_all[2] + int(width * 0.008)), line_y + line_h),
                     radius=1 if eff_radius > 0 else 0,
                     fill=(*hl_rgb, stroke_a),
                 )
 
             else:  # "Pill" (default)
-                if eff_radius == 0:
-                    od.rectangle(
-                        hl_box,
-                        outline=(*hl_rgb, stroke_a),
-                        fill=(*hl_rgb, fill_a),
-                        width=eff_outline_w,
-                    )
-                else:
-                    od.rounded_rectangle(
-                        hl_box,
-                        radius=eff_radius,
-                        outline=(*hl_rgb, stroke_a),
-                        fill=(*hl_rgb, fill_a),
-                        width=eff_outline_w,
-                    )
+                _draw_smooth_rounded_rect(
+                    overlay,
+                    hl_box,
+                    radius=eff_radius,
+                    outline=(*hl_rgb, stroke_a) if eff_outline_w > 0 else None,
+                    fill=(*hl_rgb, fill_a) if fill_a > 0 else None,
+                    width=eff_outline_w,
+                )
 
         # Cursor
         if show_cursor:
@@ -1719,6 +1772,8 @@ def create_composition(
             # If highlight surrounds text, position cursor cleanly to the left of the highlight box boundary to avoid crossing
             if show_highlight and (str(highlight_target or "row").lower().strip() == "text"):
                 base_cx = max(4, hl_box[0] - cur_dim - gap)
+            elif show_highlight and norm_hl_style == "Accent Bar":
+                base_cx = max(4, bar_x1 - cur_dim - gap)
             else:
                 base_cx = max(4, cursor_ref_x - cur_dim - gap)
             cx = base_cx + eff_cur_x_off
