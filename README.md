@@ -1,4 +1,4 @@
-# Nasheed Studio
+# NCN Studio
 
 A professional Windows desktop application designed to automate the production of high-quality Nasheed playlist collection videos with synchronized track indicators, flexible multi-column layouts, customizable branding, and high-resolution MP4 export.
 
@@ -6,13 +6,13 @@ A professional Windows desktop application designed to automate the production o
 
 ## Delivery Package Structure
 
-The project is delivered as a comprehensive, self-contained master distribution package (`final_deliverable/` or `Nasheed_Studio_Complete_Project_v1.0.zip`), containing everything needed for both immediate end-user operation and future developer maintenance:
+The project is delivered as a comprehensive, self-contained master distribution package (`final_deliverable/` or `NCN_Studio_Complete_Project_v1.0.zip`), containing everything needed for both immediate end-user operation and future developer maintenance:
 
 ```
 final_deliverable/
 ├── Application/
-│   └── Nasheed Studio/
-│       ├── Nasheed Studio.exe        # Standalone executable (zero external dependencies required)
+│   └── NCN Studio/
+│       ├── NCN Studio.exe        # Standalone executable (zero external dependencies required)
 │       ├── _internal/                # Bundled Python 3.10 runtime & PySide6 Qt 6 libraries
 │       └── tools/                    # Static FFmpeg 8.1 & FFprobe binaries
 ├── Source_Code/                      # Complete clean Python source code
@@ -98,9 +98,9 @@ final_deliverable/
 
 ## Quick Start (No Python Required)
 
-1. Unzip the delivery archive (`final_deliverable.zip` or `Nasheed_Studio_Complete_Project_v1.0.zip`).
-2. Open the `Application\Nasheed Studio\` folder.
-3. Double-click **`Nasheed Studio.exe`**.
+1. Unzip the delivery archive (`final_deliverable.zip` or `NCN_Studio_Complete_Project_v1.0.zip`).
+2. Open the `Application\NCN Studio\` folder.
+3. Double-click **`NCN Studio.exe`**.
 4. The application launches immediately. No Python, FFmpeg, or external codecs are required.
 
 ---

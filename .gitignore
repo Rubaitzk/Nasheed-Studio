@@ -7,6 +7,7 @@ __pycache__/
 .pytest_cache/
 build/
 *.spec
+!nasheed_studio.spec
 scratch/
 dist/
 screenshots/
@@ -26,6 +27,7 @@ release_build_log.txt
 Gemini conversation-*.md
 *.log
 assets/*.png
+!assets/app_icon.png
 assets/*.jpg
 assets/*.jpeg
 assets/*.mp3
@@ -36,3 +38,4 @@ tests/test_user_templates_and_indicators.py
 tests/test_video_background.py
 client_screenshots_after_deliver/
 highlight_misplaced_to_text/
+hope/

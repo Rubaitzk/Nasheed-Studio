@@ -1,5 +1,5 @@
 """
-build_release.py — Production release builder for Nasheed Studio.
+build_release.py — Production release builder for NCN Studio.
 
 Usage
 -----
@@ -19,14 +19,14 @@ Output
 ------
     release_build/
       Application/
-        Nasheed Studio/       ← unzip this anywhere and run Nasheed Studio.exe
+        NCN Studio/       ← unzip this anywhere and run NCN Studio.exe
       Source_Code/            ← complete Python source
       Scripts/                ← test + automation scripts
       Templates/              ← user_templates seed files
       Installation/           ← install instructions
       Documentation/          ← user guide, developer guide, troubleshooting
       Evidence/               ← placeholder for test evidence
-      Nasheed_Studio_Windows_x64.zip
+      NCN_Studio_Windows_x64.zip
       MANIFEST.md
 """
 
@@ -67,8 +67,8 @@ INSTALL_OUT = RELEASE_DIR / "Installation"
 DOCS_OUT = RELEASE_DIR / "Documentation"
 EVIDENCE_OUT = RELEASE_DIR / "Evidence"
 
-BUNDLE_NAME = "Nasheed Studio"
-ZIP_NAME = "Nasheed_Studio_Windows_x64.zip"
+BUNDLE_NAME = "NCN Studio"
+ZIP_NAME = "NCN_Studio_Windows_x64.zip"
 
 
 # ---------------------------------------------------------------------------
@@ -323,7 +323,12 @@ def assemble_release(bundle: Path) -> Path:
             shutil.copytree(item, dest,
                             ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"))
         elif item.is_file() and item.suffix in (".py", ".txt", ".md", ".spec", ".json", ".gitignore"):
+            if item.name == "Nasheed Studio.spec":
+                continue  # Obsolete, machine-specific PyInstaller spec from the old product name.
             shutil.copy2(item, dest)
+    legacy_spec = SRC_OUT / "Nasheed Studio.spec"
+    if legacy_spec.exists():
+        legacy_spec.unlink()
     ok("Source code copied")
 
     # 5c. Scripts
@@ -365,16 +370,24 @@ def assemble_release(bundle: Path) -> Path:
 
     if shortcut_bat.is_file():
         shutil.copy2(shortcut_bat, dest_bundle / "Create Desktop Shortcut.bat")
-        shutil.copy2(shortcut_bat, INSTALL_OUT / "create_desktop_shortcut.bat")
-        shutil.copy2(shortcut_bat, RELEASE_DIR / "Create Desktop Shortcut.bat")
     if shortcut_ps1.is_file():
         shutil.copy2(shortcut_ps1, dest_bundle / "create_desktop_shortcut.ps1")
-        shutil.copy2(shortcut_ps1, INSTALL_OUT / "create_desktop_shortcut.ps1")
-        shutil.copy2(shortcut_ps1, RELEASE_DIR / "create_desktop_shortcut.ps1")
     if readme_run.is_file():
         shutil.copy2(readme_run, dest_bundle / "README_HOW_TO_RUN.txt")
-        shutil.copy2(readme_run, RELEASE_DIR / "README_HOW_TO_RUN.txt")
-    ok("Installation guide and shortcut utilities copied")
+
+    # Older deliveries duplicated launch helpers in the package root and Installation/.
+    # Keep the runnable shortcut helper only beside the EXE to make the end-user path clear.
+    duplicate_helpers = (
+        RELEASE_DIR / "Create Desktop Shortcut.bat",
+        RELEASE_DIR / "create_desktop_shortcut.ps1",
+        RELEASE_DIR / "README_HOW_TO_RUN.txt",
+        INSTALL_OUT / "create_desktop_shortcut.bat",
+        INSTALL_OUT / "create_desktop_shortcut.ps1",
+    )
+    for duplicate in duplicate_helpers:
+        if duplicate.exists():
+            duplicate.unlink()
+    ok("Shortcut helper and quick-start guide copied into the application folder")
 
     # 5f. Documentation
     if DOCS_DIR.is_dir():
@@ -409,7 +422,7 @@ def assemble_release(bundle: Path) -> Path:
     zip_path = RELEASE_DIR / ZIP_NAME
     step(f"Creating ZIP archive: {zip_path.name}")
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-        for root, dirs, files in os.walk(APP_OUT):
+        for root, dirs, files in os.walk(dest_bundle):
             # Skip __pycache__ inside the bundle
             dirs[:] = [d for d in dirs if d != "__pycache__"]
             for file in files:
@@ -417,6 +430,16 @@ def assemble_release(bundle: Path) -> Path:
                 rel = full.relative_to(APP_OUT)
                 zf.write(full, rel)
     ok(f"ZIP created: {zip_path} ({zip_path.stat().st_size // 1_000_000} MB)")
+
+    # Remove previous product-named outputs only after the replacement ZIP exists.
+    legacy_bundle = APP_OUT / "Nasheed Studio"
+    if legacy_bundle != dest_bundle and legacy_bundle.exists():
+        shutil.rmtree(legacy_bundle)
+        ok("Removed previous Nasheed Studio application bundle")
+    legacy_zip = RELEASE_DIR / "Nasheed_Studio_Windows_x64.zip"
+    if legacy_zip != zip_path and legacy_zip.exists():
+        legacy_zip.unlink()
+        ok("Removed previous Nasheed Studio application archive")
 
     return RELEASE_DIR
 
@@ -435,7 +458,7 @@ def write_manifest(bundle: Path, release_dir: Path) -> None:
     exe_hash = sha256(exe) if exe.is_file() else "N/A"
     zip_hash = sha256(zip_path) if zip_path.is_file() else "N/A"
 
-    manifest = f"""# Nasheed Studio — Delivery Manifest
+    manifest = f"""# NCN Studio — Delivery Manifest
 
 Generated: {ts}
 
@@ -443,7 +466,7 @@ Generated: {ts}
 
 | File | SHA-256 |
 |------|---------|
-| `Application/Nasheed Studio/Nasheed Studio.exe` | `{exe_hash}` |
+| `Application/NCN Studio/NCN Studio.exe` | `{exe_hash}` |
 
 ## Delivery Package Structure
 
@@ -452,7 +475,7 @@ The client receives the entire project archive containing:
 ```
 final_deliverable/
   Application/
-    Nasheed Studio/         ← Run "Nasheed Studio.exe" to launch
+    NCN Studio/         ← Run "NCN Studio.exe" to launch
   Source_Code/              ← Complete clean Python source for maintenance
   Scripts/
     build_release.py        ← Reproduces this build
@@ -473,7 +496,7 @@ final_deliverable/
 ## What the client receives
 
 The client unzips the master project archive to any directory on a Windows 10/11 machine,
-navigates to `Application/Nasheed Studio/`, and double-clicks `Nasheed Studio.exe`.
+navigates to `Application/NCN Studio/`, and double-clicks `NCN Studio.exe`.
 No Python installation is required. No additional codecs or software installations are needed.
 FFmpeg is bundled inside the `tools/` sub-directory.
 The complete source code, templates, tests, and documentation are included for full transparency.
@@ -494,7 +517,7 @@ To run from source or execute the test suite, follow `Documentation/DEVELOPER_GU
 # ---------------------------------------------------------------------------
 
 INSTALLATION_GUIDE = """\
-# Nasheed Studio — Installation Guide
+# NCN Studio — Installation Guide
 
 ## System Requirements
 
@@ -506,16 +529,16 @@ INSTALLATION_GUIDE = """\
 
 ## Installation Steps
 
-1. Extract `Nasheed_Studio_Windows_x64.zip` to a folder of your choice.
-   For example: `C:\\Programs\\Nasheed Studio\\`
+1. Extract `NCN_Studio_Windows_x64.zip` to a folder of your choice.
+   For example: `C:\\Programs\\NCN Studio\\`
 
 2. No installer is required. The application is fully portable.
 
-3. Double-click **Nasheed Studio.exe** to launch.
+3. Double-click **NCN Studio.exe** to launch.
 
 ## First Run
 
-On first launch, Nasheed Studio creates a workspace folder at:
+On first launch, NCN Studio creates a workspace folder at:
     `C:\\Users\\<YourName>\\NasheedStudio\\`
 
 This folder contains your projects, exports, and templates.
@@ -523,7 +546,7 @@ You can relocate it via **File → Change Workspace** inside the application.
 
 ## Uninstallation
 
-Delete the `Nasheed Studio` folder. Remove the workspace folder
+Delete the `NCN Studio` folder. Remove the workspace folder
 (`C:\\Users\\<YourName>\\NasheedStudio\\`) if you want to erase all projects.
 
 ## Bundled components
@@ -537,11 +560,11 @@ No internet connection is required to use the application.
 """
 
 USER_GUIDE = """\
-# Nasheed Studio — User Guide
+# NCN Studio — User Guide
 
 ## Overview
 
-Nasheed Studio creates professionally styled MP4 playlist videos from your
+NCN Studio creates professionally styled MP4 playlist videos from your
 audio tracks. Each track is highlighted in sequence as the video plays,
 with animated cursor and highlight effects, customizable typography, logo
 and watermark overlays, optional intro cards, and track-change sound effects.
@@ -550,7 +573,7 @@ and watermark overlays, optional intro cards, and track-change sound effects.
 
 ## Launching the Application
 
-Double-click **Nasheed Studio.exe** in the application folder.
+Double-click **NCN Studio.exe** in the application folder.
 The workspace is created automatically on first launch.
 
 ---
@@ -694,7 +717,7 @@ Export logs are saved in `NasheedStudio/logs/` in your workspace folder.
 """
 
 DEVELOPER_GUIDE = """\
-# Nasheed Studio — Developer / Build Guide
+# NCN Studio — Developer / Build Guide
 
 ## Supported Python version
 
@@ -750,16 +773,16 @@ The recommended source is a Windows static build from:
 
 - Spec file: `nasheed_studio.spec` (relative paths, portable across machines)
 - Build script: `build_release.py`
-- Distribution: `release_build/Application/Nasheed Studio/`
-- ZIP archive: `release_build/Nasheed_Studio_Windows_x64.zip`
+- Distribution: `release_build/Application/NCN Studio/`
+- ZIP archive: `release_build/NCN_Studio_Windows_x64.zip`
 
 ## Reproducing the clean-environment test
 
 1. Build the distribution using `build_release.py`.
-2. Copy `release_build/Application/Nasheed Studio/` to a Windows VM or sandbox
+2. Copy `release_build/Application/NCN Studio/` to a Windows VM or sandbox
    that has no Python installation.
 3. Verify `python.exe` is absent: `where python` should return nothing.
-4. Launch `Nasheed Studio.exe` and follow the manual acceptance test guide.
+4. Launch `NCN Studio.exe` and follow the manual acceptance test guide.
 
 ## Project structure
 
@@ -807,19 +830,19 @@ They are automatically discovered at runtime and bundled via the spec.
 """
 
 TROUBLESHOOTING_GUIDE = """\
-# Nasheed Studio — Troubleshooting Guide
+# NCN Studio — Troubleshooting Guide
 
 ## Application does not start
 
-**Symptom**: Double-clicking Nasheed Studio.exe does nothing or shows an error.
+**Symptom**: Double-clicking NCN Studio.exe does nothing or shows an error.
 
 **Solutions**:
 1. Ensure all files from the ZIP were extracted (not just the .exe).
 2. Check that `PySide6/plugins/platforms/qwindows.dll` exists inside the app folder.
 3. Try running from a Command Prompt window to see error messages:
    ```
-   cd "C:\\Path\\To\\Nasheed Studio"
-   "Nasheed Studio.exe"
+   cd "C:\\Path\\To\\NCN Studio"
+   "NCN Studio.exe"
    ```
 4. Install the Microsoft Visual C++ Redistributable (2019 or later) if prompted.
 
@@ -905,7 +928,7 @@ Include the following when reporting a problem:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build Nasheed Studio release package")
+    parser = argparse.ArgumentParser(description="Build NCN Studio release package")
     parser.add_argument("--clean", action="store_true",
                         help="Remove previous dist/ and build/ directories before building")
     parser.add_argument("--skip-tests", action="store_true",
@@ -913,7 +936,7 @@ def main() -> None:
     args = parser.parse_args()
 
     print("\n" + "="*70)
-    print("  Nasheed Studio — Release Builder")
+    print("  NCN Studio — Release Builder")
     print(f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("="*70)
 

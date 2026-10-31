@@ -1,4 +1,4 @@
-"""Standalone Windows Executable Build Script for Nasheed Studio.
+"""Standalone Windows Executable Build Script for NCN Studio.
 
 Packages the application using PyInstaller with bundled FFmpeg, FFprobe,
 and all required media and styling resources into a portable distribution.
@@ -19,7 +19,7 @@ ASSETS_DIR = ROOT_DIR / "assets"
 
 
 def build_standalone():
-    print(f"=== Building Nasheed Studio Standalone Windows Package ===")
+    print(f"=== Building NCN Studio Standalone Windows Package ===")
     print(f"Root Directory: {ROOT_DIR}")
 
     # Ensure tools exist
@@ -36,7 +36,7 @@ def build_standalone():
         "--noconfirm",
         "--onedir",
         "--windowed",
-        "--name", "Nasheed Studio",
+        "--name", "NCN Studio",
         "--add-data", f"{TOOLS_DIR};tools",
         "--add-data", f"{ASSETS_DIR};assets",
         "--hidden-import", "PySide6.QtSvg",
@@ -54,7 +54,7 @@ def build_standalone():
     if res.returncode != 0:
         raise RuntimeError(f"PyInstaller build failed with exit code {res.returncode}")
 
-    target_app_dir = DIST_DIR / "Nasheed Studio"
+    target_app_dir = DIST_DIR / "NCN Studio"
     print(f"Build complete at: {target_app_dir}")
 
     # Ensure tools directory is also directly adjacent in the distribution folder
@@ -71,7 +71,7 @@ def build_standalone():
         shutil.copy2(guide_src, target_app_dir / "README.txt")
 
     # Create portable ZIP distribution
-    zip_path = DIST_DIR / "Nasheed_Studio_Windows_x64.zip"
+    zip_path = DIST_DIR / "NCN_Studio_Windows_x64.zip"
     print(f"Creating portable zip archive: {zip_path}")
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for root, dirs, files in os.walk(target_app_dir):

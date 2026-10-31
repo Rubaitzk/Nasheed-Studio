@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 echo ==========================================================
-echo  Creating Desktop Shortcut for Nasheed Studio...
+echo  Creating Desktop Shortcut for NCN Studio...
 echo ==========================================================
 echo.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0create_desktop_shortcut.ps1"
@@ -14,6 +14,6 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b %ERRORLEVEL%
 )
 echo.
-echo You can now launch Nasheed Studio directly from your desktop.
+echo You can now launch NCN Studio directly from your desktop.
 echo.
 pause

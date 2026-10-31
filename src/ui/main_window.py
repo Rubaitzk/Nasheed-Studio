@@ -1,5 +1,5 @@
 """
-Main application window for Nasheed Studio.
+Main application window for NCN Studio.
 
 Stage 2 Architecture
 --------------------
@@ -67,6 +67,7 @@ from src.services.project_service import (
     load_template, apply_template_to_project, check_missing_assets,
 )
 from src.ui.icons import get_svg_icon, get_svg_pixmap
+from src.ui.branding import application_icon
 from src.ui.style import STYLE, TOKENS
 
 
@@ -247,7 +248,10 @@ class PlaylistListWidget(QListWidget):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Nasheed Studio · Playlist Video Automation")
+        self.setWindowTitle("NCN Studio · Playlist Video Automation")
+        icon = application_icon()
+        if not icon.isNull():
+            self.setWindowIcon(icon)
         self.resize(1440, 900)
         self.setMinimumSize(1120, 720)
 
@@ -379,7 +383,7 @@ class MainWindow(QMainWindow):
         brand_icon.setPixmap(get_svg_pixmap("app", 20, "#3d8b58"))
         tbl.addWidget(brand_icon)
 
-        title_lbl = QLabel("Nasheed Studio")
+        title_lbl = QLabel("NCN Studio")
         title_lbl.setObjectName("app_title")
         tbl.addWidget(title_lbl)
 
@@ -954,10 +958,10 @@ class MainWindow(QMainWindow):
         self._space_preview_shortcut.activated.connect(self._on_shortcut_space_preview)
 
         help_menu = self.menuBar().addMenu("Help")
-        about = QAction("About Nasheed Studio", self)
+        about = QAction("About NCN Studio", self)
         about.triggered.connect(lambda: QMessageBox.information(
             self, "About",
-            "Nasheed Studio is a local desktop tool for generating "
+            "NCN Studio is a local desktop tool for generating "
             "playlist-style Nasheed videos with FFmpeg."
         ))
         help_menu.addAction(about)
@@ -4346,7 +4350,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "unsaved_pill"):
             self.unsaved_pill.setVisible(dirty)
         star = " *" if dirty else ""
-        self.setWindowTitle(f"Nasheed Studio · {name}{star}")
+        self.setWindowTitle(f"NCN Studio · {name}{star}")
 
     def _get_recent_projects(self) -> list[str]:
         settings = QSettings("NasheedStudio", "NasheedStudio")
@@ -4588,7 +4592,7 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(
             self, "Save project",
             default_path,
-            "Nasheed Studio project (*.json)"
+            "NCN Studio project (*.json)"
         )
         if path:
             if not path.lower().endswith(".json"):
@@ -4665,7 +4669,7 @@ class MainWindow(QMainWindow):
         templates_dir = user_tmpl_dir if user_tmpl_dir.is_dir() else get_templates_dir()
         path, _ = QFileDialog.getOpenFileName(
             self, "Apply Reusable Template", str(templates_dir),
-            "Nasheed Studio Template (*.json);;All files (*.*)"
+            "NCN Studio Template (*.json);;All files (*.*)"
         )
         if not path:
             return
@@ -5058,7 +5062,7 @@ class MainWindow(QMainWindow):
             if answer != QMessageBox.StandardButton.Yes:
                 return
         path, _ = QFileDialog.getOpenFileName(
-            self, "Open project", "", "Nasheed Studio project (*.json)"
+            self, "Open project", "", "NCN Studio project (*.json)"
         )
         if not path:
             return
