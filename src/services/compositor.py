@@ -1052,12 +1052,8 @@ def create_intro_card(
         except Exception:
             pass
 
-    # Decorative accent divider
+    # Title vertical baseline offset below logo (accent divider line removed)
     div_y = logo_bottom + int(card_h * 0.05)
-    div_w = int(card_w * 0.22)
-    div_x1 = (width - div_w) // 2
-    div_x2 = div_x1 + div_w
-    over_draw.line([(div_x1, div_y), (div_x2, div_y)], fill=(248, 220, 139, 130), width=max(1, int(2 * res_scale)))
 
     # Title safe frame bounds and intelligent multi-line fitting inside card
     norm_title_sz = get_normalized_font_size(title_font_family, title_font_style, title_font_size)
@@ -1657,6 +1653,29 @@ def create_composition(
     hl_alpha = int(255 * max(0.05, min(1.0, float(highlight_bg_opacity or 0.25))))
     norm_hl_style = highlight_style.strip().title()
 
+    # Pre-calculate stable typographic reference metrics for row_font
+    # Using consistent reference glyph bounds prevents highlight boxes and cursors from jumping or shifting up
+    # on track titles that lack descenders (e.g. g, j, p, q, y).
+    ascent, descent = row_font.getmetrics()
+    line_metric_h = ascent + descent
+    try:
+        ref_bb = row_font.getbbox("01. Mgjpq")
+        if ref_bb[3] > ref_bb[1]:
+            ref_glyph_top = ref_bb[1]
+            ref_glyph_bottom = ref_bb[3]
+            ref_glyph_h = ref_glyph_bottom - ref_glyph_top
+            ref_optical_cy = (ref_glyph_top + ref_glyph_bottom) // 2
+        else:
+            ref_glyph_top = 0
+            ref_glyph_bottom = line_metric_h
+            ref_glyph_h = line_metric_h
+            ref_optical_cy = line_metric_h // 2
+    except Exception:
+        ref_glyph_top = 0
+        ref_glyph_bottom = line_metric_h
+        ref_glyph_h = line_metric_h
+        ref_optical_cy = line_metric_h // 2
+
     for i in indices_to_render:
         overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         od = ImageDraw.Draw(overlay, "RGBA")
@@ -1666,21 +1685,25 @@ def create_composition(
         cursor_ref_x = active_item.get("text_x", x1)
         item_text = active_item["text"]
         line_spacing = int(eff_track_size * 0.25)
-        # Measure full item bounds across all wrapped/multi-line lines
+        lines = item_text.split("\n")
+        n_lines = len(lines)
+
+        # Measure full item bounds across all wrapped/multi-line lines for horizontal extent
         tb_all = od.textbbox((cursor_ref_x, active_item["y"]), item_text, font=row_font, spacing=line_spacing)
-        first_line = item_text.split("\n")[0] if "\n" in item_text else item_text
-        tb_line1 = od.textbbox((cursor_ref_x, active_item["y"]), first_line, font=row_font)
 
         # Apply resolution-scaled horizontal and vertical offset adjustments
         eff_hl_y_off = int(round(highlight_y_offset * res_scale))
         eff_cur_y_off = int(round(cursor_y_offset * res_scale))
         eff_cur_x_off = int(round(cursor_x_offset * res_scale))
 
-        # Consistent visual vertical center for the full text item
-        text_visual_cy = (tb_all[1] + tb_all[3]) // 2
-        hl_cy = text_visual_cy + eff_hl_y_off
-        # Cursor aligns with visual center of the first line where track numbering/title starts
-        cur_cy = (tb_line1[1] + tb_line1[3]) // 2 + eff_cur_y_off
+        # Consistent visual vertical center based on stable typographic font metrics
+        # (prevents vertical misplacement / lifting up on tracks lacking descenders)
+        total_line_step = line_metric_h + line_spacing
+        text_stable_cy = active_item["y"] + ref_optical_cy + ((n_lines - 1) * total_line_step) // 2
+        hl_cy = text_stable_cy + eff_hl_y_off
+
+        # Cursor aligns with optical center of the first line where track numbering/title starts
+        cur_cy = active_item["y"] + ref_optical_cy + eff_cur_y_off
 
         bar_x1 = x1
         # Moving highlight
@@ -1694,7 +1717,8 @@ def create_composition(
             if str(highlight_target or "row").lower().strip() == "text":
                 pad_x = highlight_padding_x if highlight_padding_x is not None else int(18 * res_scale)
                 pad_y = highlight_padding_y if highlight_padding_y is not None else int(6 * res_scale)
-                half_th = (tb_all[3] - tb_all[1]) // 2
+                total_typographic_h = (n_lines - 1) * total_line_step + ref_glyph_h
+                half_th = total_typographic_h // 2
                 hl_box = (
                     max(margin, tb_all[0] - pad_x),
                     max(0, hl_cy - half_th - pad_y),
@@ -1744,7 +1768,8 @@ def create_composition(
 
             elif norm_hl_style == "Underline":
                 item_tx = active_item.get("text_x", x1)
-                line_y = tb_all[3] + max(3, int(4 * res_scale)) + eff_hl_y_off
+                text_bottom_y = active_item["y"] + (n_lines - 1) * total_line_step + ref_glyph_bottom
+                line_y = text_bottom_y + max(3, int(4 * res_scale)) + eff_hl_y_off
                 line_h = max(2, eff_outline_w)
                 _draw_smooth_rounded_rect(
                     overlay,

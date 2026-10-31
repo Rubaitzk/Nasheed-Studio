@@ -35,3 +35,4 @@ tests/test_ui_adjusters_and_colors.py
 tests/test_user_templates_and_indicators.py
 tests/test_video_background.py
 client_screenshots_after_deliver/
+highlight_misplaced_to_text/
