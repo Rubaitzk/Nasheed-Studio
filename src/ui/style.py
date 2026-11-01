@@ -495,6 +495,30 @@ QScrollArea {
     border: none;
     background: transparent;
 }
+QScrollBar:vertical {
+    border: none;
+    background: #141915;
+    width: 8px;
+    margin: 0px;
+    border-radius: 4px;
+}
+QScrollBar::handle:vertical {
+    background: #2a352d;
+    min-height: 24px;
+    border-radius: 4px;
+}
+QScrollBar::handle:vertical:hover {
+    background: #3d8b58;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0px;
+    background: none;
+    border: none;
+}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+    background: none;
+}
+
 QMenuBar {
     background: #161c18;
     color: #edf2ee;

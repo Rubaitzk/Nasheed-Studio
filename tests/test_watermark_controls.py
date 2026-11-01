@@ -227,6 +227,137 @@ class TestWatermarkUIControls(unittest.TestCase):
         finally:
             Path(p).unlink(missing_ok=True)
 
+    def test_sound_section_watermark_propagation_to_export(self):
+        """Watermark configured in Sound section propagates to export composition when project website_text is empty."""
+        import wave
+        from src.services.render_service import build_render_command
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            audio_path = tmp / "audio.wav"
+            with wave.open(str(audio_path), "wb") as wf:
+                wf.setnchannels(2)
+                wf.setsampwidth(2)
+                wf.setframerate(44100)
+                wf.writeframes(b"\x00" * 44100 * 2)
+
+            bg_path = tmp / "bg.png"
+            Image.new("RGB", (640, 360), (30, 35, 40)).save(str(bg_path))
+
+            proj = {
+                "version": 1,
+                "collection_title": "Test Title",
+                "background": str(bg_path),
+                "background_type": "image",
+                "tracks": [{"title": "Track 1", "path": str(audio_path), "duration": 1.0}],
+                "template": "Cinematic",
+                "output_path": str(tmp / "out.mp4"),
+                "website_text": "",
+                "intro_enabled": False,
+                "intro_website_show": True,
+                "intro_website_text": "www.SoundWatermarkTest.com",
+                "intro_website_color": (0, 255, 200),
+            }
+
+            work_dir = tmp / "work_sound_wm"
+            build_render_command(proj, work_dir)
+
+            # Baseline blank composition (no watermark)
+            blank_dir = tmp / "work_blank"
+            proj_blank = dict(proj)
+            proj_blank["intro_website_text"] = ""
+            build_render_command(proj_blank, blank_dir)
+
+            with Image.open(work_dir / "composition.png") as im_wm, Image.open(blank_dir / "composition.png") as im_blank:
+                data_wm = list(im_wm.get_flattened_data() if hasattr(im_wm, "get_flattened_data") else im_wm.getdata())
+                data_blank = list(im_blank.get_flattened_data() if hasattr(im_blank, "get_flattened_data") else im_blank.getdata())
+                diff = [p1 != p2 for p1, p2 in zip(data_wm, data_blank)]
+                self.assertTrue(any(diff), "Watermark set in Sound section must be rendered onto composition.png")
+
+    def test_blank_intro_watermark_inherits_project_watermark_on_intro_card(self):
+        """Blank intro_website_text inherits project website_text on intro card."""
+        import wave
+        from src.services.render_service import build_render_command
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            audio_path = tmp / "audio2.wav"
+            with wave.open(str(audio_path), "wb") as wf:
+                wf.setnchannels(2)
+                wf.setsampwidth(2)
+                wf.setframerate(44100)
+                wf.writeframes(b"\x00" * 44100 * 2)
+
+            bg_path = tmp / "bg.png"
+            Image.new("RGB", (640, 360), (30, 35, 40)).save(str(bg_path))
+
+            proj = {
+                "version": 1,
+                "collection_title": "Test Title",
+                "background": str(bg_path),
+                "background_type": "image",
+                "tracks": [{"title": "Track 1", "path": str(audio_path), "duration": 1.0}],
+                "template": "Cinematic",
+                "output_path": str(tmp / "out2.mp4"),
+                "website_text": "www.ProjectWatermarkFallback.com",
+                "website_show": True,
+                "intro_enabled": True,
+                "intro_website_show": True,
+                "intro_website_text": "",  # Blank: must fallback to website_text
+            }
+
+            work_dir = tmp / "work_intro_inherit"
+            build_render_command(proj, work_dir)
+
+            intro_overlay = work_dir / "intro_overlay.png"
+            self.assertTrue(intro_overlay.exists())
+            with Image.open(intro_overlay) as im:
+                bbox = im.crop((0, 700, 1920, 1080)).getbbox()
+                self.assertIsNotNone(bbox, "Intro overlay must render watermark text when falling back to project watermark")
+
+    def test_inspector_panel_no_horizontal_clipping(self):
+        """Inspector panel tabs have no horizontally clipped widgets at startup or minimum size."""
+        self.win.show()
+        _get_app().processEvents()
+
+        # Test at startup size
+        for i in range(self.win.inspector_tabs.count()):
+            self.win.inspector_tabs.setCurrentIndex(i)
+            _get_app().processEvents()
+            scroll = self.win.inspector_tabs.widget(i)
+            viewport = scroll.viewport()
+            content = scroll.widget()
+
+            for child in content.findChildren(object):
+                if hasattr(child, "geometry") and hasattr(child, "isVisible") and child.isVisible():
+                    pos = child.mapTo(content, child.rect().topLeft())
+                    right = pos.x() + child.width()
+                    self.assertLessEqual(
+                        right, viewport.width() + 1,
+                        f"Widget {child.metaObject().className()} in Tab {i} overflows viewport width ({right} > {viewport.width()})"
+                    )
+
+        # Test at minimum window size (1120x720)
+        self.win.resize(1120, 720)
+        self.win.splitter.setSizes([260, 480, 356])
+        _get_app().processEvents()
+
+        for i in range(self.win.inspector_tabs.count()):
+            self.win.inspector_tabs.setCurrentIndex(i)
+            _get_app().processEvents()
+            scroll = self.win.inspector_tabs.widget(i)
+            viewport = scroll.viewport()
+            content = scroll.widget()
+
+            for child in content.findChildren(object):
+                if hasattr(child, "geometry") and hasattr(child, "isVisible") and child.isVisible():
+                    pos = child.mapTo(content, child.rect().topLeft())
+                    right = pos.x() + child.width()
+                    self.assertLessEqual(
+                        right, viewport.width() + 1,
+                        f"At 720p, widget {child.metaObject().className()} in Tab {i} overflows viewport width ({right} > {viewport.width()})"
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()

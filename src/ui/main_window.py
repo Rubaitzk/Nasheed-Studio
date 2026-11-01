@@ -307,7 +307,7 @@ class MainWindow(QMainWindow):
         self._is_closing = False
         self._recent_menu: Optional[QMenu] = None
         self._committed_title = "Abu Ali Nasheeds Collection"
-        self._last_inspector_width = 360
+        self._last_inspector_width = 390
 
         # Preview cache
         self._cached_preview_key = None
@@ -664,7 +664,7 @@ class MainWindow(QMainWindow):
         # Pane 3: Inspector Pane (min 280, collapsible)
         self.inspector_panel = QFrame()
         self.inspector_panel.setObjectName("inspector_pane")
-        self.inspector_panel.setMinimumWidth(320)
+        self.inspector_panel.setMinimumWidth(340)
         insp_layout = QVBoxLayout(self.inspector_panel)
         insp_layout.setContentsMargins(8, 8, 8, 8)
         insp_layout.setSpacing(6)
@@ -708,7 +708,7 @@ class MainWindow(QMainWindow):
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setStretchFactor(2, 0)
-        self.splitter.setSizes([300, 580, 360])
+        self.splitter.setSizes([290, 720, 390])
         root_layout.addWidget(self.splitter, 1)
 
         # --------------------------------------------------------------
@@ -975,6 +975,7 @@ class MainWindow(QMainWindow):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         content = QWidget()
         layout = QVBoxLayout(content)
         layout.setContentsMargins(6, 8, 6, 8)
@@ -1194,9 +1195,10 @@ class MainWindow(QMainWindow):
         self.playlist_cols_spin = QSpinBox()
         self.playlist_cols_spin.setRange(1, 4)
         self.playlist_cols_spin.setValue(1)
+        self.playlist_cols_spin.setFixedWidth(54)
         self.playlist_cols_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
         pl_col_row.addWidget(cols_lbl)
-        pl_col_row.addWidget(self.playlist_cols_spin, 1)
+        pl_col_row.addWidget(self.playlist_cols_spin)
 
         col_sp_lbl = QLabel("Column gap:")
         col_sp_lbl.setObjectName("muted")
@@ -1204,6 +1206,7 @@ class MainWindow(QMainWindow):
         self.col_spacing_spin.setRange(10, 250)
         self.col_spacing_spin.setValue(50)
         self.col_spacing_spin.setSuffix(" px")
+        self.col_spacing_spin.setMinimumWidth(60)
         self.col_spacing_spin.setToolTip("Distance / gap between playlist columns")
         self.col_spacing_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
         pl_col_row.addWidget(col_sp_lbl)
@@ -1291,6 +1294,10 @@ class MainWindow(QMainWindow):
         tf_box = QHBoxLayout()
         tf_box.setSpacing(6)
         self.title_font_combo = QComboBox()
+        self.title_font_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.title_font_combo.setMinimumContentsLength(6)
+        self.title_font_combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.title_font_combo.view().setTextElideMode(Qt.TextElideMode.ElideRight)
         self.title_font_combo.currentTextChanged.connect(self._on_title_font_changed)
         self.title_font_browse_btn = QPushButton("Browse…")
         self.title_font_browse_btn.setToolTip("Select custom .ttf/.otf/.ttc font file from disk")
@@ -1412,6 +1419,10 @@ class MainWindow(QMainWindow):
         trf_box = QHBoxLayout()
         trf_box.setSpacing(6)
         self.track_font_combo = QComboBox()
+        self.track_font_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.track_font_combo.setMinimumContentsLength(6)
+        self.track_font_combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.track_font_combo.view().setTextElideMode(Qt.TextElideMode.ElideRight)
         self.track_font_combo.currentTextChanged.connect(self._on_track_font_changed)
         self.track_font_browse_btn = QPushButton("Browse…")
         self.track_font_browse_btn.setToolTip("Select custom .ttf/.otf/.ttc font file from disk")
@@ -1872,6 +1883,10 @@ class MainWindow(QMainWindow):
 
         intro_font_row = QHBoxLayout()
         self.intro_title_font_combo = QComboBox()
+        self.intro_title_font_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.intro_title_font_combo.setMinimumContentsLength(6)
+        self.intro_title_font_combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.intro_title_font_combo.view().setTextElideMode(Qt.TextElideMode.ElideRight)
         self.intro_title_font_combo.currentTextChanged.connect(self._on_intro_title_font_changed)
         self.intro_title_style_combo = QComboBox()
         self.intro_title_style_combo.currentTextChanged.connect(self._on_intro_param_changed)
@@ -2000,6 +2015,7 @@ class MainWindow(QMainWindow):
         self.intro_fade_in_spin.setValue(0.5)
         self.intro_fade_in_spin.setSingleStep(0.1)
         self.intro_fade_in_spin.setSuffix(" s")
+        self.intro_fade_in_spin.setMinimumWidth(65)
         self.intro_fade_in_spin.valueChanged.connect(self._on_intro_fade_changed)
 
         fade_out_lbl = QLabel("Fade Out:")
@@ -2009,6 +2025,7 @@ class MainWindow(QMainWindow):
         self.intro_fade_out_spin.setValue(0.5)
         self.intro_fade_out_spin.setSingleStep(0.1)
         self.intro_fade_out_spin.setSuffix(" s")
+        self.intro_fade_out_spin.setMinimumWidth(65)
         self.intro_fade_out_spin.valueChanged.connect(self._on_intro_fade_changed)
 
         fade_row.addWidget(fade_in_lbl)
@@ -2112,16 +2129,16 @@ class MainWindow(QMainWindow):
         if is_visible:
             sizes = self.splitter.sizes()
             if len(sizes) >= 3 and sizes[2] > 0:
-                self._last_inspector_width = max(320, sizes[2])
+                self._last_inspector_width = max(340, sizes[2])
             self.inspector_panel.hide()
             self.inspector_toggle_btn.setChecked(False)
         else:
             self.inspector_panel.show()
             self.inspector_toggle_btn.setChecked(True)
-            w = max(320, getattr(self, "_last_inspector_width", 340))
+            w = max(340, getattr(self, "_last_inspector_width", 390))
             sizes = self.splitter.sizes()
             total = sum(sizes)
-            left = sizes[0] if sizes else 310
+            left = sizes[0] if sizes else 290
             right = w
             center = max(400, total - left - right)
             self.splitter.setSizes([left, center, right])
@@ -3105,8 +3122,7 @@ class MainWindow(QMainWindow):
 
     def _on_intro_param_changed(self, *args) -> None:
         self._mark_dirty()
-        if getattr(self, "_previewing_intro", False):
-            self._schedule_preview(150)
+        self._schedule_preview(150)
 
     def _on_intro_card_opacity_changed(self, val: int) -> None:
         if hasattr(self, "intro_card_opacity_val"):
@@ -3438,10 +3454,15 @@ class MainWindow(QMainWindow):
         track_style = self.track_style_combo.currentText() if hasattr(self, "track_style_combo") else "Bold"
         track_sz = self.track_size_spin.value() if hasattr(self, "track_size_spin") else 22
         logo_pos = self.logo_pos_combo.currentText() if hasattr(self, "logo_pos_combo") else "Bottom-Right"
-        web_txt = self.website_edit.text().strip() if hasattr(self, "website_edit") else ""
+        raw_web_t = self.website_edit.text().strip() if hasattr(self, "website_edit") else ""
+        raw_intro_t = self.intro_website_edit.text().strip() if hasattr(self, "intro_website_edit") else ""
+        web_txt = raw_web_t or raw_intro_t
         web_pos = self.website_pos_combo.currentText() if hasattr(self, "website_pos_combo") else "Top-Right"
         web_sz = self.website_size_spin.value() if hasattr(self, "website_size_spin") else 18
-        web_show = self.website_show_check.isChecked() if hasattr(self, "website_show_check") else True
+        if not raw_web_t and raw_intro_t:
+            web_show = self.intro_website_show_check.isChecked() if hasattr(self, "intro_website_show_check") else True
+        else:
+            web_show = self.website_show_check.isChecked() if hasattr(self, "website_show_check") else True
         web_op = round(self.website_opacity_slider.value() / 100.0, 2) if hasattr(self, "website_opacity_slider") else 1.0
         cur_mode = self._mode_from_combo()
         cur_cursor_size = self.cursor_size_spin.value() if hasattr(self, "cursor_size_spin") else 32
