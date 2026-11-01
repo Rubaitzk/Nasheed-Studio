@@ -960,6 +960,9 @@ def create_intro_card(
     website_color: Optional[Union[str, tuple, list]] = None,
     blur_radius: int = 28,
     card_opacity: float = 0.70,
+    logo_y_offset: int = 0,
+    title_y_offset: int = 0,
+    website_y_offset: int = 0,
 ) -> str:
     """
     Generate an intro title card image featuring the collection title and logo presentation.
@@ -1046,7 +1049,7 @@ def create_intro_card(
                 if max_w > 0 and max_h > 0:
                     logo.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
                     lx = (width - logo.width) // 2
-                    ly = card_y + int(card_h * 0.08)
+                    ly = card_y + int(card_h * 0.08) + int(logo_y_offset * res_scale)
                     overlay.alpha_composite(logo, (lx, ly))
                     logo_bottom = ly + logo.height
         except Exception:
@@ -1107,7 +1110,7 @@ def create_intro_card(
 
     line_h = int(curr_sz * 1.25)
     total_th = len(lines) * line_h
-    start_ty = min_title_y + max(0, (available_title_h - total_th) // 2)
+    start_ty = min_title_y + max(0, (available_title_h - total_th) // 2) + int(title_y_offset * res_scale)
 
     for idx, line_text in enumerate(lines):
         bb = title_font.getbbox(line_text)
@@ -1138,7 +1141,7 @@ def create_intro_card(
         ww = wb[2] - wb[0]
         wh = wb[3] - wb[1]
         wx = (width - ww) // 2
-        wy = card_y + card_h - int(card_h * 0.12)
+        wy = card_y + card_h - int(card_h * 0.12) + int(website_y_offset * res_scale)
         web_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         w_draw = ImageDraw.Draw(web_layer, "RGBA")
 

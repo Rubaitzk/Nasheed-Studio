@@ -348,6 +348,9 @@ def build_render_command(
             website_color=intro_web_col or website_color,
             blur_radius=intro_blur,
             card_opacity=intro_card_op,
+            logo_y_offset=int(project.get("intro_logo_y_offset", 0) or 0),
+            title_y_offset=int(project.get("intro_title_y_offset", 0) or 0),
+            website_y_offset=int(project.get("intro_website_y_offset", 0) or 0),
         )
         intro_bg_file = Path(work_dir) / "intro_bg.png"
         intro_overlay_file = Path(work_dir) / "intro_overlay.png"

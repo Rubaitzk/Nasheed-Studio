@@ -241,6 +241,40 @@ class PlaylistListWidget(QListWidget):
         super().keyPressEvent(event)
 
 
+class InspectorFocusWheelFilter(QObject):
+    """
+    Prevents accidental changes to inspector controls (spinboxes, sliders, combo boxes)
+    during passive mouse-wheel scrolling. When unfocused, wheel events scroll the enclosing
+    QScrollArea instead of modifying values. Clicking or focusing a control explicitly
+    enables mouse-wheel value adjustments for that control.
+    """
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.Wheel and isinstance(obj, QWidget):
+            is_focused = obj.hasFocus()
+            if not is_focused and hasattr(obj, "findChildren"):
+                is_focused = any(c.hasFocus() for c in obj.findChildren(QWidget))
+            if not is_focused:
+                scroll_area = self._find_scroll_area(obj)
+                if scroll_area:
+                    vsb = scroll_area.verticalScrollBar()
+                    delta = event.angleDelta().y()
+                    step = vsb.singleStep() * 3 if vsb.singleStep() > 0 else 60
+                    if delta > 0:
+                        vsb.setValue(vsb.value() - step)
+                    elif delta < 0:
+                        vsb.setValue(vsb.value() + step)
+                return True
+        return False
+
+    def _find_scroll_area(self, widget: QWidget) -> Optional[QScrollArea]:
+        curr = widget.parent()
+        while curr:
+            if isinstance(curr, QScrollArea):
+                return curr
+            curr = curr.parent()
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Main window
 # ---------------------------------------------------------------------------
@@ -271,6 +305,9 @@ class MainWindow(QMainWindow):
         self._preview_timeline_timer.timeout.connect(self._on_preview_timeline_tick)
         self._preview_audio_player: Optional[QMediaPlayer] = None
         self._preview_audio_output: Optional[QAudioOutput] = None
+        self._preview_volume: int = 70
+        self._preview_pre_mute_volume: int = 70
+        self._preview_is_muted: bool = False
         self._preview_audio_current_src: str = ""
         self._preview_audio_current_track_idx: Optional[int] = None
         self._cached_composition_pixmaps: list[QPixmap] = []
@@ -657,6 +694,31 @@ class MainWindow(QMainWindow):
         scrubber_row.addWidget(self.scrubber_cur_label)
         scrubber_row.addWidget(self.timeline_scrubber, 1)
         scrubber_row.addWidget(self.scrubber_total_label)
+
+        # Independent Preview Audio Volume Controls
+        self.preview_volume_btn = QPushButton()
+        self.preview_volume_btn.setIcon(get_svg_icon("volume_high", 13, "#edf2ee"))
+        self.preview_volume_btn.setToolTip("Mute / Unmute preview audio")
+        self.preview_volume_btn.setFixedWidth(28)
+        self.preview_volume_btn.clicked.connect(self._toggle_preview_mute)
+
+        self.preview_volume_slider = QSlider(Qt.Orientation.Horizontal)
+        self.preview_volume_slider.setRange(0, 100)
+        self.preview_volume_slider.setValue(70)
+        self.preview_volume_slider.setFixedWidth(70)
+        self.preview_volume_slider.setToolTip("Preview audio volume")
+        self.preview_volume_slider.valueChanged.connect(self._on_preview_volume_changed)
+
+        self.preview_volume_label = QLabel("70%")
+        self.preview_volume_label.setObjectName("subtle")
+        self.preview_volume_label.setFixedWidth(34)
+        self.preview_volume_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        scrubber_row.addSpacing(6)
+        scrubber_row.addWidget(self.preview_volume_btn)
+        scrubber_row.addWidget(self.preview_volume_slider)
+        scrubber_row.addWidget(self.preview_volume_label)
+
         pv_layout.addLayout(scrubber_row)
 
         self.splitter.addWidget(self.preview_panel)
@@ -702,6 +764,7 @@ class MainWindow(QMainWindow):
         self.inspector_tabs.setTabToolTip(3, "Intro Card & Sound Effects")
 
         insp_layout.addWidget(self.inspector_tabs, 1)
+        self._install_inspector_wheel_filters()
         self.splitter.addWidget(self.inspector_panel)
 
         # Set default splitter weights & stretch
@@ -976,12 +1039,28 @@ class MainWindow(QMainWindow):
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.viewport().setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         content = QWidget()
+        content.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         layout = QVBoxLayout(content)
         layout.setContentsMargins(6, 8, 6, 8)
         layout.setSpacing(10)
         scroll.setWidget(content)
         return scroll, layout
+
+    def _install_inspector_wheel_filters(self) -> None:
+        if not hasattr(self, "_inspector_wheel_filter"):
+            self._inspector_wheel_filter = InspectorFocusWheelFilter(self)
+
+        from PySide6.QtWidgets import QAbstractSpinBox, QSlider, QComboBox
+        widgets = []
+        for cls in (QAbstractSpinBox, QSlider, QComboBox):
+            widgets.extend(self.inspector_panel.findChildren(cls))
+        for widget in widgets:
+            widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            widget.installEventFilter(self._inspector_wheel_filter)
+            for child in widget.findChildren(QWidget):
+                child.installEventFilter(self._inspector_wheel_filter)
 
     def _build_tab_layout_assets(self, layout: QVBoxLayout) -> None:
         # Layout template
@@ -1910,6 +1989,19 @@ class MainWindow(QMainWindow):
         intro_title_style_row.addWidget(self.intro_title_color_btn, 1)
         layout.addLayout(intro_title_style_row)
 
+        intro_title_offset_row = QHBoxLayout()
+        intro_title_y_lbl = QLabel("Y Offset:")
+        intro_title_y_lbl.setObjectName("muted")
+        self.intro_title_y_offset_spin = QSpinBox()
+        self.intro_title_y_offset_spin.setRange(-500, 500)
+        self.intro_title_y_offset_spin.setValue(0)
+        self.intro_title_y_offset_spin.setSuffix(" px")
+        self.intro_title_y_offset_spin.setToolTip("Vertical Y-offset for intro title (-500 to +500 px)")
+        self.intro_title_y_offset_spin.valueChanged.connect(self._on_intro_param_changed)
+        intro_title_offset_row.addWidget(intro_title_y_lbl)
+        intro_title_offset_row.addWidget(self.intro_title_y_offset_spin, 1)
+        layout.addLayout(intro_title_offset_row)
+
         # Intro Logo Controls
         layout.addSpacing(4)
         intro_logo_sec = QLabel("INTRO LOGO")
@@ -1932,6 +2024,19 @@ class MainWindow(QMainWindow):
         intro_logo_row.addWidget(intro_logo_scale_lbl)
         intro_logo_row.addWidget(self.intro_logo_scale_spin, 1)
         layout.addLayout(intro_logo_row)
+
+        intro_logo_offset_row = QHBoxLayout()
+        intro_logo_y_lbl = QLabel("Y Offset:")
+        intro_logo_y_lbl.setObjectName("muted")
+        self.intro_logo_y_offset_spin = QSpinBox()
+        self.intro_logo_y_offset_spin.setRange(-500, 500)
+        self.intro_logo_y_offset_spin.setValue(0)
+        self.intro_logo_y_offset_spin.setSuffix(" px")
+        self.intro_logo_y_offset_spin.setToolTip("Vertical Y-offset for intro logo (-500 to +500 px)")
+        self.intro_logo_y_offset_spin.valueChanged.connect(self._on_intro_param_changed)
+        intro_logo_offset_row.addWidget(intro_logo_y_lbl)
+        intro_logo_offset_row.addWidget(self.intro_logo_y_offset_spin, 1)
+        layout.addLayout(intro_logo_offset_row)
 
         # Intro Watermark / Website Controls
         layout.addSpacing(4)
@@ -1979,6 +2084,19 @@ class MainWindow(QMainWindow):
         intro_web_op_row.addWidget(self.intro_website_opacity_slider, 1)
         intro_web_op_row.addWidget(self.intro_website_opacity_val)
         layout.addLayout(intro_web_op_row)
+
+        intro_web_offset_row = QHBoxLayout()
+        intro_web_y_lbl = QLabel("Y Offset:")
+        intro_web_y_lbl.setObjectName("muted")
+        self.intro_website_y_offset_spin = QSpinBox()
+        self.intro_website_y_offset_spin.setRange(-500, 500)
+        self.intro_website_y_offset_spin.setValue(0)
+        self.intro_website_y_offset_spin.setSuffix(" px")
+        self.intro_website_y_offset_spin.setToolTip("Vertical Y-offset for intro watermark (-500 to +500 px)")
+        self.intro_website_y_offset_spin.valueChanged.connect(self._on_intro_param_changed)
+        intro_web_offset_row.addWidget(intro_web_y_lbl)
+        intro_web_offset_row.addWidget(self.intro_website_y_offset_spin, 1)
+        layout.addLayout(intro_web_offset_row)
 
         layout.addSpacing(6)
         # Intro Audio (Prompt 11)
@@ -2338,13 +2456,16 @@ class MainWindow(QMainWindow):
             "intro_title_font_style": self.intro_title_style_combo.currentText() if hasattr(self, "intro_title_style_combo") else "Bold",
             "intro_title_font_size": self.intro_title_size_spin.value() if hasattr(self, "intro_title_size_spin") else 56,
             "intro_title_color": getattr(self, "intro_title_color", (255, 255, 255)),
+            "intro_title_y_offset": self.intro_title_y_offset_spin.value() if hasattr(self, "intro_title_y_offset_spin") else 0,
             "intro_logo_show": self.intro_logo_show_check.isChecked() if hasattr(self, "intro_logo_show_check") else True,
             "intro_logo_scale": round(self.intro_logo_scale_spin.value() / 100.0, 2) if hasattr(self, "intro_logo_scale_spin") else 1.0,
+            "intro_logo_y_offset": self.intro_logo_y_offset_spin.value() if hasattr(self, "intro_logo_y_offset_spin") else 0,
             "intro_website_show": self.intro_website_show_check.isChecked() if hasattr(self, "intro_website_show_check") else True,
             "intro_website_text": self.intro_website_edit.text().strip() if hasattr(self, "intro_website_edit") else "",
             "intro_website_font_size": self.intro_website_size_spin.value() if hasattr(self, "intro_website_size_spin") else 20,
             "intro_website_opacity": round(self.intro_website_opacity_slider.value() / 100.0, 2) if hasattr(self, "intro_website_opacity_slider") else 0.9,
             "intro_website_color": getattr(self, "intro_website_color", (204, 204, 204)),
+            "intro_website_y_offset": self.intro_website_y_offset_spin.value() if hasattr(self, "intro_website_y_offset_spin") else 0,
             "intro_blur_radius": self.intro_blur_spin.value() if hasattr(self, "intro_blur_spin") else 28,
             "intro_card_opacity": round(self.intro_card_opacity_slider.value() / 100.0, 2) if hasattr(self, "intro_card_opacity_slider") else 0.70,
             "resource_profile": self.resource_profile_combo.currentText() if hasattr(self, "resource_profile_combo") else "Balanced",
@@ -3432,6 +3553,9 @@ class MainWindow(QMainWindow):
                     website_color=intro_web_col,
                     blur_radius=intro_blur,
                     card_opacity=intro_card_op,
+                    logo_y_offset=int(self.intro_logo_y_offset_spin.value()) if hasattr(self, "intro_logo_y_offset_spin") else 0,
+                    title_y_offset=int(self.intro_title_y_offset_spin.value()) if hasattr(self, "intro_title_y_offset_spin") else 0,
+                    website_y_offset=int(self.intro_website_y_offset_spin.value()) if hasattr(self, "intro_website_y_offset_spin") else 0,
                 )
                 self._cached_intro_pixmap = QPixmap(card_path)
                 return self._cached_intro_pixmap
@@ -3892,6 +4016,43 @@ class MainWindow(QMainWindow):
         if not (self.background_path and is_video_file(self.background_path)):
             self._update_preview_visual_at_time(self._preview_current_time)
 
+    def _get_effective_preview_volume(self) -> float:
+        if getattr(self, "_preview_is_muted", False):
+            return 0.0
+        val = self.preview_volume_slider.value() if hasattr(self, "preview_volume_slider") else getattr(self, "_preview_volume", 70)
+        return max(0.0, min(1.0, float(val) / 100.0))
+
+    def _on_preview_volume_changed(self, value: int) -> None:
+        self._preview_volume = value
+        if value <= 0:
+            self._preview_is_muted = True
+            if hasattr(self, "preview_volume_btn"):
+                self.preview_volume_btn.setIcon(get_svg_icon("volume_mute", 13, "#edf2ee"))
+                self.preview_volume_btn.setToolTip("Unmute preview audio")
+        else:
+            self._preview_is_muted = False
+            if hasattr(self, "preview_volume_btn"):
+                self.preview_volume_btn.setIcon(get_svg_icon("volume_high", 13, "#edf2ee"))
+                self.preview_volume_btn.setToolTip("Mute preview audio")
+        if hasattr(self, "preview_volume_label"):
+            self.preview_volume_label.setText(f"{value}%")
+        if hasattr(self, "_preview_audio_output") and self._preview_audio_output:
+            self._preview_audio_output.setVolume(self._get_effective_preview_volume())
+
+    def _toggle_preview_mute(self) -> None:
+        if not hasattr(self, "preview_volume_slider"):
+            return
+        if getattr(self, "_preview_is_muted", False) or self.preview_volume_slider.value() == 0:
+            restore = getattr(self, "_preview_pre_mute_volume", 70)
+            if restore <= 0:
+                restore = 70
+            self._preview_is_muted = False
+            self.preview_volume_slider.setValue(restore)
+        else:
+            self._preview_pre_mute_volume = max(1, self.preview_volume_slider.value())
+            self._preview_is_muted = True
+            self.preview_volume_slider.setValue(0)
+
     def _sync_playback_state(self, time_sec: float, is_playing: bool) -> None:
         intro_enabled = (hasattr(self, "intro_enabled_check") and self.intro_enabled_check.isChecked())
         intro_dur = float(self.intro_dur_spin.value()) if (intro_enabled and hasattr(self, "intro_dur_spin")) else 0.0
@@ -3900,6 +4061,7 @@ class MainWindow(QMainWindow):
             self._preview_audio_player = QMediaPlayer(self)
             self._preview_audio_output = QAudioOutput(self)
             self._preview_audio_player.setAudioOutput(self._preview_audio_output)
+            self._preview_audio_output.setVolume(self._get_effective_preview_volume())
 
         if time_sec < intro_dur:
             self._preview_active_visual_idx = -1
@@ -3929,7 +4091,7 @@ class MainWindow(QMainWindow):
                 if fade_out > 0 and rem < fade_out:
                     v = min(v, max(0.0, rem / fade_out))
                 if self._preview_audio_output:
-                    self._preview_audio_output.setVolume(v)
+                    self._preview_audio_output.setVolume(v * self._get_effective_preview_volume())
             else:
                 if self._preview_audio_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
                     self._preview_audio_player.pause()
@@ -3961,7 +4123,7 @@ class MainWindow(QMainWindow):
                         self._preview_audio_current_track_idx = active_idx
                         self._preview_audio_player.setPosition(int(track_offset * 1000))
                         if self._preview_audio_output:
-                            self._preview_audio_output.setVolume(1.0)
+                            self._preview_audio_output.setVolume(self._get_effective_preview_volume())
                         if is_playing:
                             self._preview_audio_player.play()
                     else:
@@ -3970,7 +4132,7 @@ class MainWindow(QMainWindow):
                         if abs(cur_p - target_p) > 300:
                             self._preview_audio_player.setPosition(target_p)
                         if self._preview_audio_output:
-                            self._preview_audio_output.setVolume(1.0)
+                            self._preview_audio_output.setVolume(self._get_effective_preview_volume())
                         if is_playing and self._preview_audio_player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
                             self._preview_audio_player.play()
                 else:
@@ -4547,12 +4709,16 @@ class MainWindow(QMainWindow):
                 self.intro_title_edit.setText("")
             if hasattr(self, "intro_title_size_spin"):
                 self.intro_title_size_spin.setValue(56)
+            if hasattr(self, "intro_title_y_offset_spin"):
+                self.intro_title_y_offset_spin.setValue(0)
             self.intro_title_color = (255, 255, 255)
             self._update_intro_title_color_btn()
             if hasattr(self, "intro_logo_show_check"):
                 self.intro_logo_show_check.setChecked(True)
             if hasattr(self, "intro_logo_scale_spin"):
                 self.intro_logo_scale_spin.setValue(100)
+            if hasattr(self, "intro_logo_y_offset_spin"):
+                self.intro_logo_y_offset_spin.setValue(0)
             if hasattr(self, "intro_website_show_check"):
                 self.intro_website_show_check.setChecked(True)
             if hasattr(self, "intro_website_edit"):
@@ -4561,6 +4727,8 @@ class MainWindow(QMainWindow):
                 self.intro_website_size_spin.setValue(20)
             if hasattr(self, "intro_website_opacity_slider"):
                 self.intro_website_opacity_slider.setValue(90)
+            if hasattr(self, "intro_website_y_offset_spin"):
+                self.intro_website_y_offset_spin.setValue(0)
             self.intro_website_color = (204, 204, 204)
             self._update_intro_website_color_btn()
             if hasattr(self, "intro_blur_spin"):
@@ -4980,6 +5148,8 @@ class MainWindow(QMainWindow):
                 _set_combo_case_insensitive(self.intro_title_style_combo, tmpl["intro_title_font_style"])
         if "intro_title_font_size" in tmpl and hasattr(self, "intro_title_size_spin"):
             self.intro_title_size_spin.setValue(int(tmpl["intro_title_font_size"]))
+        if "intro_title_y_offset" in tmpl and hasattr(self, "intro_title_y_offset_spin"):
+            self.intro_title_y_offset_spin.setValue(int(tmpl["intro_title_y_offset"]))
         if "intro_title_color" in tmpl:
             raw_itc = tmpl["intro_title_color"]
             self.intro_title_color = tuple(raw_itc) if isinstance(raw_itc, (list, tuple)) else raw_itc
@@ -4988,6 +5158,8 @@ class MainWindow(QMainWindow):
             self.intro_logo_show_check.setChecked(bool(tmpl["intro_logo_show"]))
         if "intro_logo_scale" in tmpl and hasattr(self, "intro_logo_scale_spin"):
             self.intro_logo_scale_spin.setValue(int(round(float(tmpl["intro_logo_scale"]) * 100)))
+        if "intro_logo_y_offset" in tmpl and hasattr(self, "intro_logo_y_offset_spin"):
+            self.intro_logo_y_offset_spin.setValue(int(tmpl["intro_logo_y_offset"]))
         if "intro_website_show" in tmpl and hasattr(self, "intro_website_show_check"):
             self.intro_website_show_check.setChecked(bool(tmpl["intro_website_show"]))
         if "intro_website_font_size" in tmpl and hasattr(self, "intro_website_size_spin"):
@@ -4998,6 +5170,8 @@ class MainWindow(QMainWindow):
             raw_iwc = tmpl["intro_website_color"]
             self.intro_website_color = tuple(raw_iwc) if isinstance(raw_iwc, (list, tuple)) else raw_iwc
             self._update_intro_website_color_btn()
+        if "intro_website_y_offset" in tmpl and hasattr(self, "intro_website_y_offset_spin"):
+            self.intro_website_y_offset_spin.setValue(int(tmpl["intro_website_y_offset"]))
         if "intro_blur_radius" in tmpl and hasattr(self, "intro_blur_spin"):
             self.intro_blur_spin.setValue(int(tmpl["intro_blur_radius"]))
         if "intro_card_opacity" in tmpl and hasattr(self, "intro_card_opacity_slider"):
@@ -5296,6 +5470,12 @@ class MainWindow(QMainWindow):
             raw_iwc = data.get("intro_website_color", (204, 204, 204))
             self.intro_website_color = tuple(raw_iwc) if isinstance(raw_iwc, (list, tuple)) else raw_iwc
             self._update_intro_website_color_btn()
+            if hasattr(self, "intro_title_y_offset_spin") and "intro_title_y_offset" in data:
+                self.intro_title_y_offset_spin.setValue(int(data.get("intro_title_y_offset", 0) or 0))
+            if hasattr(self, "intro_logo_y_offset_spin") and "intro_logo_y_offset" in data:
+                self.intro_logo_y_offset_spin.setValue(int(data.get("intro_logo_y_offset", 0) or 0))
+            if hasattr(self, "intro_website_y_offset_spin") and "intro_website_y_offset" in data:
+                self.intro_website_y_offset_spin.setValue(int(data.get("intro_website_y_offset", 0) or 0))
             if hasattr(self, "sfx_check"):
                 self.sfx_check.setChecked(bool(data.get("transition_sfx_enabled", False)))
                 sfx_vol = int(float(data.get("transition_sfx_volume", 0.7) if data.get("transition_sfx_volume") is not None else 0.7) * 100)
