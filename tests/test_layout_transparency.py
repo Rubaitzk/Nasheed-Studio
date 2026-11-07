@@ -308,8 +308,8 @@ class TestLayoutAndTransparency(unittest.TestCase):
         img_intro_100 = Image.open(intro_100).convert("RGBA")
         self.assertEqual(img_intro_0.split()[3].getextrema(), (255, 255))
         self.assertEqual(img_intro_100.split()[3].getextrema(), (255, 255))
-        self.assertNotEqual(img_intro_0.crop((800, 920, 1120, 980)).tobytes(),
-                            img_intro_100.crop((800, 920, 1120, 980)).tobytes())
+        self.assertNotEqual(img_intro_0.crop((800, 750, 1120, 850)).tobytes(),
+                            img_intro_100.crop((800, 750, 1120, 850)).tobytes())
 
     def test_logo_and_cursor_transparency_cleanup_genuine_alpha(self):
         """clean_logo_image preserves genuine partial alpha transparency & antialiasing via ImageChops.multiply."""

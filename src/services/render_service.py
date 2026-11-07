@@ -116,7 +116,8 @@ def build_render_command(
     track_font_style = project.get("track_font_style", "Bold")
     track_font_size = int(project.get("track_font_size", 22) or 22)
     logo_position = project.get("logo_position", "Bottom-Right")
-    website_text = project.get("website_text", "")
+    raw_web_txt = project.get("website_text", "")
+    website_text = raw_web_txt.strip() if (raw_web_txt and isinstance(raw_web_txt, str)) else ""
     website_position = project.get("website_position", "Top-Right")
     website_font_size = int(project.get("website_font_size", 18) or 18)
     website_show = bool(project.get("website_show", True) if "website_show" in project else True)
@@ -140,6 +141,7 @@ def build_render_command(
     nominal_out = Path(project.get("output_path") or "nasheed_collection.mp4").expanduser().resolve()
     effective_out = Path(target_path).expanduser().resolve() if target_path is not None else nominal_out
     effective_out.parent.mkdir(parents=True, exist_ok=True)
+    work_dir = Path(work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
 
     if progress_callback:
@@ -154,6 +156,8 @@ def build_render_command(
     playlist_y_offset = int(project.get("playlist_y_offset", 0) or 0)
     playlist_width_ratio = float(project.get("playlist_width_ratio", 0.47) or 0.47)
     playlist_columns = int(project.get("playlist_columns", 1) or 1)
+    playlist_column_distribution_mode = project.get("playlist_column_distribution_mode") or project.get("column_distribution_mode", "auto")
+    playlist_column_distribution = project.get("playlist_column_distribution") or project.get("column_distribution", "")
     playlist_row_spacing = float(project.get("playlist_row_spacing", 1.85) or 1.85)
     playlist_bg_opacity = float(project.get("playlist_bg_opacity", 0.0) if project.get("playlist_bg_opacity") is not None else 0.0)
     playlist_bg_color = project.get("playlist_bg_color", (0, 0, 0))
@@ -210,11 +214,15 @@ def build_render_command(
         website_font_family=website_font_family,
         website_font_style=website_font_style,
         website_color=website_color,
+        website_x_offset=int(project.get("website_x_offset", 0) or 0),
+        website_y_offset=int(project.get("website_y_offset", 0) or 0),
         playlist_position=playlist_position,
         playlist_x_offset=playlist_x_offset,
         playlist_y_offset=playlist_y_offset,
         playlist_width_ratio=playlist_width_ratio,
         playlist_columns=playlist_columns,
+        playlist_column_distribution_mode=playlist_column_distribution_mode,
+        playlist_column_distribution=playlist_column_distribution,
         playlist_row_spacing=playlist_row_spacing,
         playlist_col_spacing=project.get("playlist_col_spacing", None),
         track_max_chars=int(project.get("track_max_chars", 0) or 0),
@@ -223,6 +231,8 @@ def build_render_command(
         playlist_bg_radius=playlist_bg_radius,
         track_wrap_text=track_wrap_text,
         title_position=title_position,
+        title_x_offset=int(project.get("title_x_offset", 0) or 0),
+        title_y_offset=int(project.get("title_y_offset", 0) or 0),
         title_margin=title_margin,
         title_show=title_show,
         title_color=title_color,
@@ -239,6 +249,8 @@ def build_render_command(
         highlight_bg_opacity=highlight_bg_opacity,
         logo_cleanup_mode=logo_cleanup_mode,
         logo_scale=logo_scale,
+        logo_x_offset=int(project.get("logo_x_offset", 0) or 0),
+        logo_y_offset=int(project.get("logo_y_offset", 0) or 0),
         video_start_time=video_start_time,
         video_fit_mode=video_fit_mode,
         title_playlist_spacing=project.get("title_playlist_spacing", 40),
@@ -253,6 +265,7 @@ def build_render_command(
         highlight_padding_x=(int(project["highlight_padding_x"]) if project.get("highlight_padding_x") is not None else None),
         highlight_padding_y=(int(project["highlight_padding_y"]) if project.get("highlight_padding_y") is not None else None),
         highlight_opacity=float(project.get("highlight_opacity", 1.0) if project.get("highlight_opacity") is not None else 1.0),
+        cursor_x_offset=int(project.get("cursor_x_offset", 0) or 0),
         cursor_y_offset=int(project.get("cursor_y_offset", 0) or 0),
         highlight_y_offset=int(project.get("highlight_y_offset", 0) or 0),
     )
@@ -291,24 +304,49 @@ def build_render_command(
     intro_input_idx = None
     intro_bg_input_idx = None
     if intro_enabled:
+        intro_title_txt = project.get("intro_title_text") or project.get("collection_title") or "Nasheed Collection"
+        intro_title_sz = int(project.get("intro_title_font_size", 56) or 56)
+        intro_title_fam = project.get("intro_title_font_family") or title_font_family
+        intro_title_style = project.get("intro_title_font_style") or title_font_style
+        intro_title_col = project.get("intro_title_color")
+        intro_logo_show = bool(project.get("intro_logo_show", True) if "intro_logo_show" in project else True)
+        intro_logo_sc = float(project.get("intro_logo_scale", 1.0) if project.get("intro_logo_scale") is not None else 1.0)
+        intro_web_show = bool(project.get("intro_website_show", True) if "intro_website_show" in project else True)
+        raw_intro_web_txt = project.get("intro_website_text")
+        intro_custom_txt = raw_intro_web_txt.strip() if (raw_intro_web_txt and isinstance(raw_intro_web_txt, str)) else ""
+        intro_web_txt = intro_custom_txt or (website_text if intro_web_show else "")
+        intro_web_sz = int(project.get("intro_website_font_size", 20) or 20)
+        intro_web_op = float(project.get("intro_website_opacity", 0.9) if project.get("intro_website_opacity") is not None else 0.9)
+        intro_web_col = project.get("intro_website_color")
+        intro_blur = int(project.get("intro_blur_radius", 28) or 28)
+        intro_card_op = float(project.get("intro_card_opacity", 0.70) if project.get("intro_card_opacity") is not None else 0.70)
+
         intro_card = create_intro_card(
             width=width,
             height=height,
             background_path=bg,
-            logo_path=logo,
-            collection_title=project.get("collection_title") or "Nasheed Collection",
+            logo_path=logo if intro_logo_show else None,
+            collection_title=intro_title_txt,
             template=project.get("template", "Cinematic"),
             out_dir=str(work_dir),
-            title_font_family=title_font_family,
-            title_font_style=title_font_style,
-            title_font_size=title_font_size,
-            website_text=website_text,
-            website_show=website_show,
-            website_opacity=website_opacity,
-            website_font_size=website_font_size,
-            website_font_family=website_font_family,
-            website_font_style=website_font_style,
-            website_color=website_color,
+            title_font_family=intro_title_fam,
+            title_font_style=intro_title_style,
+            title_font_size=intro_title_sz,
+            title_color=intro_title_col,
+            logo_show=intro_logo_show,
+            logo_scale=intro_logo_sc,
+            website_text=intro_web_txt,
+            website_show=intro_web_show,
+            website_opacity=intro_web_op,
+            website_font_size=intro_web_sz,
+            website_font_family=project.get("website_font_family") or intro_title_fam,
+            website_font_style=project.get("website_font_style", "Regular"),
+            website_color=intro_web_col or website_color,
+            blur_radius=intro_blur,
+            card_opacity=intro_card_op,
+            logo_y_offset=int(project.get("intro_logo_y_offset", 0) or 0),
+            title_y_offset=int(project.get("intro_title_y_offset", 0) or 0),
+            website_y_offset=int(project.get("intro_website_y_offset", 0) or 0),
         )
         intro_bg_file = Path(work_dir) / "intro_bg.png"
         intro_overlay_file = Path(work_dir) / "intro_overlay.png"
@@ -324,6 +362,26 @@ def build_render_command(
             command += ["-loop", "1", "-framerate", "30", "-i", intro_card]
             intro_input_idx = current_input_idx
             current_input_idx += 1
+
+    # Intro Audio Input (Prompt 11)
+    intro_audio_path = project.get("intro_audio_path", "")
+    intro_fade_in = float(project.get("intro_audio_fade_in", 0.5) if project.get("intro_audio_fade_in") is not None else 0.5)
+    intro_fade_out = float(project.get("intro_audio_fade_out", 0.5) if project.get("intro_audio_fade_out") is not None else 0.5)
+    has_valid_intro_audio = False
+    intro_audio_input_idx = None
+    if intro_enabled and intro_audio_path and Path(intro_audio_path).is_file():
+        try:
+            from .media_probe import get_duration
+            dur = get_duration(intro_audio_path)
+            if dur > 0:
+                has_valid_intro_audio = True
+        except Exception:
+            has_valid_intro_audio = False
+
+    if intro_enabled and has_valid_intro_audio:
+        command += ["-i", str(intro_audio_path)]
+        intro_audio_input_idx = current_input_idx
+        current_input_idx += 1
 
     # Audio Tracks
     track_input_indices = []
@@ -374,7 +432,7 @@ def build_render_command(
         # 1. Stationary dimmed background wash to conceal playlist tracks during intro
         if intro_bg_input_idx is not None:
             filters.append(
-                f"[{intro_bg_input_idx}:v]trim=duration={intro_dur:.3f},"
+                f"[{intro_bg_input_idx}:v]trim=duration={intro_dur:.3f},format=rgba,"
                 f"fade=t=out:st={intro_out_st:.3f}:d={intro_fade_d:.3f}:alpha=1[intro_bg_fx]"
             )
             filters.append(
@@ -443,11 +501,39 @@ def build_render_command(
 
     concat_inputs = []
     if intro_enabled:
-        # Prepend exact silence during intro
-        filters.append(
-            f"anullsrc=channel_layout=stereo:sample_rate=44100,atrim=duration={intro_dur:.3f}[a_intro_silence]"
-        )
-        concat_inputs.append("[a_intro_silence]")
+        if has_valid_intro_audio and intro_audio_input_idx is not None:
+            # Handle invalid/extreme fade durations safely
+            fade_in = max(0.0, float(intro_fade_in))
+            fade_out = max(0.0, float(intro_fade_out))
+            if fade_in + fade_out > intro_dur:
+                if fade_in + fade_out > 0:
+                    scale = intro_dur / (fade_in + fade_out)
+                    fade_in *= scale
+                    fade_out *= scale
+                else:
+                    fade_in = 0.0
+                    fade_out = 0.0
+            fade_out_st = max(0.0, intro_dur - fade_out)
+
+            intro_filter_chain = [
+                f"[{intro_audio_input_idx}:a:0]asetpts=PTS-STARTPTS",
+                f"apad=whole_dur={intro_dur:.3f}",
+                f"atrim=0:{intro_dur:.3f}",
+            ]
+            if fade_in > 0:
+                intro_filter_chain.append(f"afade=t=in:st=0:d={fade_in:.3f}")
+            if fade_out > 0:
+                intro_filter_chain.append(f"afade=t=out:st={fade_out_st:.3f}:d={fade_out:.3f}")
+            intro_filter_chain.append("aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a_intro_prep]")
+
+            filters.append(",".join(intro_filter_chain))
+            concat_inputs.append("[a_intro_prep]")
+        else:
+            # Prepend exact silence during intro (Prompt 11 default)
+            filters.append(
+                f"anullsrc=channel_layout=stereo:sample_rate=44100,atrim=duration={intro_dur:.3f}[a_intro_silence]"
+            )
+            concat_inputs.append("[a_intro_silence]")
 
     for i in range(len(tracks)):
         concat_inputs.append(f"[a_norm_{i}]")

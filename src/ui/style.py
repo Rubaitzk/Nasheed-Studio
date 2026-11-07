@@ -101,7 +101,7 @@ QLabel#muted {
 }
 QLabel#subtle {
     color: #66756b;
-    font-size: 8.5pt;
+    font-size: 8pt;
 }
 QLabel#unsaved_pill {
     background: #332617;
@@ -124,7 +124,7 @@ QLabel#saved_pill {
 }
 QLabel#warning {
     color: #f2ba49;
-    font-size: 8.5pt;
+    font-size: 8pt;
     font-weight: 500;
     padding: 6px 10px;
     background: #2a251a;
@@ -184,6 +184,47 @@ QLineEdit:hover, QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover {
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {
     border: 1px solid #3d8b58;
     background: #232c26;
+}
+QSpinBox, QDoubleSpinBox {
+    padding-left: 6px;
+    padding-right: 20px;
+}
+QSpinBox::up-button, QDoubleSpinBox::up-button {
+    subcontrol-origin: border;
+    subcontrol-position: top right;
+    width: 18px;
+    border-left: 1px solid #344037;
+    border-bottom: 1px solid #344037;
+    background: #252e27;
+    border-top-right-radius: 5px;
+}
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover {
+    background: #334036;
+}
+QSpinBox::down-button, QDoubleSpinBox::down-button {
+    subcontrol-origin: border;
+    subcontrol-position: bottom right;
+    width: 18px;
+    border-left: 1px solid #344037;
+    background: #252e27;
+    border-bottom-right-radius: 5px;
+}
+QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
+    background: #334036;
+}
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
+    width: 0;
+    height: 0;
+    border-left: 3px solid transparent;
+    border-right: 3px solid transparent;
+    border-bottom: 4px solid #95a399;
+}
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
+    width: 0;
+    height: 0;
+    border-left: 3px solid transparent;
+    border-right: 3px solid transparent;
+    border-top: 4px solid #95a399;
 }
 QComboBox::drop-down {
     subcontrol-origin: padding;
@@ -410,9 +451,9 @@ QTabBar::tab {
     border-bottom: none;
     border-top-left-radius: 6px;
     border-top-right-radius: 6px;
-    padding: 6px 12px;
-    margin-right: 3px;
-    font-size: 8.5pt;
+    padding: 5px 6px;
+    margin-right: 2px;
+    font-size: 8pt;
     font-weight: 500;
 }
 QTabBar::tab:hover {
@@ -440,7 +481,7 @@ QProgressBar {
     background: #1c221e;
     text-align: center;
     color: #edf2ee;
-    font-size: 8.5pt;
+    font-size: 8pt;
     height: 18px;
 }
 QProgressBar::chunk {
@@ -495,6 +536,30 @@ QScrollArea {
     border: none;
     background: transparent;
 }
+QScrollBar:vertical {
+    border: none;
+    background: #141915;
+    width: 8px;
+    margin: 0px;
+    border-radius: 4px;
+}
+QScrollBar::handle:vertical {
+    background: #2a352d;
+    min-height: 24px;
+    border-radius: 4px;
+}
+QScrollBar::handle:vertical:hover {
+    background: #3d8b58;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0px;
+    background: none;
+    border: none;
+}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+    background: none;
+}
+
 QMenuBar {
     background: #161c18;
     color: #edf2ee;

@@ -1,36 +1,71 @@
+# Virtual Environment
 .venv/
+env/
+venv/
+ENV/
+
+# Python bytecode & caches
 __pycache__/
 *.py[cod]
-*.mp4
-*_render_work/
-.DS_Store
+*$py.class
 .pytest_cache/
+
+# Media and assets (per repository cleanliness requirements)
+*.mp4
+*.mp3
+*.wav
+*.aac
+*.flac
+*.ogg
+*.m4a
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.ico
+*.bmp
+*.webp
+*.tiff
+assets/
+user_templates/
+Documentation/
+
+# Build artifacts & packages
 build/
-*.spec
-scratch/
 dist/
+final_deliverable/
+final_delivery_proof/
+release_build/
+release_build_log.txt
+*.spec
+!nasheed_studio.spec
+
+# Evidence, screenshots, and visual verification artifacts
+hope/
+visual_confirmations/
+client_screenshots_after_deliver/
+highlight_misplaced_to_text/
+mp4_proof/
 screenshots/
-reference/
-tools/*.exe
-*.exe
-*.zip
-*.tar.gz
+scratch/
 video_proof_of_template_not_loading/
 picture_of_video_playlist_display/
 pictur e_of_video_playlist_display/
 picture_for_improving_layout/
 last_improvements/
-final_deliverable/
-release_build/
-release_build_log.txt
-Gemini conversation-*.md
+reference/
+
+# Render work directories & logs
+*_render_work/
 *.log
-assets/*.png
-assets/*.jpg
-assets/*.jpeg
-assets/*.mp3
-mp4_proof/
-tests/test_final_pass_features.py
-tests/test_ui_adjusters_and_colors.py
-tests/test_user_templates_and_indicators.py
-tests/test_video_background.py
+
+# Executables & archives
+tools/*.exe
+*.exe
+*.zip
+*.tar.gz
+
+# System files & raw conversation dumps
+.DS_Store
+Thumbs.db
+Gemini conversation-*.md

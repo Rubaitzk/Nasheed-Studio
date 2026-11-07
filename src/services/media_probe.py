@@ -217,16 +217,27 @@ def get_video_info(path: str | Path) -> dict:
     return info
 
 
+_VIDEO_FRAME_CACHE: dict[tuple[str, float, int], Image.Image] = {}
+
+def clear_video_frame_cache() -> None:
+    """Clear in-memory cached video frames."""
+    _VIDEO_FRAME_CACHE.clear()
+
 def extract_video_frame(video_path: str | Path, timestamp: float = 0.0) -> Image.Image:
     """
     Extract a single representative video frame as a PIL Image at the given timestamp.
-    Uses ffmpeg image2 pipe to avoid heavy video decoding dependencies.
+    Caches extracted frames in memory to eliminate repeated subprocess overhead.
     """
     p = Path(video_path)
     if not p.is_file():
         raise FileNotFoundError(f"Video file not found: {video_path}")
 
-    ts = max(0.0, float(timestamp or 0.0))
+    ts = round(max(0.0, float(timestamp or 0.0)), 2)
+    mtime = int(p.stat().st_mtime) if p.exists() else 0
+    cache_key = (str(p.resolve()), ts, mtime)
+    if cache_key in _VIDEO_FRAME_CACHE:
+        return _VIDEO_FRAME_CACHE[cache_key].copy()
+
     command = [
         find_tool("ffmpeg"),
         "-y",
@@ -241,6 +252,10 @@ def extract_video_frame(video_path: str | Path, timestamp: float = 0.0) -> Image
     result = run_tracked_subprocess(command, capture_output=True, text=False, check=True, timeout=60)
     if not result.stdout:
         raise ValueError(f"Failed to extract frame from {video_path} at {ts:.3f}s")
-    return Image.open(io.BytesIO(result.stdout)).convert("RGB")
+    img = Image.open(io.BytesIO(result.stdout)).convert("RGB")
+    if len(_VIDEO_FRAME_CACHE) >= 24:
+        _VIDEO_FRAME_CACHE.pop(next(iter(_VIDEO_FRAME_CACHE)))
+    _VIDEO_FRAME_CACHE[cache_key] = img
+    return img.copy()
 
 

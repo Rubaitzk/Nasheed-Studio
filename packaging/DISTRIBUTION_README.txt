@@ -1,9 +1,9 @@
 ========================================================================
-                      NASHEED STUDIO - PORTABLE EDITION
+                      NCN STUDIO - PORTABLE EDITION
                     Professional Nasheed Video Automation
 ========================================================================
 
-Welcome to Nasheed Studio!
+Welcome to NCN Studio!
 This is a standalone Windows desktop application designed to create
 high-definition Islamic Nasheed collection videos with customized
 typography, active-track indicators, smooth animations, and audio transitions.
@@ -12,14 +12,14 @@ typography, active-track indicators, smooth animations, and audio transitions.
 NO PYTHON INSTALLATION REQUIRED
 ------------------------------------------------------------------------
 This package contains a fully self-contained runtime including:
-- Standalone Windows Executable: "Nasheed Studio.exe"
+- Standalone Windows Executable: "NCN Studio.exe"
 - Bundled FFmpeg and FFprobe media processing engine (located in tools/)
 - Embedded UI graphics, typography engines, and default presets
 
 ------------------------------------------------------------------------
 HOW TO RUN
 ------------------------------------------------------------------------
-1. Double-click "Nasheed Studio.exe" in this folder.
+1. Double-click "NCN Studio.exe" in this folder.
 2. The studio interface will open immediately.
 
 ------------------------------------------------------------------------

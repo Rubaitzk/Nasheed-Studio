@@ -1,5 +1,5 @@
 """
-Main application window for Nasheed Studio.
+Main application window for NCN Studio.
 
 Stage 2 Architecture
 --------------------
@@ -23,20 +23,23 @@ Stage 2 Architecture
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import subprocess
 import sys
+import time
 import tempfile
 import uuid
 from pathlib import Path
 from typing import Any, Optional, Union
 
 from PySide6.QtCore import Qt, Signal, QObject, QTimer, QSettings, QEvent, QSize, QUrl
-from PySide6.QtGui import QPixmap, QAction, QIcon, QDragEnterEvent, QDropEvent, QColor, QPainter, QImage
-from PySide6.QtMultimedia import QMediaPlayer, QVideoSink
+from PySide6.QtGui import QPixmap, QAction, QIcon, QDragEnterEvent, QDropEvent, QColor, QPainter, QImage, QKeySequence, QShortcut, QKeyEvent
+from PySide6.QtMultimedia import QMediaPlayer, QVideoSink, QAudioOutput
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QTextEdit, QPlainTextEdit, QAbstractSpinBox,
     QFileDialog, QListWidget, QListWidgetItem, QLineEdit, QComboBox,
     QFormLayout, QSplitter, QMessageBox, QProgressBar, QFrame, QAbstractItemView,
     QToolButton, QInputDialog, QSizePolicy, QSpinBox, QScrollArea, QCheckBox,
@@ -64,6 +67,7 @@ from src.services.project_service import (
     load_template, apply_template_to_project, check_missing_assets,
 )
 from src.ui.icons import get_svg_icon, get_svg_pixmap
+from src.ui.branding import application_icon
 from src.ui.style import STYLE, TOKENS
 
 
@@ -175,6 +179,7 @@ class PlaylistListWidget(QListWidget):
         self.setItemDelegate(PlaylistDelegate(self))
         self.setAcceptDrops(True)
         self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls():
@@ -204,11 +209,70 @@ class PlaylistListWidget(QListWidget):
         super().dropEvent(event)
 
     def keyPressEvent(self, event) -> None:
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            self.main_window.remove_track()
+            event.accept()
+            return
+        if event.key() == Qt.Key.Key_O and (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            self.main_window.add_tracks()
+            event.accept()
+            return
+        if event.key() == Qt.Key.Key_I and (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            self.main_window.add_tracks()
+            event.accept()
+            return
         if event.key() == Qt.Key.Key_F2:
             self.main_window._on_rename_track_clicked()
             event.accept()
             return
+        if event.key() == Qt.Key.Key_Up and (event.modifiers() & Qt.KeyboardModifier.AltModifier):
+            self.main_window.move_track(-1)
+            event.accept()
+            return
+        if event.key() == Qt.Key.Key_Down and (event.modifiers() & Qt.KeyboardModifier.AltModifier):
+            self.main_window.move_track(1)
+            event.accept()
+            return
+        if event.key() == Qt.Key.Key_Space:
+            if hasattr(self.main_window, "_toggle_intro_preview"):
+                self.main_window._toggle_intro_preview()
+                event.accept()
+                return
         super().keyPressEvent(event)
+
+
+class InspectorFocusWheelFilter(QObject):
+    """
+    Prevents accidental changes to inspector controls (spinboxes, sliders, combo boxes)
+    during passive mouse-wheel scrolling. When unfocused, wheel events scroll the enclosing
+    QScrollArea instead of modifying values. Clicking or focusing a control explicitly
+    enables mouse-wheel value adjustments for that control.
+    """
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.Wheel and isinstance(obj, QWidget):
+            is_focused = obj.hasFocus()
+            if not is_focused and hasattr(obj, "findChildren"):
+                is_focused = any(c.hasFocus() for c in obj.findChildren(QWidget))
+            if not is_focused:
+                scroll_area = self._find_scroll_area(obj)
+                if scroll_area:
+                    vsb = scroll_area.verticalScrollBar()
+                    delta = event.angleDelta().y()
+                    step = vsb.singleStep() * 3 if vsb.singleStep() > 0 else 60
+                    if delta > 0:
+                        vsb.setValue(vsb.value() - step)
+                    elif delta < 0:
+                        vsb.setValue(vsb.value() + step)
+                return True
+        return False
+
+    def _find_scroll_area(self, widget: QWidget) -> Optional[QScrollArea]:
+        curr = widget.parent()
+        while curr:
+            if isinstance(curr, QScrollArea):
+                return curr
+            curr = curr.parent()
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +282,10 @@ class PlaylistListWidget(QListWidget):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Nasheed Studio · Playlist Video Automation")
+        self.setWindowTitle("NCN Studio · Playlist Video Automation")
+        icon = application_icon()
+        if not icon.isNull():
+            self.setWindowIcon(icon)
         self.resize(1440, 900)
         self.setMinimumSize(1120, 720)
 
@@ -232,10 +299,30 @@ class MainWindow(QMainWindow):
         self._video_player: Optional[QMediaPlayer] = None
         self._video_sink: Optional[QVideoSink] = None
         self._is_preview_playing = False
+        self._preview_current_time = 0.0
+        self._preview_timeline_timer = QTimer(self)
+        self._preview_timeline_timer.setInterval(100)
+        self._preview_timeline_timer.timeout.connect(self._on_preview_timeline_tick)
+        self._preview_audio_player: Optional[QMediaPlayer] = None
+        self._preview_audio_output: Optional[QAudioOutput] = None
+        self._preview_volume: int = 70
+        self._preview_pre_mute_volume: int = 70
+        self._preview_is_muted: bool = False
+        self._preview_audio_current_src: str = ""
+        self._preview_audio_current_track_idx: Optional[int] = None
+        self._cached_composition_pixmaps: list[QPixmap] = []
+        self._cached_video_overlays: list[QPixmap] = []
+        self._cached_intro_pixmap: Optional[QPixmap] = None
+        self._preview_active_visual_idx: int = 0
+        self._preview_user_seeking: bool = False
+        self._last_playback_tick: float = 0.0
         self._current_overlay_pixmap: Optional[QPixmap] = None
         self.logo_path = ""
         self.cursor_path = ""
         self.sfx_path = ""
+        self.intro_audio_path = ""
+        self._intro_audio_player: Optional[QMediaPlayer] = None
+        self._intro_audio_output: Optional[QAudioOutput] = None
         self.highlight_color = (248, 220, 139)
         self.title_color = (255, 255, 255)
         self.track_color = (255, 255, 255)
@@ -244,6 +331,9 @@ class MainWindow(QMainWindow):
         self.website_font_family: Optional[str] = None
         self.website_font_style: str = "Regular"
         self.website_color = None
+        self.intro_title_color = (255, 255, 255)
+        self.intro_website_color = (204, 204, 204)
+        self._last_video_frame_time = 0.0
         self._previewing_intro = False
         self.tracks: list[dict] = []
         self.project_path = ""
@@ -254,7 +344,7 @@ class MainWindow(QMainWindow):
         self._is_closing = False
         self._recent_menu: Optional[QMenu] = None
         self._committed_title = "Abu Ali Nasheeds Collection"
-        self._last_inspector_width = 320
+        self._last_inspector_width = 390
 
         # Preview cache
         self._cached_preview_key = None
@@ -281,11 +371,26 @@ class MainWindow(QMainWindow):
 
         clean_stale_temp_dirs()
         self._build_ui()
+        self._refresh_system_fonts(initial=True)
         self._update_highlight_color_btn()
         self._update_title_color_btn()
         self._update_track_color_btn()
+        self._update_website_color_btn()
+        self._update_intro_title_color_btn()
+        self._update_intro_website_color_btn()
         self._update_project_ui_indicators()
         self._refresh_preview()
+
+        # Undo / Redo engine state
+        self._undo_stack: list[dict] = [copy.deepcopy(self._project())]
+        self._redo_stack: list[dict] = []
+        self._max_undo_depth = 50
+        self._undoing_or_redoing = False
+        self._undo_timer = QTimer(self)
+        self._undo_timer.setSingleShot(True)
+        self._undo_timer.setInterval(300)
+        self._undo_timer.timeout.connect(self._push_undo_snapshot)
+        self._update_undo_redo_actions()
 
     # ------------------------------------------------------------------
     # UI construction
@@ -315,7 +420,7 @@ class MainWindow(QMainWindow):
         brand_icon.setPixmap(get_svg_pixmap("app", 20, "#3d8b58"))
         tbl.addWidget(brand_icon)
 
-        title_lbl = QLabel("Nasheed Studio")
+        title_lbl = QLabel("NCN Studio")
         title_lbl.setObjectName("app_title")
         tbl.addWidget(title_lbl)
 
@@ -446,38 +551,55 @@ class MainWindow(QMainWindow):
         self.track_list.currentRowChanged.connect(self._on_track_row_changed)
         pl_layout.addWidget(self.track_list, 1)
 
-        # Action Buttons: Add, Remove, Move Up, Move Down
+        # Action Buttons: Add Audio, Edit Title, Remove, Move Up, Move Down
         btn_row = QHBoxLayout()
         btn_row.setSpacing(6)
-        self.add_tracks_btn = QPushButton("Add audio")
-        self.add_tracks_btn.setIcon(get_svg_icon("add", 13, "#edf2ee"))
-        self.add_tracks_btn.setToolTip("Add audio files (MP3, WAV, M4A, AAC, FLAC)")
+
+        self.add_tracks_btn = QPushButton()
+        self.add_tracks_btn.setIcon(get_svg_icon("add", 16, "#edf2ee"))
+        self.add_tracks_btn.setIconSize(QSize(16, 16))
+        self.add_tracks_btn.setToolTip("Add Audio (Ctrl+Shift+O / Ctrl+I) — Add audio files (MP3, WAV, M4A, AAC, FLAC)")
+        self.add_tracks_btn.setAccessibleName("Add Audio")
+        self.add_tracks_btn.setAccessibleDescription("Add audio files to the playlist")
         self.add_tracks_btn.clicked.connect(self.add_tracks)
 
-        self.rename_track_btn = QPushButton("Edit title")
-        self.rename_track_btn.setIcon(get_svg_icon("edit", 13, "#edf2ee"))
-        self.rename_track_btn.setToolTip("Rename / adjust selected nasheed title (F2)")
+        self.rename_track_btn = QPushButton()
+        self.rename_track_btn.setIcon(get_svg_icon("edit", 16, "#edf2ee"))
+        self.rename_track_btn.setIconSize(QSize(16, 16))
+        self.rename_track_btn.setToolTip("Edit Title (F2) — Rename or adjust selected nasheed title")
+        self.rename_track_btn.setAccessibleName("Edit Title")
+        self.rename_track_btn.setAccessibleDescription("Rename or edit selected nasheed title")
         self.rename_track_btn.clicked.connect(self._on_rename_track_clicked)
 
-        self.remove_track_btn = QPushButton("Remove")
-        self.remove_track_btn.setIcon(get_svg_icon("remove", 13, "#edf2ee"))
+        self.remove_track_btn = QPushButton()
+        self.remove_track_btn.setIcon(get_svg_icon("remove", 16, "#edf2ee"))
+        self.remove_track_btn.setIconSize(QSize(16, 16))
+        self.remove_track_btn.setToolTip("Remove (Delete / Backspace) — Remove selected track(s) from playlist")
+        self.remove_track_btn.setAccessibleName("Remove")
+        self.remove_track_btn.setAccessibleDescription("Remove selected track from playlist")
         self.remove_track_btn.clicked.connect(self.remove_track)
 
         self.up_btn = QPushButton()
-        self.up_btn.setIcon(get_svg_icon("up", 13, "#edf2ee"))
-        self.up_btn.setToolTip("Move selected track up")
+        self.up_btn.setIcon(get_svg_icon("up", 16, "#edf2ee"))
+        self.up_btn.setIconSize(QSize(16, 16))
+        self.up_btn.setToolTip("Move selected track up (Alt+Up)")
+        self.up_btn.setAccessibleName("Move Up")
+        self.up_btn.setAccessibleDescription("Move selected track up in the playlist")
         self.up_btn.clicked.connect(lambda: self.move_track(-1))
 
         self.down_btn = QPushButton()
-        self.down_btn.setIcon(get_svg_icon("down", 13, "#edf2ee"))
-        self.down_btn.setToolTip("Move selected track down")
+        self.down_btn.setIcon(get_svg_icon("down", 16, "#edf2ee"))
+        self.down_btn.setIconSize(QSize(16, 16))
+        self.down_btn.setToolTip("Move selected track down (Alt+Down)")
+        self.down_btn.setAccessibleName("Move Down")
+        self.down_btn.setAccessibleDescription("Move selected track down in the playlist")
         self.down_btn.clicked.connect(lambda: self.move_track(1))
 
         btn_row.addWidget(self.add_tracks_btn, 1)
-        btn_row.addWidget(self.rename_track_btn)
-        btn_row.addWidget(self.remove_track_btn)
-        btn_row.addWidget(self.up_btn)
-        btn_row.addWidget(self.down_btn)
+        btn_row.addWidget(self.rename_track_btn, 1)
+        btn_row.addWidget(self.remove_track_btn, 1)
+        btn_row.addWidget(self.up_btn, 1)
+        btn_row.addWidget(self.down_btn, 1)
         pl_layout.addLayout(btn_row)
 
         # Playlist Summary Line Badge
@@ -513,11 +635,11 @@ class MainWindow(QMainWindow):
         self.preview_intro_btn.clicked.connect(self._toggle_intro_preview)
         pv_hdr.addWidget(self.preview_intro_btn)
 
-        self.play_preview_btn = QPushButton("Play Video Preview")
+        self.play_preview_btn = QPushButton("Play Preview")
         self.play_preview_btn.setIcon(get_svg_icon("play", 13, "#edf2ee"))
-        self.play_preview_btn.setToolTip("Toggle live playback of video background preview")
-        self.play_preview_btn.clicked.connect(self._toggle_video_preview)
-        self.play_preview_btn.setVisible(False)
+        self.play_preview_btn.setToolTip("Play interactive preview of project audio and composition (Space)")
+        self.play_preview_btn.clicked.connect(self._toggle_preview_playback)
+        self.play_preview_btn.setVisible(True)
         pv_hdr.addWidget(self.play_preview_btn)
         pv_layout.addLayout(pv_hdr)
 
@@ -536,17 +658,35 @@ class MainWindow(QMainWindow):
         self.preview_container = AspectRatioContainer(self.preview_frame)
         pv_layout.addWidget(self.preview_container, 1)
 
-        # Reserved Scrubber Row (Inert until Stage 3)
+        # Interactive Scrubber Row (Prompt 13)
         scrubber_row = QHBoxLayout()
         scrubber_row.setSpacing(8)
+
+        self.scrubber_play_btn = QPushButton()
+        self.scrubber_play_btn.setIcon(get_svg_icon("play", 13, "#edf2ee"))
+        self.scrubber_play_btn.setToolTip("Play / Pause interactive preview (Space)")
+        self.scrubber_play_btn.setFixedWidth(32)
+        self.scrubber_play_btn.clicked.connect(self._toggle_preview_playback)
+        scrubber_row.addWidget(self.scrubber_play_btn)
+
+        self.scrubber_stop_btn = QPushButton()
+        self.scrubber_stop_btn.setIcon(get_svg_icon("stop", 13, "#edf2ee"))
+        self.scrubber_stop_btn.setToolTip("Stop preview and return to start")
+        self.scrubber_stop_btn.setFixedWidth(32)
+        self.scrubber_stop_btn.clicked.connect(self._stop_preview_playback)
+        scrubber_row.addWidget(self.scrubber_stop_btn)
+
         self.scrubber_cur_label = QLabel("00:00")
         self.scrubber_cur_label.setObjectName("subtle")
 
         self.timeline_scrubber = QSlider(Qt.Orientation.Horizontal)
         self.timeline_scrubber.setRange(0, 100)
         self.timeline_scrubber.setValue(0)
-        self.timeline_scrubber.setEnabled(False)  # Inert until Stage 3
-        self.timeline_scrubber.setToolTip("Timeline navigation (available in Stage 3)")
+        self.timeline_scrubber.setEnabled(True)
+        self.timeline_scrubber.setToolTip("Interactive timeline scrubber (approximate preview)")
+        self.timeline_scrubber.sliderMoved.connect(self._on_scrubber_user_seek)
+        self.timeline_scrubber.sliderReleased.connect(self._on_scrubber_user_release)
+        self.timeline_scrubber.valueChanged.connect(self._on_scrubber_value_changed)
 
         self.scrubber_total_label = QLabel("00:00")
         self.scrubber_total_label.setObjectName("subtle")
@@ -554,6 +694,31 @@ class MainWindow(QMainWindow):
         scrubber_row.addWidget(self.scrubber_cur_label)
         scrubber_row.addWidget(self.timeline_scrubber, 1)
         scrubber_row.addWidget(self.scrubber_total_label)
+
+        # Independent Preview Audio Volume Controls
+        self.preview_volume_btn = QPushButton()
+        self.preview_volume_btn.setIcon(get_svg_icon("volume_high", 13, "#edf2ee"))
+        self.preview_volume_btn.setToolTip("Mute / Unmute preview audio")
+        self.preview_volume_btn.setFixedWidth(28)
+        self.preview_volume_btn.clicked.connect(self._toggle_preview_mute)
+
+        self.preview_volume_slider = QSlider(Qt.Orientation.Horizontal)
+        self.preview_volume_slider.setRange(0, 100)
+        self.preview_volume_slider.setValue(70)
+        self.preview_volume_slider.setFixedWidth(70)
+        self.preview_volume_slider.setToolTip("Preview audio volume")
+        self.preview_volume_slider.valueChanged.connect(self._on_preview_volume_changed)
+
+        self.preview_volume_label = QLabel("70%")
+        self.preview_volume_label.setObjectName("subtle")
+        self.preview_volume_label.setFixedWidth(34)
+        self.preview_volume_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        scrubber_row.addSpacing(6)
+        scrubber_row.addWidget(self.preview_volume_btn)
+        scrubber_row.addWidget(self.preview_volume_slider)
+        scrubber_row.addWidget(self.preview_volume_label)
+
         pv_layout.addLayout(scrubber_row)
 
         self.splitter.addWidget(self.preview_panel)
@@ -561,7 +726,7 @@ class MainWindow(QMainWindow):
         # Pane 3: Inspector Pane (min 280, collapsible)
         self.inspector_panel = QFrame()
         self.inspector_panel.setObjectName("inspector_pane")
-        self.inspector_panel.setMinimumWidth(280)
+        self.inspector_panel.setMinimumWidth(340)
         insp_layout = QVBoxLayout(self.inspector_panel)
         insp_layout.setContentsMargins(8, 8, 8, 8)
         insp_layout.setSpacing(6)
@@ -599,13 +764,14 @@ class MainWindow(QMainWindow):
         self.inspector_tabs.setTabToolTip(3, "Intro Card & Sound Effects")
 
         insp_layout.addWidget(self.inspector_tabs, 1)
+        self._install_inspector_wheel_filters()
         self.splitter.addWidget(self.inspector_panel)
 
         # Set default splitter weights & stretch
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setStretchFactor(2, 0)
-        self.splitter.setSizes([310, 620, 320])
+        self.splitter.setSizes([290, 720, 390])
         root_layout.addWidget(self.splitter, 1)
 
         # --------------------------------------------------------------
@@ -773,11 +939,92 @@ class MainWindow(QMainWindow):
         reset_ws_act.triggered.connect(self.reset_workspace)
         file_menu.addAction(reset_ws_act)
 
+        file_menu.addSeparator()
+
+        self.render_act = QAction("Render Video…", self)
+        self.render_act.setShortcut("Ctrl+R")
+        self.render_act.triggered.connect(self.render_video)
+        file_menu.addAction(self.render_act)
+
+        # --------------------------------------------------------------
+        # Edit Menu (Undo/Redo & Track Shortcuts)
+        # --------------------------------------------------------------
+        edit_menu = self.menuBar().addMenu("Edit")
+
+        self.add_tracks_act = QAction("Add Audio Tracks…", self)
+        self.add_tracks_act.setShortcut("Ctrl+Shift+O")
+        self.add_tracks_act.setToolTip("Add audio files to playlist (Ctrl+Shift+O or Ctrl+I)")
+        self.add_tracks_act.triggered.connect(self.add_tracks)
+        edit_menu.addAction(self.add_tracks_act)
+
+        self._add_audio_shortcut_alt = QShortcut(QKeySequence("Ctrl+I"), self)
+        self._add_audio_shortcut_alt.activated.connect(self.add_tracks)
+
+        edit_menu.addSeparator()
+
+        self.undo_act = QAction("Undo", self)
+        self.undo_act.setShortcut("Ctrl+Z")
+        self.undo_act.setToolTip("Undo the last action (Ctrl+Z)")
+        self.undo_act.triggered.connect(self.undo)
+        edit_menu.addAction(self.undo_act)
+
+        self.redo_act = QAction("Redo", self)
+        self.redo_act.setShortcut("Ctrl+Y")
+        self.redo_act.setToolTip("Redo the last undone action (Ctrl+Y or Ctrl+Shift+Z)")
+        self.redo_act.triggered.connect(self.redo)
+        edit_menu.addAction(self.redo_act)
+
+        self._redo_shortcut_alt = QShortcut(QKeySequence("Ctrl+Shift+Z"), self)
+        self._redo_shortcut_alt.activated.connect(self.redo)
+
+        edit_menu.addSeparator()
+
+        self.del_track_act = QAction("Delete Track", self)
+        self.del_track_act.setShortcut(QKeySequence.StandardKey.Delete)
+        self.del_track_act.setToolTip("Delete selected track from playlist (Delete)")
+        self.del_track_act.triggered.connect(self._on_shortcut_delete_track)
+        edit_menu.addAction(self.del_track_act)
+
+        self.rename_track_act = QAction("Rename Track…", self)
+        self.rename_track_act.setShortcut("F2")
+        self.rename_track_act.setToolTip("Rename selected track (F2)")
+        self.rename_track_act.triggered.connect(self._on_shortcut_rename_track)
+        edit_menu.addAction(self.rename_track_act)
+
+        self.move_up_act = QAction("Move Track Up", self)
+        self.move_up_act.setShortcut("Alt+Up")
+        self.move_up_act.setToolTip("Move selected track up in playlist (Alt+Up)")
+        self.move_up_act.triggered.connect(self._on_shortcut_move_up)
+        edit_menu.addAction(self.move_up_act)
+
+        self.move_down_act = QAction("Move Track Down", self)
+        self.move_down_act.setShortcut("Alt+Down")
+        self.move_down_act.setToolTip("Move selected track down in playlist (Alt+Down)")
+        self.move_down_act.triggered.connect(self._on_shortcut_move_down)
+        edit_menu.addAction(self.move_down_act)
+
+        edit_menu.addSeparator()
+
+        self.clear_tracks_act = QAction("Clear All Tracks", self)
+        self.clear_tracks_act.setToolTip("Remove all audio tracks from the playlist")
+        self.clear_tracks_act.triggered.connect(self.clear_all_tracks)
+        edit_menu.addAction(self.clear_tracks_act)
+
+        # Refresh Preview shortcut (F5)
+        self.refresh_preview_act = QAction("Refresh Preview", self)
+        self.refresh_preview_act.setShortcut("F5")
+        self.refresh_preview_act.triggered.connect(self._refresh_preview)
+        self.addAction(self.refresh_preview_act)
+
+        # Spacebar preview playback shortcut (Prompt 13)
+        self._space_preview_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Space), self)
+        self._space_preview_shortcut.activated.connect(self._on_shortcut_space_preview)
+
         help_menu = self.menuBar().addMenu("Help")
-        about = QAction("About Nasheed Studio", self)
+        about = QAction("About NCN Studio", self)
         about.triggered.connect(lambda: QMessageBox.information(
             self, "About",
-            "Nasheed Studio is a local desktop tool for generating "
+            "NCN Studio is a local desktop tool for generating "
             "playlist-style Nasheed videos with FFmpeg."
         ))
         help_menu.addAction(about)
@@ -790,12 +1037,30 @@ class MainWindow(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.viewport().setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         content = QWidget()
+        content.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         layout = QVBoxLayout(content)
         layout.setContentsMargins(6, 8, 6, 8)
         layout.setSpacing(10)
         scroll.setWidget(content)
         return scroll, layout
+
+    def _install_inspector_wheel_filters(self) -> None:
+        if not hasattr(self, "_inspector_wheel_filter"):
+            self._inspector_wheel_filter = InspectorFocusWheelFilter(self)
+
+        from PySide6.QtWidgets import QAbstractSpinBox, QSlider, QComboBox
+        widgets = []
+        for cls in (QAbstractSpinBox, QSlider, QComboBox):
+            widgets.extend(self.inspector_panel.findChildren(cls))
+        for widget in widgets:
+            widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            widget.installEventFilter(self._inspector_wheel_filter)
+            for child in widget.findChildren(QWidget):
+                child.installEventFilter(self._inspector_wheel_filter)
 
     def _build_tab_layout_assets(self, layout: QVBoxLayout) -> None:
         # Layout template
@@ -826,7 +1091,8 @@ class MainWindow(QMainWindow):
         self.background_clear_btn.setToolTip("Clear background")
         self.background_clear_btn.clicked.connect(self.clear_background)
 
-        self.background_btn = QPushButton("Choose background (image / MP4)…")
+        self.background_btn = QPushButton("Choose Background…")
+        self.background_btn.setToolTip("Select background image (PNG, JPG) or video (MP4, MOV)")
         self.background_btn.setIcon(get_svg_icon("image", 13, "#edf2ee"))
         self.background_btn.clicked.connect(self.choose_background)
 
@@ -931,6 +1197,48 @@ class MainWindow(QMainWindow):
         logo_pos_row.addWidget(self.logo_pos_combo, 1)
         layout.addLayout(logo_pos_row)
 
+        logo_sz_row = QHBoxLayout()
+        logo_sz_row.setSpacing(6)
+        logo_sz_lbl = QLabel("Logo Size:")
+        logo_sz_lbl.setObjectName("muted")
+        self.logo_scale_spin = QSpinBox()
+        self.logo_scale_spin.setRange(20, 300)
+        self.logo_scale_spin.setValue(100)
+        self.logo_scale_spin.setSuffix(" %")
+        self.logo_scale_spin.setToolTip("Scale logo size relative to default bounding box (20% to 300%)")
+        self.logo_scale_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
+        logo_sz_row.addWidget(logo_sz_lbl)
+        logo_sz_row.addWidget(self.logo_scale_spin, 1)
+        layout.addLayout(logo_sz_row)
+
+        logo_x_row = QHBoxLayout()
+        logo_x_row.setSpacing(6)
+        logo_x_lbl = QLabel("Logo X-Offset:")
+        logo_x_lbl.setObjectName("muted")
+        self.logo_x_offset_spin = QSpinBox()
+        self.logo_x_offset_spin.setRange(-500, 500)
+        self.logo_x_offset_spin.setValue(0)
+        self.logo_x_offset_spin.setSuffix(" px")
+        self.logo_x_offset_spin.setToolTip("Horizontal position offset for logo from selected corner (-500 to +500 px)")
+        self.logo_x_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
+        logo_x_row.addWidget(logo_x_lbl)
+        logo_x_row.addWidget(self.logo_x_offset_spin, 1)
+        layout.addLayout(logo_x_row)
+
+        logo_y_row = QHBoxLayout()
+        logo_y_row.setSpacing(6)
+        logo_y_lbl = QLabel("Logo Y-Offset:")
+        logo_y_lbl.setObjectName("muted")
+        self.logo_y_offset_spin = QSpinBox()
+        self.logo_y_offset_spin.setRange(-500, 500)
+        self.logo_y_offset_spin.setValue(0)
+        self.logo_y_offset_spin.setSuffix(" px")
+        self.logo_y_offset_spin.setToolTip("Vertical position offset for logo from selected corner (-500 to +500 px)")
+        self.logo_y_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
+        logo_y_row.addWidget(logo_y_lbl)
+        logo_y_row.addWidget(self.logo_y_offset_spin, 1)
+        layout.addLayout(logo_y_row)
+
         self.logo_cleanup_check = QCheckBox("Remove solid white / checkerboard background")
         self.logo_cleanup_check.setChecked(True)
         self.logo_cleanup_check.toggled.connect(lambda _: self._on_layout_param_changed())
@@ -957,27 +1265,88 @@ class MainWindow(QMainWindow):
         self.playlist_pos_combo.currentTextChanged.connect(lambda _: self._on_layout_param_changed())
         pl_pos_row.addWidget(pl_pos_lbl)
         pl_pos_row.addWidget(self.playlist_pos_combo, 1)
+        layout.addLayout(pl_pos_row)
 
-        cols_lbl = QLabel("Cols:")
+        pl_col_row = QHBoxLayout()
+        pl_col_row.setSpacing(6)
+        cols_lbl = QLabel("Columns:")
         cols_lbl.setObjectName("muted")
         self.playlist_cols_spin = QSpinBox()
         self.playlist_cols_spin.setRange(1, 4)
         self.playlist_cols_spin.setValue(1)
+        self.playlist_cols_spin.setFixedWidth(68)
+        self.playlist_cols_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.playlist_cols_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
-        pl_pos_row.addWidget(cols_lbl)
-        pl_pos_row.addWidget(self.playlist_cols_spin)
+        pl_col_row.addWidget(cols_lbl)
+        pl_col_row.addWidget(self.playlist_cols_spin)
 
-        col_sp_lbl = QLabel("Col gap:")
+        col_sp_lbl = QLabel("Column gap:")
         col_sp_lbl.setObjectName("muted")
         self.col_spacing_spin = QSpinBox()
         self.col_spacing_spin.setRange(10, 250)
         self.col_spacing_spin.setValue(50)
         self.col_spacing_spin.setSuffix(" px")
+        self.col_spacing_spin.setMinimumWidth(60)
         self.col_spacing_spin.setToolTip("Distance / gap between playlist columns")
         self.col_spacing_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
-        pl_pos_row.addWidget(col_sp_lbl)
-        pl_pos_row.addWidget(self.col_spacing_spin)
-        layout.addLayout(pl_pos_row)
+        pl_col_row.addWidget(col_sp_lbl)
+        pl_col_row.addWidget(self.col_spacing_spin, 1)
+        layout.addLayout(pl_col_row)
+
+        # Column distribution mode (Automatic vs Manual)
+        dist_mode_row = QHBoxLayout()
+        dist_mode_row.setSpacing(6)
+        dist_mode_lbl = QLabel("Distribution:")
+        dist_mode_lbl.setObjectName("muted")
+        self.playlist_col_mode_combo = QComboBox()
+        self.playlist_col_mode_combo.addItems(["Automatic", "Manual"])
+        self.playlist_col_mode_combo.setToolTip("Control how tracks are distributed across columns (Automatic or Manual)")
+        self.playlist_col_mode_combo.currentTextChanged.connect(self._on_col_distribution_mode_changed)
+        dist_mode_row.addWidget(dist_mode_lbl)
+        dist_mode_row.addWidget(self.playlist_col_mode_combo, 1)
+        layout.addLayout(dist_mode_row)
+
+        self.dist_manual_row = QHBoxLayout()
+        self.dist_manual_row.setSpacing(6)
+        self.dist_manual_lbl = QLabel("Items Per Col:")
+        self.dist_manual_lbl.setObjectName("muted")
+        self.playlist_col_dist_edit = QLineEdit("12, 12")
+        self.playlist_col_dist_edit.setPlaceholderText("e.g. 12, 12")
+        self.playlist_col_dist_edit.setToolTip("Items per column (comma-separated, e.g. '12, 12' or '10, 8'). Unassigned tracks safely flow into the last column.")
+        self.playlist_col_dist_edit.textChanged.connect(lambda _: self._on_layout_param_changed())
+        self.dist_manual_row.addWidget(self.dist_manual_lbl)
+        self.dist_manual_row.addWidget(self.playlist_col_dist_edit, 1)
+        layout.addLayout(self.dist_manual_row)
+        self.dist_manual_lbl.setVisible(False)
+        self.playlist_col_dist_edit.setVisible(False)
+
+        pl_x_row = QHBoxLayout()
+        pl_x_row.setSpacing(6)
+        pl_x_lbl = QLabel("Track Titles X-Offset:")
+        pl_x_lbl.setObjectName("muted")
+        self.playlist_x_offset_spin = QSpinBox()
+        self.playlist_x_offset_spin.setRange(-500, 500)
+        self.playlist_x_offset_spin.setValue(0)
+        self.playlist_x_offset_spin.setSuffix(" px")
+        self.playlist_x_offset_spin.setToolTip("Fine-tune horizontal position of nasheed titles playlist (-500 to +500 px)")
+        self.playlist_x_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
+        pl_x_row.addWidget(pl_x_lbl)
+        pl_x_row.addWidget(self.playlist_x_offset_spin, 1)
+        layout.addLayout(pl_x_row)
+
+        pl_y_row = QHBoxLayout()
+        pl_y_row.setSpacing(6)
+        pl_y_lbl = QLabel("Track Titles Y-Offset:")
+        pl_y_lbl.setObjectName("muted")
+        self.playlist_y_offset_spin = QSpinBox()
+        self.playlist_y_offset_spin.setRange(-500, 500)
+        self.playlist_y_offset_spin.setValue(0)
+        self.playlist_y_offset_spin.setSuffix(" px")
+        self.playlist_y_offset_spin.setToolTip("Fine-tune vertical position of nasheed titles playlist (-500 to +500 px)")
+        self.playlist_y_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
+        pl_y_row.addWidget(pl_y_lbl)
+        pl_y_row.addWidget(self.playlist_y_offset_spin, 1)
+        layout.addLayout(pl_y_row)
 
         bg_op_row = QHBoxLayout()
         bg_op_row.setSpacing(6)
@@ -1005,6 +1374,10 @@ class MainWindow(QMainWindow):
         tf_box = QHBoxLayout()
         tf_box.setSpacing(6)
         self.title_font_combo = QComboBox()
+        self.title_font_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.title_font_combo.setMinimumContentsLength(6)
+        self.title_font_combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.title_font_combo.view().setTextElideMode(Qt.TextElideMode.ElideRight)
         self.title_font_combo.currentTextChanged.connect(self._on_title_font_changed)
         self.title_font_browse_btn = QPushButton("Browse…")
         self.title_font_browse_btn.setToolTip("Select custom .ttf/.otf/.ttc font file from disk")
@@ -1052,6 +1425,34 @@ class MainWindow(QMainWindow):
         t_sp_row.addWidget(self.title_spacing_spin, 1)
         layout.addLayout(t_sp_row)
 
+        t_x_row = QHBoxLayout()
+        t_x_row.setSpacing(6)
+        t_x_lbl = QLabel("Title X-Offset:")
+        t_x_lbl.setObjectName("muted")
+        self.title_x_offset_spin = QSpinBox()
+        self.title_x_offset_spin.setRange(-500, 500)
+        self.title_x_offset_spin.setValue(0)
+        self.title_x_offset_spin.setSuffix(" px")
+        self.title_x_offset_spin.setToolTip("Fine-tune horizontal position of Big Title (-500 to +500 px)")
+        self.title_x_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
+        t_x_row.addWidget(t_x_lbl)
+        t_x_row.addWidget(self.title_x_offset_spin, 1)
+        layout.addLayout(t_x_row)
+
+        t_y_row = QHBoxLayout()
+        t_y_row.setSpacing(6)
+        t_y_lbl = QLabel("Title Y-Offset:")
+        t_y_lbl.setObjectName("muted")
+        self.title_y_offset_spin = QSpinBox()
+        self.title_y_offset_spin.setRange(-500, 500)
+        self.title_y_offset_spin.setValue(0)
+        self.title_y_offset_spin.setSuffix(" px")
+        self.title_y_offset_spin.setToolTip("Fine-tune vertical position of Big Title (-500 to +500 px)")
+        self.title_y_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
+        t_y_row.addWidget(t_y_lbl)
+        t_y_row.addWidget(self.title_y_offset_spin, 1)
+        layout.addLayout(t_y_row)
+
         top_row = QHBoxLayout()
         top_row.setSpacing(6)
         top_lbl = QLabel("Title Opacity:")
@@ -1098,6 +1499,10 @@ class MainWindow(QMainWindow):
         trf_box = QHBoxLayout()
         trf_box.setSpacing(6)
         self.track_font_combo = QComboBox()
+        self.track_font_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.track_font_combo.setMinimumContentsLength(6)
+        self.track_font_combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.track_font_combo.view().setTextElideMode(Qt.TextElideMode.ElideRight)
         self.track_font_combo.currentTextChanged.connect(self._on_track_font_changed)
         self.track_font_browse_btn = QPushButton("Browse…")
         self.track_font_browse_btn.setToolTip("Select custom .ttf/.otf/.ttc font file from disk")
@@ -1121,7 +1526,7 @@ class MainWindow(QMainWindow):
 
         sp_row = QHBoxLayout()
         sp_row.setSpacing(6)
-        sp_lbl = QLabel("Row spacing:")
+        sp_lbl = QLabel("Row Spacing:")
         sp_lbl.setObjectName("muted")
         self.track_spacing_spin = QDoubleSpinBox()
         self.track_spacing_spin.setRange(1.2, 2.8)
@@ -1131,8 +1536,11 @@ class MainWindow(QMainWindow):
         self.track_spacing_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
         sp_row.addWidget(sp_lbl)
         sp_row.addWidget(self.track_spacing_spin, 1)
+        layout.addLayout(sp_row)
 
-        char_lim_lbl = QLabel("Max title length:")
+        char_row = QHBoxLayout()
+        char_row.setSpacing(6)
+        char_lim_lbl = QLabel("Max Title Length:")
         char_lim_lbl.setObjectName("muted")
         self.track_max_chars_spin = QSpinBox()
         self.track_max_chars_spin.setRange(0, 120)
@@ -1141,9 +1549,9 @@ class MainWindow(QMainWindow):
         self.track_max_chars_spin.setSuffix(" chars")
         self.track_max_chars_spin.setToolTip("Truncate titles after this many characters (0 = Auto fit to column)")
         self.track_max_chars_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
-        sp_row.addWidget(char_lim_lbl)
-        sp_row.addWidget(self.track_max_chars_spin, 1)
-        layout.addLayout(sp_row)
+        char_row.addWidget(char_lim_lbl)
+        char_row.addWidget(self.track_max_chars_spin, 1)
+        layout.addLayout(char_row)
 
         trop_row = QHBoxLayout()
         trop_row.setSpacing(6)
@@ -1250,6 +1658,20 @@ class MainWindow(QMainWindow):
         sz_row.addWidget(sz_lbl)
         sz_row.addWidget(self.cursor_size_spin, 1)
         layout.addLayout(sz_row)
+
+        cur_x_row = QHBoxLayout()
+        cur_x_row.setSpacing(6)
+        cur_x_lbl = QLabel("Cursor X-Offset:")
+        cur_x_lbl.setObjectName("muted")
+        self.cursor_x_offset_spin = QSpinBox()
+        self.cursor_x_offset_spin.setRange(-100, 100)
+        self.cursor_x_offset_spin.setValue(0)
+        self.cursor_x_offset_spin.setSuffix(" px")
+        self.cursor_x_offset_spin.setToolTip("Fine-tune horizontal positioning of the cursor relative to track text (-100 to +100 px)")
+        self.cursor_x_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
+        cur_x_row.addWidget(cur_x_lbl)
+        cur_x_row.addWidget(self.cursor_x_offset_spin, 1)
+        layout.addLayout(cur_x_row)
 
         cur_y_row = QHBoxLayout()
         cur_y_row.setSpacing(6)
@@ -1409,6 +1831,48 @@ class MainWindow(QMainWindow):
         web_op_row.addWidget(self.website_opacity_val)
         layout.addLayout(web_op_row)
 
+        web_col_row = QHBoxLayout()
+        web_col_row.setSpacing(6)
+        web_col_lbl = QLabel("Color:")
+        web_col_lbl.setObjectName("muted")
+        self.website_color_btn = QPushButton(" Auto (Adaptive)")
+        self.website_color_btn.clicked.connect(self.choose_website_color)
+        self.website_color_reset_btn = QPushButton("Reset")
+        self.website_color_reset_btn.setToolTip("Reset watermark color to automatic contrast adaptive mode")
+        self.website_color_reset_btn.clicked.connect(self.reset_website_color)
+        web_col_row.addWidget(web_col_lbl)
+        web_col_row.addWidget(self.website_color_btn, 1)
+        web_col_row.addWidget(self.website_color_reset_btn)
+        layout.addLayout(web_col_row)
+
+        web_x_row = QHBoxLayout()
+        web_x_row.setSpacing(6)
+        web_x_lbl = QLabel("Watermark X-Offset:")
+        web_x_lbl.setObjectName("muted")
+        self.website_x_offset_spin = QSpinBox()
+        self.website_x_offset_spin.setRange(-500, 500)
+        self.website_x_offset_spin.setValue(0)
+        self.website_x_offset_spin.setSuffix(" px")
+        self.website_x_offset_spin.setToolTip("Fine-tune horizontal positioning of watermark from corner (-500 to +500 px)")
+        self.website_x_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
+        web_x_row.addWidget(web_x_lbl)
+        web_x_row.addWidget(self.website_x_offset_spin, 1)
+        layout.addLayout(web_x_row)
+
+        web_y_row = QHBoxLayout()
+        web_y_row.setSpacing(6)
+        web_y_lbl = QLabel("Watermark Y-Offset:")
+        web_y_lbl.setObjectName("muted")
+        self.website_y_offset_spin = QSpinBox()
+        self.website_y_offset_spin.setRange(-500, 500)
+        self.website_y_offset_spin.setValue(0)
+        self.website_y_offset_spin.setSuffix(" px")
+        self.website_y_offset_spin.setToolTip("Fine-tune vertical positioning of watermark from corner (-500 to +500 px)")
+        self.website_y_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
+        web_y_row.addWidget(web_y_lbl)
+        web_y_row.addWidget(self.website_y_offset_spin, 1)
+        layout.addLayout(web_y_row)
+
         self.overlap_warning = QLabel("Logo and website share the same corner. Position will adjust automatically.")
         self.overlap_warning.setObjectName("warning")
         self.overlap_warning.setWordWrap(True)
@@ -1424,6 +1888,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(intro_sec)
 
         self.intro_check = QCheckBox("Enable intro sequence")
+        self.intro_enabled_check = self.intro_check
         self.intro_check.toggled.connect(self._on_intro_toggled)
         layout.addWidget(self.intro_check)
 
@@ -1449,6 +1914,244 @@ class MainWindow(QMainWindow):
         anim_row.addWidget(anim_lbl)
         anim_row.addWidget(self.intro_anim_combo, 1)
         layout.addLayout(anim_row)
+
+        # Intro Presentation Card Visual Controls
+        layout.addSpacing(6)
+        card_sec = QLabel("PRESENTATION CARD VISUALS")
+        card_sec.setObjectName("section")
+        layout.addWidget(card_sec)
+
+        # Blur and Frosted Plate Opacity
+        blur_row = QHBoxLayout()
+        blur_lbl = QLabel("Card Blur:")
+        blur_lbl.setObjectName("muted")
+        self.intro_blur_spin = QSpinBox()
+        self.intro_blur_spin.setRange(0, 60)
+        self.intro_blur_spin.setValue(28)
+        self.intro_blur_spin.setSuffix(" px")
+        self.intro_blur_spin.setToolTip("Gaussian blur radius for the presentation card background (0-60 px)")
+        self.intro_blur_spin.valueChanged.connect(self._on_intro_param_changed)
+        blur_row.addWidget(blur_lbl)
+        blur_row.addWidget(self.intro_blur_spin, 1)
+        layout.addLayout(blur_row)
+
+        card_op_row = QHBoxLayout()
+        card_op_lbl = QLabel("Plate Tint:")
+        card_op_lbl.setObjectName("muted")
+        self.intro_card_opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.intro_card_opacity_slider.setRange(0, 100)
+        self.intro_card_opacity_slider.setValue(70)
+        self.intro_card_opacity_slider.valueChanged.connect(self._on_intro_card_opacity_changed)
+        self.intro_card_opacity_val = QLabel("70%")
+        self.intro_card_opacity_val.setMinimumWidth(36)
+        card_op_row.addWidget(card_op_lbl)
+        card_op_row.addWidget(self.intro_card_opacity_slider, 1)
+        card_op_row.addWidget(self.intro_card_opacity_val)
+        layout.addLayout(card_op_row)
+
+        # Intro Title Typography (Independent of Main Video)
+        layout.addSpacing(4)
+        intro_title_sec = QLabel("INTRO TITLE TYPOGRAPHY")
+        intro_title_sec.setObjectName("muted")
+        layout.addWidget(intro_title_sec)
+
+        self.intro_title_edit = QLineEdit()
+        self.intro_title_edit.setPlaceholderText("Custom title (blank uses project title)")
+        self.intro_title_edit.setToolTip("Independent title for the intro card. Leave blank to match collection title.")
+        self.intro_title_edit.textChanged.connect(self._on_intro_param_changed)
+        layout.addWidget(self.intro_title_edit)
+
+        intro_font_row = QHBoxLayout()
+        self.intro_title_font_combo = QComboBox()
+        self.intro_title_font_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.intro_title_font_combo.setMinimumContentsLength(6)
+        self.intro_title_font_combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.intro_title_font_combo.view().setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.intro_title_font_combo.currentTextChanged.connect(self._on_intro_title_font_changed)
+        self.intro_title_style_combo = QComboBox()
+        self.intro_title_style_combo.currentTextChanged.connect(self._on_intro_param_changed)
+        intro_font_row.addWidget(self.intro_title_font_combo, 2)
+        intro_font_row.addWidget(self.intro_title_style_combo, 1)
+        layout.addLayout(intro_font_row)
+
+        intro_title_style_row = QHBoxLayout()
+        intro_title_sz_lbl = QLabel("Size:")
+        intro_title_sz_lbl.setObjectName("muted")
+        self.intro_title_size_spin = QSpinBox()
+        self.intro_title_size_spin.setRange(16, 160)
+        self.intro_title_size_spin.setValue(56)
+        self.intro_title_size_spin.setSuffix(" pt")
+        self.intro_title_size_spin.setToolTip("Intro card title font size in points (independent of playlist title)")
+        self.intro_title_size_spin.valueChanged.connect(self._on_intro_param_changed)
+        self.intro_title_color_btn = QPushButton(" #FFFFFF")
+        self.intro_title_color_btn.clicked.connect(self.choose_intro_title_color)
+        intro_title_style_row.addWidget(intro_title_sz_lbl)
+        intro_title_style_row.addWidget(self.intro_title_size_spin, 1)
+        intro_title_style_row.addWidget(self.intro_title_color_btn, 1)
+        layout.addLayout(intro_title_style_row)
+
+        intro_title_offset_row = QHBoxLayout()
+        intro_title_y_lbl = QLabel("Y Offset:")
+        intro_title_y_lbl.setObjectName("muted")
+        self.intro_title_y_offset_spin = QSpinBox()
+        self.intro_title_y_offset_spin.setRange(-500, 500)
+        self.intro_title_y_offset_spin.setValue(0)
+        self.intro_title_y_offset_spin.setSuffix(" px")
+        self.intro_title_y_offset_spin.setToolTip("Vertical Y-offset for intro title (-500 to +500 px)")
+        self.intro_title_y_offset_spin.valueChanged.connect(self._on_intro_param_changed)
+        intro_title_offset_row.addWidget(intro_title_y_lbl)
+        intro_title_offset_row.addWidget(self.intro_title_y_offset_spin, 1)
+        layout.addLayout(intro_title_offset_row)
+
+        # Intro Logo Controls
+        layout.addSpacing(4)
+        intro_logo_sec = QLabel("INTRO LOGO")
+        intro_logo_sec.setObjectName("muted")
+        layout.addWidget(intro_logo_sec)
+
+        intro_logo_row = QHBoxLayout()
+        self.intro_logo_show_check = QCheckBox("Show Logo")
+        self.intro_logo_show_check.setChecked(True)
+        self.intro_logo_show_check.toggled.connect(self._on_intro_param_changed)
+        intro_logo_scale_lbl = QLabel("Scale:")
+        intro_logo_scale_lbl.setObjectName("muted")
+        self.intro_logo_scale_spin = QSpinBox()
+        self.intro_logo_scale_spin.setRange(20, 300)
+        self.intro_logo_scale_spin.setValue(100)
+        self.intro_logo_scale_spin.setSuffix("%")
+        self.intro_logo_scale_spin.setToolTip("Intro card logo scale percentage (independent of main video logo)")
+        self.intro_logo_scale_spin.valueChanged.connect(self._on_intro_param_changed)
+        intro_logo_row.addWidget(self.intro_logo_show_check)
+        intro_logo_row.addWidget(intro_logo_scale_lbl)
+        intro_logo_row.addWidget(self.intro_logo_scale_spin, 1)
+        layout.addLayout(intro_logo_row)
+
+        intro_logo_offset_row = QHBoxLayout()
+        intro_logo_y_lbl = QLabel("Y Offset:")
+        intro_logo_y_lbl.setObjectName("muted")
+        self.intro_logo_y_offset_spin = QSpinBox()
+        self.intro_logo_y_offset_spin.setRange(-500, 500)
+        self.intro_logo_y_offset_spin.setValue(0)
+        self.intro_logo_y_offset_spin.setSuffix(" px")
+        self.intro_logo_y_offset_spin.setToolTip("Vertical Y-offset for intro logo (-500 to +500 px)")
+        self.intro_logo_y_offset_spin.valueChanged.connect(self._on_intro_param_changed)
+        intro_logo_offset_row.addWidget(intro_logo_y_lbl)
+        intro_logo_offset_row.addWidget(self.intro_logo_y_offset_spin, 1)
+        layout.addLayout(intro_logo_offset_row)
+
+        # Intro Watermark / Website Controls
+        layout.addSpacing(4)
+        intro_web_sec = QLabel("INTRO WATERMARK / WEBSITE")
+        intro_web_sec.setObjectName("muted")
+        layout.addWidget(intro_web_sec)
+
+        self.intro_website_show_check = QCheckBox("Show Watermark / URL")
+        self.intro_website_show_check.setChecked(True)
+        self.intro_website_show_check.toggled.connect(self._on_intro_param_changed)
+        layout.addWidget(self.intro_website_show_check)
+
+        self.intro_website_edit = QLineEdit()
+        self.intro_website_edit.setPlaceholderText("Custom watermark (blank uses project watermark)")
+        self.intro_website_edit.setToolTip("Override watermark on intro card. Blank uses general watermark text.")
+        self.intro_website_edit.textChanged.connect(self._on_intro_param_changed)
+        layout.addWidget(self.intro_website_edit)
+
+        intro_web_opt_row = QHBoxLayout()
+        intro_web_sz_lbl = QLabel("Size:")
+        intro_web_sz_lbl.setObjectName("muted")
+        self.intro_website_size_spin = QSpinBox()
+        self.intro_website_size_spin.setRange(10, 60)
+        self.intro_website_size_spin.setValue(20)
+        self.intro_website_size_spin.setSuffix(" pt")
+        self.intro_website_size_spin.setToolTip("Intro watermark font size in points")
+        self.intro_website_size_spin.valueChanged.connect(self._on_intro_param_changed)
+        self.intro_website_color_btn = QPushButton(" #CCCCCC")
+        self.intro_website_color_btn.clicked.connect(self.choose_intro_website_color)
+        intro_web_opt_row.addWidget(intro_web_sz_lbl)
+        intro_web_opt_row.addWidget(self.intro_website_size_spin, 1)
+        intro_web_opt_row.addWidget(self.intro_website_color_btn, 1)
+        layout.addLayout(intro_web_opt_row)
+
+        intro_web_op_row = QHBoxLayout()
+        intro_web_op_lbl = QLabel("Opacity:")
+        intro_web_op_lbl.setObjectName("muted")
+        self.intro_website_opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.intro_website_opacity_slider.setRange(0, 100)
+        self.intro_website_opacity_slider.setValue(90)
+        self.intro_website_opacity_slider.valueChanged.connect(self._on_intro_website_opacity_changed)
+        self.intro_website_opacity_val = QLabel("90%")
+        self.intro_website_opacity_val.setMinimumWidth(36)
+        intro_web_op_row.addWidget(intro_web_op_lbl)
+        intro_web_op_row.addWidget(self.intro_website_opacity_slider, 1)
+        intro_web_op_row.addWidget(self.intro_website_opacity_val)
+        layout.addLayout(intro_web_op_row)
+
+        intro_web_offset_row = QHBoxLayout()
+        intro_web_y_lbl = QLabel("Y Offset:")
+        intro_web_y_lbl.setObjectName("muted")
+        self.intro_website_y_offset_spin = QSpinBox()
+        self.intro_website_y_offset_spin.setRange(-500, 500)
+        self.intro_website_y_offset_spin.setValue(0)
+        self.intro_website_y_offset_spin.setSuffix(" px")
+        self.intro_website_y_offset_spin.setToolTip("Vertical Y-offset for intro watermark (-500 to +500 px)")
+        self.intro_website_y_offset_spin.valueChanged.connect(self._on_intro_param_changed)
+        intro_web_offset_row.addWidget(intro_web_y_lbl)
+        intro_web_offset_row.addWidget(self.intro_website_y_offset_spin, 1)
+        layout.addLayout(intro_web_offset_row)
+
+        layout.addSpacing(6)
+        # Intro Audio (Prompt 11)
+        layout.addSpacing(4)
+        intro_audio_sec = QLabel("INTRO AUDIO")
+        intro_audio_sec.setObjectName("muted")
+        layout.addWidget(intro_audio_sec)
+
+        self.intro_audio_label = self._make_asset_label("No intro audio selected")
+        intro_audio_row = QHBoxLayout()
+        intro_audio_row.setSpacing(6)
+        intro_audio_icon = QLabel()
+        intro_audio_icon.setPixmap(get_svg_pixmap("tab_intro", 14, "#95a399"))
+        self.intro_audio_play_btn = QPushButton("Play")
+        self.intro_audio_play_btn.clicked.connect(self.toggle_intro_audio_preview)
+        self.intro_audio_clear_btn = QPushButton("Clear")
+        self.intro_audio_clear_btn.clicked.connect(self.clear_intro_audio)
+        self.intro_audio_btn = QPushButton("Choose Intro Audio…")
+        self.intro_audio_btn.clicked.connect(self.choose_intro_audio)
+
+        intro_audio_row.addWidget(intro_audio_icon)
+        intro_audio_row.addWidget(self.intro_audio_label, 1)
+        intro_audio_row.addWidget(self.intro_audio_play_btn)
+        intro_audio_row.addWidget(self.intro_audio_clear_btn)
+        layout.addLayout(intro_audio_row)
+        layout.addWidget(self.intro_audio_btn)
+
+        fade_row = QHBoxLayout()
+        fade_row.setSpacing(6)
+        fade_in_lbl = QLabel("Fade In:")
+        fade_in_lbl.setObjectName("muted")
+        self.intro_fade_in_spin = QDoubleSpinBox()
+        self.intro_fade_in_spin.setRange(0.0, 10.0)
+        self.intro_fade_in_spin.setValue(0.5)
+        self.intro_fade_in_spin.setSingleStep(0.1)
+        self.intro_fade_in_spin.setSuffix(" s")
+        self.intro_fade_in_spin.setMinimumWidth(65)
+        self.intro_fade_in_spin.valueChanged.connect(self._on_intro_fade_changed)
+
+        fade_out_lbl = QLabel("Fade Out:")
+        fade_out_lbl.setObjectName("muted")
+        self.intro_fade_out_spin = QDoubleSpinBox()
+        self.intro_fade_out_spin.setRange(0.0, 10.0)
+        self.intro_fade_out_spin.setValue(0.5)
+        self.intro_fade_out_spin.setSingleStep(0.1)
+        self.intro_fade_out_spin.setSuffix(" s")
+        self.intro_fade_out_spin.setMinimumWidth(65)
+        self.intro_fade_out_spin.valueChanged.connect(self._on_intro_fade_changed)
+
+        fade_row.addWidget(fade_in_lbl)
+        fade_row.addWidget(self.intro_fade_in_spin, 1)
+        fade_row.addWidget(fade_out_lbl)
+        fade_row.addWidget(self.intro_fade_out_spin, 1)
+        layout.addLayout(fade_row)
 
         layout.addSpacing(4)
         div = QFrame()
@@ -1503,22 +2206,58 @@ class MainWindow(QMainWindow):
     # Inspector Toggle & Workspace Reveal
     # ------------------------------------------------------------------
 
+    def is_playlist_expanded(self) -> bool:
+        """Check whether Playlist & Audio section is expanded/visible."""
+        return not self.playlist_panel.isHidden()
+
+    def set_playlist_expanded(self, expanded: bool) -> None:
+        """Expand or collapse the Playlist & Audio section in the main splitter."""
+        if expanded:
+            self.playlist_panel.show()
+            w = max(260, getattr(self, "_last_playlist_width", 300))
+            sizes = self.splitter.sizes()
+            if len(sizes) >= 3:
+                total = sum(sizes)
+                left = w
+                right = sizes[2]
+                center = max(400, total - left - right)
+                self.splitter.setSizes([left, center, right])
+        else:
+            sizes = self.splitter.sizes()
+            if len(sizes) >= 1 and sizes[0] > 0:
+                self._last_playlist_width = max(260, sizes[0])
+            self.playlist_panel.hide()
+
+    def toggle_playlist(self) -> None:
+        """Toggle Playlist & Audio section expanded/collapsed."""
+        self.set_playlist_expanded(not self.is_playlist_expanded())
+
+    def _on_col_distribution_mode_changed(self, mode_text: str) -> None:
+        """Handle Automatic vs Manual playlist column distribution mode switch."""
+        is_manual = (str(mode_text).strip().lower() == "manual")
+        if hasattr(self, "dist_manual_lbl"):
+            self.dist_manual_lbl.setVisible(is_manual)
+        if hasattr(self, "playlist_col_dist_edit"):
+            self.playlist_col_dist_edit.setVisible(is_manual)
+        if not getattr(self, "_loading_project", False) and hasattr(self, "_undo_stack"):
+            self._on_layout_param_changed()
+
     def toggle_inspector(self) -> None:
         """Collapse or restore the inspector pane in the main splitter."""
         is_visible = self.inspector_panel.isVisible()
         if is_visible:
             sizes = self.splitter.sizes()
             if len(sizes) >= 3 and sizes[2] > 0:
-                self._last_inspector_width = max(280, sizes[2])
+                self._last_inspector_width = max(340, sizes[2])
             self.inspector_panel.hide()
             self.inspector_toggle_btn.setChecked(False)
         else:
             self.inspector_panel.show()
             self.inspector_toggle_btn.setChecked(True)
-            w = max(280, getattr(self, "_last_inspector_width", 320))
+            w = max(340, getattr(self, "_last_inspector_width", 390))
             sizes = self.splitter.sizes()
             total = sum(sizes)
-            left = sizes[0] if sizes else 310
+            left = sizes[0] if sizes else 290
             right = w
             center = max(400, total - left - right)
             self.splitter.setSizes([left, center, right])
@@ -1587,7 +2326,8 @@ class MainWindow(QMainWindow):
             if hasattr(self, "video_controls_group"):
                 self.video_controls_group.setVisible(False)
             if hasattr(self, "play_preview_btn"):
-                self.play_preview_btn.setVisible(False)
+                self.play_preview_btn.setVisible(True)
+            self._commit_undo_snapshot()
             self._mark_dirty()
             self._refresh_preview()
 
@@ -1597,6 +2337,7 @@ class MainWindow(QMainWindow):
             self.logo_path = ""
             self._set_asset_label(self.logo_label, "")
             self.logo_label.setText("No logo selected")
+            self._commit_undo_snapshot()
             self._mark_dirty()
             self._check_logo_website_overlap()
             self._refresh_preview()
@@ -1669,6 +2410,9 @@ class MainWindow(QMainWindow):
             "video_mute_audio": self.video_mute_check.isChecked() if hasattr(self, "video_mute_check") else getattr(self, "video_mute_audio", True),
             "logo": self.logo_path,
             "logo_position": self.logo_pos_combo.currentText() if hasattr(self, "logo_pos_combo") else "Bottom-Right",
+            "logo_scale": round(self.logo_scale_spin.value() / 100.0, 2) if hasattr(self, "logo_scale_spin") else 1.0,
+            "logo_x_offset": self.logo_x_offset_spin.value() if hasattr(self, "logo_x_offset_spin") else 0,
+            "logo_y_offset": self.logo_y_offset_spin.value() if hasattr(self, "logo_y_offset_spin") else 0,
             "tracks": self.tracks,
             "template": self.template_combo.currentText(),
             "resolution": self.resolution_combo.currentText(),
@@ -1697,16 +2441,44 @@ class MainWindow(QMainWindow):
             "website_font_family": getattr(self, "website_font_family", None) or (self.track_font_combo.currentText() if hasattr(self, "track_font_combo") else "Segoe UI"),
             "website_font_style": getattr(self, "website_font_style", "Regular"),
             "website_color": getattr(self, "website_color", None),
+            "website_x_offset": self.website_x_offset_spin.value() if hasattr(self, "website_x_offset_spin") else 0,
+            "website_y_offset": self.website_y_offset_spin.value() if hasattr(self, "website_y_offset_spin") else 0,
             "transition_sfx_enabled": self.sfx_check.isChecked() if hasattr(self, "sfx_check") else False,
             "transition_sfx_path": self.sfx_path,
             "transition_sfx_volume": round(self.sfx_vol_slider.value() / 100.0, 2) if hasattr(self, "sfx_vol_slider") else 0.7,
             "intro_enabled": self.intro_check.isChecked() if hasattr(self, "intro_check") else False,
             "intro_duration": self.intro_dur_spin.value() if hasattr(self, "intro_dur_spin") else 3.0,
             "intro_animation": self.intro_anim_combo.currentText() if hasattr(self, "intro_anim_combo") else "Fade in / out",
+            "intro_audio_path": getattr(self, "intro_audio_path", ""),
+            "intro_audio_fade_in": self.intro_fade_in_spin.value() if hasattr(self, "intro_fade_in_spin") else 0.5,
+            "intro_audio_fade_out": self.intro_fade_out_spin.value() if hasattr(self, "intro_fade_out_spin") else 0.5,
+            "intro_title_text": self.intro_title_edit.text().strip() if hasattr(self, "intro_title_edit") else "",
+            "intro_title_font_family": self.intro_title_font_combo.currentText() if hasattr(self, "intro_title_font_combo") else "Segoe UI",
+            "intro_title_font_style": self.intro_title_style_combo.currentText() if hasattr(self, "intro_title_style_combo") else "Bold",
+            "intro_title_font_size": self.intro_title_size_spin.value() if hasattr(self, "intro_title_size_spin") else 56,
+            "intro_title_color": getattr(self, "intro_title_color", (255, 255, 255)),
+            "intro_title_y_offset": self.intro_title_y_offset_spin.value() if hasattr(self, "intro_title_y_offset_spin") else 0,
+            "intro_logo_show": self.intro_logo_show_check.isChecked() if hasattr(self, "intro_logo_show_check") else True,
+            "intro_logo_scale": round(self.intro_logo_scale_spin.value() / 100.0, 2) if hasattr(self, "intro_logo_scale_spin") else 1.0,
+            "intro_logo_y_offset": self.intro_logo_y_offset_spin.value() if hasattr(self, "intro_logo_y_offset_spin") else 0,
+            "intro_website_show": self.intro_website_show_check.isChecked() if hasattr(self, "intro_website_show_check") else True,
+            "intro_website_text": self.intro_website_edit.text().strip() if hasattr(self, "intro_website_edit") else "",
+            "intro_website_font_size": self.intro_website_size_spin.value() if hasattr(self, "intro_website_size_spin") else 20,
+            "intro_website_opacity": round(self.intro_website_opacity_slider.value() / 100.0, 2) if hasattr(self, "intro_website_opacity_slider") else 0.9,
+            "intro_website_color": getattr(self, "intro_website_color", (204, 204, 204)),
+            "intro_website_y_offset": self.intro_website_y_offset_spin.value() if hasattr(self, "intro_website_y_offset_spin") else 0,
+            "intro_blur_radius": self.intro_blur_spin.value() if hasattr(self, "intro_blur_spin") else 28,
+            "intro_card_opacity": round(self.intro_card_opacity_slider.value() / 100.0, 2) if hasattr(self, "intro_card_opacity_slider") else 0.70,
             "resource_profile": self.resource_profile_combo.currentText() if hasattr(self, "resource_profile_combo") else "Balanced",
             "export_quality": self.export_quality_combo.currentText() if hasattr(self, "export_quality_combo") else "Ultra Detail · Master Quality (Recommended)",
             "playlist_position": self.playlist_pos_combo.currentText() if hasattr(self, "playlist_pos_combo") else "Left",
+            "playlist_x_offset": self.playlist_x_offset_spin.value() if hasattr(self, "playlist_x_offset_spin") else 0,
+            "playlist_y_offset": self.playlist_y_offset_spin.value() if hasattr(self, "playlist_y_offset_spin") else 0,
+            "title_x_offset": self.title_x_offset_spin.value() if hasattr(self, "title_x_offset_spin") else 0,
+            "title_y_offset": self.title_y_offset_spin.value() if hasattr(self, "title_y_offset_spin") else 0,
             "playlist_columns": self.playlist_cols_spin.value() if hasattr(self, "playlist_cols_spin") else 1,
+            "playlist_column_distribution_mode": self.playlist_col_mode_combo.currentText().lower() if hasattr(self, "playlist_col_mode_combo") else "automatic",
+            "playlist_column_distribution": self.playlist_col_dist_edit.text().strip() if hasattr(self, "playlist_col_dist_edit") else "",
             "playlist_row_spacing": round(self.track_spacing_spin.value(), 2) if hasattr(self, "track_spacing_spin") else 1.85,
             "playlist_col_spacing": self.col_spacing_spin.value() if hasattr(self, "col_spacing_spin") else 50,
             "track_max_chars": self.track_max_chars_spin.value() if hasattr(self, "track_max_chars_spin") else 0,
@@ -1723,6 +2495,7 @@ class MainWindow(QMainWindow):
             "highlight_corner_radius": (0 if (hasattr(self, "highlight_corner_combo") and self.highlight_corner_combo.currentText() == "Square (Sharp)") else None),
             "highlight_target": ("text" if (hasattr(self, "highlight_target_combo") and self.highlight_target_combo.currentText() == "Surround Text") else "row"),
             "highlight_opacity": 1.0,
+            "cursor_x_offset": self.cursor_x_offset_spin.value() if hasattr(self, "cursor_x_offset_spin") else 0,
             "cursor_y_offset": self.cursor_y_offset_spin.value() if hasattr(self, "cursor_y_offset_spin") else 0,
             "highlight_y_offset": self.highlight_y_offset_spin.value() if hasattr(self, "highlight_y_offset_spin") else 0,
             "output_path": self.output_edit.text().strip(),
@@ -1782,7 +2555,7 @@ class MainWindow(QMainWindow):
                 if hasattr(self, "video_controls_group"):
                     self.video_controls_group.setVisible(False)
                 if hasattr(self, "play_preview_btn"):
-                    self.play_preview_btn.setVisible(False)
+                    self.play_preview_btn.setVisible(True)
                 self._stop_video_preview()
                 self._mark_dirty()
                 self._refresh_preview()
@@ -1813,6 +2586,7 @@ class MainWindow(QMainWindow):
         if path:
             self.logo_path = path
             self._set_asset_label(self.logo_label, path)
+            self._commit_undo_snapshot()
             self._mark_dirty()
             self._check_logo_website_overlap()
             self._refresh_preview()
@@ -1842,24 +2616,43 @@ class MainWindow(QMainWindow):
             except Exception as exc:
                 QMessageBox.warning(self, "Could not import audio", f"{Path(path).name}\n\n{exc}")
         if added:
+            self._commit_undo_snapshot()
             self._mark_dirty()
             self._refresh_tracks()
             self._schedule_preview(200)
 
     def _refresh_tracks(self) -> None:
+        # Preserve scroll position and selection across refreshes (Prompt 9)
+        scroll_val = self.track_list.verticalScrollBar().value()
+        curr_row = self.track_list.currentRow()
         self.track_list.blockSignals(True)
-        self.track_list.clear()
-        for i, track in enumerate(self.tracks):
-            track.setdefault("_id", uuid.uuid4().hex)
-            mins, secs = divmod(int(track.get("duration", 0)), 60)
-            item = QListWidgetItem(
-                f"{i+1:02d}   {track['title']}\n       {mins:02d}:{secs:02d}  ·  {Path(track['path']).name}"
-            )
-            item.setData(Qt.ItemDataRole.UserRole, track["path"])
-            item.setData(Qt.ItemDataRole.UserRole + 1, track["_id"])
-            item.setToolTip(track["path"])
-            self.track_list.addItem(item)
+        if self.track_list.count() == len(self.tracks):
+            for i, track in enumerate(self.tracks):
+                track.setdefault("_id", uuid.uuid4().hex)
+                mins, secs = divmod(int(track.get("duration", 0)), 60)
+                item = self.track_list.item(i)
+                item.setText(
+                    f"{i+1:02d}   {track['title']}\n       {mins:02d}:{secs:02d}  ·  {Path(track['path']).name}"
+                )
+                item.setData(Qt.ItemDataRole.UserRole, track["path"])
+                item.setData(Qt.ItemDataRole.UserRole + 1, track["_id"])
+                item.setToolTip(track["path"])
+        else:
+            self.track_list.clear()
+            for i, track in enumerate(self.tracks):
+                track.setdefault("_id", uuid.uuid4().hex)
+                mins, secs = divmod(int(track.get("duration", 0)), 60)
+                item = QListWidgetItem(
+                    f"{i+1:02d}   {track['title']}\n       {mins:02d}:{secs:02d}  ·  {Path(track['path']).name}"
+                )
+                item.setData(Qt.ItemDataRole.UserRole, track["path"])
+                item.setData(Qt.ItemDataRole.UserRole + 1, track["_id"])
+                item.setToolTip(track["path"])
+                self.track_list.addItem(item)
+        if 0 <= curr_row < self.track_list.count():
+            self.track_list.setCurrentRow(curr_row)
         self.track_list.blockSignals(False)
+        self.track_list.verticalScrollBar().setValue(scroll_val)
         self._refresh_tracks_labels()
 
     def _refresh_tracks_labels(self) -> None:
@@ -1875,8 +2668,14 @@ class MainWindow(QMainWindow):
             self.playlist_summary_label.setText(
                 f"{len(self.tracks)} tracks · {m:02d}:{s:02d}" if self.tracks else "0 tracks · Add audio files"
             )
+        tot_d = self._get_project_timeline_duration()
+        tm, ts = divmod(int(tot_d), 60)
         if hasattr(self, "scrubber_total_label"):
-            self.scrubber_total_label.setText(f"{m:02d}:{s:02d}")
+            self.scrubber_total_label.setText(f"{tm:02d}:{ts:02d}")
+        if hasattr(self, "timeline_scrubber"):
+            self.timeline_scrubber.blockSignals(True)
+            self.timeline_scrubber.setRange(0, int(round(tot_d * 10)))
+            self.timeline_scrubber.blockSignals(False)
 
     def _on_rows_moved(self, *args) -> None:
         by_id = {t.get("_id"): t for t in self.tracks if "_id" in t}
@@ -1894,6 +2693,7 @@ class MainWindow(QMainWindow):
                         break
         if len(reordered) == len(self.tracks):
             self.tracks = reordered
+            self._commit_undo_snapshot()
             self._mark_dirty()
         self._refresh_tracks_labels()
         self._schedule_preview(200)
@@ -1923,18 +2723,52 @@ class MainWindow(QMainWindow):
             text=cur_title
         )
         if ok and title.strip():
-            self.tracks[idx]["title"] = title.strip()
+            new_title = title.strip()
+            self.tracks[idx]["title"] = new_title
+            self._commit_undo_snapshot()
             self._mark_dirty()
-            self._refresh_tracks()
+            # Update only the specific item in place without wiping selection or resetting scroll (Prompt 9)
+            mins, secs = divmod(int(self.tracks[idx].get("duration", 0)), 60)
+            item.setText(
+                f"{idx+1:02d}   {new_title}\n       {mins:02d}:{secs:02d}  ·  {Path(self.tracks[idx]['path']).name}"
+            )
+            self.track_list.setCurrentRow(idx)
+            self._refresh_tracks_labels()
             self._schedule_preview(150)
 
     def remove_track(self) -> None:
-        idx = self.track_list.currentRow()
-        if idx >= 0:
-            self.tracks.pop(idx)
-            self._mark_dirty()
-            self._refresh_tracks()
-            self._schedule_preview(200)
+        selected_items = self.track_list.selectedItems()
+        selected_rows = sorted(list(set(self.track_list.row(item) for item in selected_items if item is not None)))
+        if not selected_rows:
+            curr = self.track_list.currentRow()
+            if 0 <= curr < len(self.tracks):
+                selected_rows = [curr]
+        if not selected_rows:
+            return
+
+        min_idx = min(selected_rows)
+        count = len(selected_rows)
+
+        # Remove in descending row order to preserve remaining indices
+        for idx in sorted(selected_rows, reverse=True):
+            if 0 <= idx < len(self.tracks):
+                self.tracks.pop(idx)
+
+        new_row = min(min_idx, len(self.tracks) - 1) if self.tracks else -1
+
+        self._commit_undo_snapshot()
+        self._mark_dirty()
+        self._refresh_tracks()
+
+        if 0 <= new_row < self.track_list.count():
+            self.track_list.setCurrentRow(new_row)
+        else:
+            self.track_list.setCurrentRow(-1)
+
+        self.statusBar().showMessage(
+            f"Removed {count} track{'s' if count > 1 else ''}. Press Ctrl+Z to undo.", 4000
+        )
+        self._schedule_preview(200)
 
     def move_track(self, delta: int) -> None:
         idx = self.track_list.currentRow()
@@ -1942,6 +2776,7 @@ class MainWindow(QMainWindow):
         if idx < 0 or not (0 <= target < len(self.tracks)):
             return
         self.tracks[idx], self.tracks[target] = self.tracks[target], self.tracks[idx]
+        self._commit_undo_snapshot()
         self._mark_dirty()
         self._refresh_tracks()
         self.track_list.setCurrentRow(target)
@@ -1989,6 +2824,7 @@ class MainWindow(QMainWindow):
         text = self.collection_title.text().strip()
         if text != self._committed_title:
             self._committed_title = text
+            self._commit_undo_snapshot()
             self._mark_dirty()
             self._refresh_preview()
         self.title_apply_btn.setEnabled(False)
@@ -2027,6 +2863,18 @@ class MainWindow(QMainWindow):
 
         self.title_font_combo.blockSignals(False)
         self.track_font_combo.blockSignals(False)
+
+        if hasattr(self, "intro_title_font_combo"):
+            cur_intro = self.intro_title_font_combo.currentText() if self.intro_title_font_combo.count() else "Segoe UI"
+            self.intro_title_font_combo.blockSignals(True)
+            self.intro_title_font_combo.clear()
+            self.intro_title_font_combo.addItems(families)
+            if cur_intro in families:
+                self.intro_title_font_combo.setCurrentText(cur_intro)
+            else:
+                self.intro_title_font_combo.setCurrentText("Segoe UI" if "Segoe UI" in families else families[0])
+            self.intro_title_font_combo.blockSignals(False)
+            self._update_intro_title_styles()
 
         self._update_title_styles()
         self._update_track_styles()
@@ -2157,6 +3005,18 @@ class MainWindow(QMainWindow):
 
     def _on_track_row_changed(self, row: int) -> None:
         if not getattr(self, "_loading_project", False):
+            if not getattr(self, "_is_preview_playing", False) and 0 <= row < len(self.tracks):
+                intro_enabled = (hasattr(self, "intro_enabled_check") and self.intro_enabled_check.isChecked())
+                intro_dur = float(self.intro_dur_spin.value()) if (intro_enabled and hasattr(self, "intro_dur_spin")) else 0.0
+                track_st = intro_dur + sum(float(self.tracks[i].get("duration", 0.0)) for i in range(row))
+                self._preview_current_time = track_st
+                if hasattr(self, "timeline_scrubber"):
+                    self.timeline_scrubber.blockSignals(True)
+                    self.timeline_scrubber.setValue(int(round(track_st * 10)))
+                    self.timeline_scrubber.blockSignals(False)
+                if hasattr(self, "scrubber_cur_label"):
+                    m, s = divmod(int(track_st), 60)
+                    self.scrubber_cur_label.setText(f"{m:02d}:{s:02d}")
             self._schedule_preview(120)
 
     def _on_website_pos_changed(self, text: str) -> None:
@@ -2249,6 +3109,7 @@ class MainWindow(QMainWindow):
         """Update highlight color, marking dirty state and scheduling preview update."""
         self.highlight_color = color
         self._update_highlight_color_btn()
+        self._commit_undo_snapshot()
         self._on_layout_param_changed()
 
     def _update_title_color_btn(self) -> None:
@@ -2276,6 +3137,7 @@ class MainWindow(QMainWindow):
     def set_title_color(self, color: Union[str, tuple, list]) -> None:
         self.title_color = color
         self._update_title_color_btn()
+        self._commit_undo_snapshot()
         self._on_layout_param_changed()
 
     def _update_track_color_btn(self) -> None:
@@ -2303,6 +3165,47 @@ class MainWindow(QMainWindow):
     def set_track_color(self, color: Union[str, tuple, list]) -> None:
         self.track_color = color
         self._update_track_color_btn()
+        self._commit_undo_snapshot()
+        self._on_layout_param_changed()
+
+    def _update_website_color_btn(self) -> None:
+        if not hasattr(self, "website_color_btn"):
+            return
+        if getattr(self, "website_color", None) is None:
+            self.website_color_btn.setIcon(QIcon())
+            self.website_color_btn.setText(" Auto (Adaptive)")
+            self.website_color_btn.setToolTip("Click to set explicit watermark color (currently automatic contrast)")
+            return
+        rgb = _hex_to_rgb(self.website_color, (240, 244, 242))
+        hex_code = f"#{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"
+        pix = QPixmap(14, 14)
+        pix.fill(QColor(rgb[0], rgb[1], rgb[2]))
+        self.website_color_btn.setIcon(QIcon(pix))
+        self.website_color_btn.setText(f" {hex_code}")
+        self.website_color_btn.setToolTip(f"Click to change watermark color ({hex_code})")
+
+    def choose_website_color(self) -> None:
+        rgb = _hex_to_rgb(getattr(self, "website_color", None) or (240, 244, 242))
+        init_color = QColor(rgb[0], rgb[1], rgb[2])
+        col = QColorDialog.getColor(init_color, self, "Choose Watermark Color")
+        if col.isValid():
+            new_rgb = (col.red(), col.green(), col.blue())
+            self.set_website_color(new_rgb)
+
+    def reset_website_color(self) -> None:
+        self.set_website_color(None)
+
+    def set_website_color(self, color: Optional[Union[str, tuple, list]]) -> None:
+        if color is not None:
+            try:
+                rgb = _hex_to_rgb(color)
+                self.website_color = rgb
+            except Exception:
+                self.website_color = None
+        else:
+            self.website_color = None
+        self._update_website_color_btn()
+        self._commit_undo_snapshot()
         self._on_layout_param_changed()
 
     def choose_sfx(self) -> None:
@@ -2338,6 +3241,145 @@ class MainWindow(QMainWindow):
 
     def _on_intro_anim_changed(self, text: str) -> None:
         self._mark_dirty()
+
+    def _on_intro_param_changed(self, *args) -> None:
+        self._mark_dirty()
+        self._schedule_preview(150)
+
+    def _on_intro_card_opacity_changed(self, val: int) -> None:
+        if hasattr(self, "intro_card_opacity_val"):
+            self.intro_card_opacity_val.setText(f"{val}%")
+        self._on_intro_param_changed()
+
+    def _on_intro_website_opacity_changed(self, val: int) -> None:
+        if hasattr(self, "intro_website_opacity_val"):
+            self.intro_website_opacity_val.setText(f"{val}%")
+        self._on_intro_param_changed()
+
+    def _on_intro_title_font_changed(self, text: str) -> None:
+        self._update_intro_title_styles()
+        self._on_intro_param_changed()
+
+    def _update_intro_title_styles(self) -> None:
+        if not hasattr(self, "intro_title_font_combo") or not hasattr(self, "intro_title_style_combo"):
+            return
+        fam = self.intro_title_font_combo.currentText()
+        styles = list_family_styles(fam)
+        cur = self.intro_title_style_combo.currentText()
+        self.intro_title_style_combo.blockSignals(True)
+        self.intro_title_style_combo.clear()
+        self.intro_title_style_combo.addItems(styles)
+        if cur in styles:
+            self.intro_title_style_combo.setCurrentText(cur)
+        elif "Bold" in styles:
+            self.intro_title_style_combo.setCurrentText("Bold")
+        elif "Regular" in styles:
+            self.intro_title_style_combo.setCurrentText("Regular")
+        self.intro_title_style_combo.blockSignals(False)
+
+    def _update_intro_title_color_btn(self) -> None:
+        if not hasattr(self, "intro_title_color_btn"):
+            return
+        rgb = _hex_to_rgb(getattr(self, "intro_title_color", (255, 255, 255)))
+        hex_code = f"#{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"
+        pix = QPixmap(14, 14)
+        pix.fill(QColor(rgb[0], rgb[1], rgb[2]))
+        self.intro_title_color_btn.setIcon(QIcon(pix))
+        self.intro_title_color_btn.setText(f" {hex_code}")
+
+    def choose_intro_title_color(self) -> None:
+        rgb = _hex_to_rgb(getattr(self, "intro_title_color", (255, 255, 255)))
+        init_color = QColor(rgb[0], rgb[1], rgb[2])
+        col = QColorDialog.getColor(init_color, self, "Choose Intro Title Color")
+        if col.isValid():
+            self.intro_title_color = (col.red(), col.green(), col.blue())
+            self._update_intro_title_color_btn()
+            self._commit_undo_snapshot()
+            self._on_intro_param_changed()
+
+    def _update_intro_website_color_btn(self) -> None:
+        if not hasattr(self, "intro_website_color_btn"):
+            return
+        rgb = _hex_to_rgb(getattr(self, "intro_website_color", (204, 204, 204)))
+        hex_code = f"#{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"
+        pix = QPixmap(14, 14)
+        pix.fill(QColor(rgb[0], rgb[1], rgb[2]))
+        self.intro_website_color_btn.setIcon(QIcon(pix))
+        self.intro_website_color_btn.setText(f" {hex_code}")
+
+    def choose_intro_website_color(self) -> None:
+        rgb = _hex_to_rgb(getattr(self, "intro_website_color", (204, 204, 204)))
+        init_color = QColor(rgb[0], rgb[1], rgb[2])
+        col = QColorDialog.getColor(init_color, self, "Choose Intro Watermark Color")
+        if col.isValid():
+            self.intro_website_color = (col.red(), col.green(), col.blue())
+            self._update_intro_website_color_btn()
+            self._commit_undo_snapshot()
+            self._on_intro_param_changed()
+
+    def choose_intro_audio(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose intro presentation audio", "",
+            "Audio files (*.mp3 *.wav *.m4a *.aac *.flac *.ogg *.opus *.wma);;All files (*.*)"
+        )
+        if path:
+            self.intro_audio_path = path
+            self._set_asset_label(self.intro_audio_label, path)
+            self._commit_undo_snapshot()
+            self._mark_dirty()
+
+    def clear_intro_audio(self) -> None:
+        if getattr(self, "intro_audio_path", ""):
+            self._release_intro_audio_player()
+            self.intro_audio_path = ""
+            self._set_asset_label(self.intro_audio_label, "")
+            self.intro_audio_label.setText("No intro audio selected")
+            if hasattr(self, "intro_audio_play_btn"):
+                self.intro_audio_play_btn.setText("Play")
+            self._commit_undo_snapshot()
+            self._mark_dirty()
+
+    def toggle_intro_audio_preview(self) -> None:
+        if not getattr(self, "intro_audio_path", "") or not Path(self.intro_audio_path).is_file():
+            self.statusBar().showMessage("No valid intro audio selected to preview.", 3000)
+            return
+        if not hasattr(self, "_intro_audio_player") or self._intro_audio_player is None:
+            self._intro_audio_player = QMediaPlayer(self)
+            self._intro_audio_output = QAudioOutput(self)
+            self._intro_audio_player.setAudioOutput(self._intro_audio_output)
+            self._intro_audio_player.playbackStateChanged.connect(self._on_intro_audio_playback_state_changed)
+
+        if self._intro_audio_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            self._intro_audio_player.stop()
+            if hasattr(self, "intro_audio_play_btn"):
+                self.intro_audio_play_btn.setText("Play")
+        else:
+            self._intro_audio_player.setSource(QUrl.fromLocalFile(str(Path(self.intro_audio_path).resolve())))
+            self._intro_audio_player.play()
+            if hasattr(self, "intro_audio_play_btn"):
+                self.intro_audio_play_btn.setText("Stop")
+
+    def _on_intro_audio_playback_state_changed(self, state) -> None:
+        if hasattr(self, "intro_audio_play_btn"):
+            if state == QMediaPlayer.PlaybackState.PlayingState:
+                self.intro_audio_play_btn.setText("Stop")
+            else:
+                self.intro_audio_play_btn.setText("Play")
+
+    def _on_intro_fade_changed(self, val: float) -> None:
+        self._mark_dirty()
+
+    def _release_intro_audio_player(self) -> None:
+        if hasattr(self, "_intro_audio_player") and self._intro_audio_player:
+            try:
+                self._intro_audio_player.stop()
+                self._intro_audio_player.setSource(QUrl())
+            except Exception:
+                pass
+            self._intro_audio_player = None
+            self._intro_audio_output = None
+        if hasattr(self, "intro_audio_play_btn"):
+            self.intro_audio_play_btn.setText("Play")
 
     def _toggle_intro_preview(self) -> None:
         self._previewing_intro = not getattr(self, "_previewing_intro", False)
@@ -2386,6 +3428,9 @@ class MainWindow(QMainWindow):
             self._refresh_preview()
 
     def _update_resolution_badge(self) -> None:
+        if getattr(self, "_is_preview_playing", False):
+            self.preview_badge.setText("PREVIEW · Interactive (Approximate)")
+            return
         if getattr(self, "_previewing_intro", False):
             self.preview_badge.setText("PREVIEW · INTRO CARD")
             return
@@ -2400,6 +3445,128 @@ class MainWindow(QMainWindow):
             self.preview_badge.setText(f"PREVIEW · {size[0]}×{size[1]} · SAMPLE LAYOUT")
         else:
             self.preview_badge.setText(f"PREVIEW · 16:9 · {size[0]}×{size[1]}")
+
+    def _get_project_timeline_duration(self) -> float:
+        intro_enabled = (hasattr(self, "intro_enabled_check") and self.intro_enabled_check.isChecked())
+        intro_dur = float(self.intro_dur_spin.value()) if (intro_enabled and hasattr(self, "intro_dur_spin")) else 0.0
+        playlist_dur = sum(float(t.get("duration", 0.0)) for t in self.tracks)
+        if playlist_dur <= 0.0:
+            if self.background_path and is_video_file(self.background_path):
+                try:
+                    from src.services.render_service import get_duration
+                    vdur = get_duration(self.background_path)
+                    if vdur > 0:
+                        return max(1.0, intro_dur + vdur)
+                except Exception:
+                    pass
+            return max(1.0, intro_dur + 30.0)
+        return max(1.0, intro_dur + playlist_dur)
+
+    def _render_intro_card_pixmap(self, valid_bg: str) -> Optional[QPixmap]:
+        try:
+            intro_title_txt = (
+                self.intro_title_edit.text().strip()
+                if hasattr(self, "intro_title_edit") and self.intro_title_edit.text().strip()
+                else (self._committed_title or "Nasheed Collection")
+            )
+            title_fam = self.title_font_combo.currentText() if hasattr(self, "title_font_combo") else "Segoe UI"
+            intro_title_fam = (
+                self.intro_title_font_combo.currentText()
+                if hasattr(self, "intro_title_font_combo") and self.intro_title_font_combo.count()
+                else title_fam
+            )
+            intro_title_sty = (
+                self.intro_title_style_combo.currentText()
+                if hasattr(self, "intro_title_style_combo") and self.intro_title_style_combo.count()
+                else "Bold"
+            )
+            intro_title_sz = (
+                self.intro_title_size_spin.value()
+                if hasattr(self, "intro_title_size_spin")
+                else 56
+            )
+            intro_title_col = getattr(self, "intro_title_color", (255, 255, 255))
+            intro_logo_show = (
+                self.intro_logo_show_check.isChecked()
+                if hasattr(self, "intro_logo_show_check")
+                else True
+            )
+            intro_logo_scale = (
+                self.intro_logo_scale_spin.value() / 100.0
+                if hasattr(self, "intro_logo_scale_spin")
+                else 1.0
+            )
+            intro_blur = (
+                self.intro_blur_spin.value()
+                if hasattr(self, "intro_blur_spin")
+                else 28
+            )
+            intro_card_op = (
+                self.intro_card_opacity_slider.value() / 100.0
+                if hasattr(self, "intro_card_opacity_slider")
+                else 0.70
+            )
+            intro_web_show = (
+                self.intro_website_show_check.isChecked()
+                if hasattr(self, "intro_website_show_check")
+                else True
+            )
+            raw_intro_txt = (
+                self.intro_website_edit.text().strip()
+                if hasattr(self, "intro_website_edit")
+                else ""
+            )
+            main_web_txt = (
+                self.website_edit.text().strip()
+                if hasattr(self, "website_edit")
+                else ""
+            )
+            intro_web_txt = raw_intro_txt or (main_web_txt if intro_web_show else "")
+            intro_web_sz = (
+                self.intro_website_size_spin.value()
+                if hasattr(self, "intro_website_size_spin")
+                else 20
+            )
+            intro_web_op = (
+                self.intro_website_opacity_slider.value() / 100.0
+                if hasattr(self, "intro_website_opacity_slider")
+                else 0.90
+            )
+            intro_web_col = getattr(self, "intro_website_color", None) or getattr(self, "website_color", None)
+
+            with tempfile.TemporaryDirectory(prefix="nasheed_intro_prev_") as tmp:
+                card_path = create_intro_card(
+                    width=1280,
+                    height=720,
+                    background_path=valid_bg,
+                    logo_path=self.logo_path or None,
+                    collection_title=intro_title_txt,
+                    template=self.template_combo.currentText(),
+                    out_dir=tmp,
+                    title_font_family=intro_title_fam,
+                    title_font_style=intro_title_sty,
+                    title_font_size=intro_title_sz,
+                    title_color=intro_title_col,
+                    logo_show=intro_logo_show,
+                    logo_scale=intro_logo_scale,
+                    website_text=intro_web_txt,
+                    website_show=intro_web_show,
+                    website_opacity=intro_web_op,
+                    website_font_size=intro_web_sz,
+                    website_font_family=getattr(self, "website_font_family", None) or intro_title_fam,
+                    website_font_style=getattr(self, "website_font_style", "Regular"),
+                    website_color=intro_web_col,
+                    blur_radius=intro_blur,
+                    card_opacity=intro_card_op,
+                    logo_y_offset=int(self.intro_logo_y_offset_spin.value()) if hasattr(self, "intro_logo_y_offset_spin") else 0,
+                    title_y_offset=int(self.intro_title_y_offset_spin.value()) if hasattr(self, "intro_title_y_offset_spin") else 0,
+                    website_y_offset=int(self.intro_website_y_offset_spin.value()) if hasattr(self, "intro_website_y_offset_spin") else 0,
+                )
+                self._cached_intro_pixmap = QPixmap(card_path)
+                return self._cached_intro_pixmap
+        except Exception:
+            self._cached_intro_pixmap = None
+            return None
 
     def _refresh_preview(self) -> None:
         self._update_resolution_badge()
@@ -2439,10 +3606,23 @@ class MainWindow(QMainWindow):
             self.template_combo.currentText() if hasattr(self, "template_combo") else "",
             title_fam, title_style, title_sz,
             track_fam, track_style, track_sz,
-            logo_pos, web_txt, web_pos, web_sz, web_show, web_op,
+            logo_pos,
+            self.logo_scale_spin.value() if hasattr(self, "logo_scale_spin") else 100,
+            self.logo_x_offset_spin.value() if hasattr(self, "logo_x_offset_spin") else 0,
+            self.logo_y_offset_spin.value() if hasattr(self, "logo_y_offset_spin") else 0,
+            web_txt, web_pos, web_sz, web_show, web_op,
+            getattr(self, "website_color", None),
+            self.website_x_offset_spin.value() if hasattr(self, "website_x_offset_spin") else 0,
+            self.website_y_offset_spin.value() if hasattr(self, "website_y_offset_spin") else 0,
             getattr(self, "_previewing_intro", False),
             self.playlist_pos_combo.currentText() if hasattr(self, "playlist_pos_combo") else "Left",
+            self.playlist_x_offset_spin.value() if hasattr(self, "playlist_x_offset_spin") else 0,
+            self.playlist_y_offset_spin.value() if hasattr(self, "playlist_y_offset_spin") else 0,
+            self.title_x_offset_spin.value() if hasattr(self, "title_x_offset_spin") else 0,
+            self.title_y_offset_spin.value() if hasattr(self, "title_y_offset_spin") else 0,
             self.playlist_cols_spin.value() if hasattr(self, "playlist_cols_spin") else 1,
+            self.playlist_col_mode_combo.currentText().lower() if hasattr(self, "playlist_col_mode_combo") else "automatic",
+            self.playlist_col_dist_edit.text().strip() if hasattr(self, "playlist_col_dist_edit") else "",
             col_sp,
             max_chars,
             round(self.track_spacing_spin.value(), 2) if hasattr(self, "track_spacing_spin") else 1.85,
@@ -2466,6 +3646,7 @@ class MainWindow(QMainWindow):
             self.highlight_outline_spin.value() if hasattr(self, "highlight_outline_spin") else 2,
             self.highlight_corner_combo.currentText() if hasattr(self, "highlight_corner_combo") else "Rounded",
             self.highlight_target_combo.currentText() if hasattr(self, "highlight_target_combo") else "Full Row",
+            self.cursor_x_offset_spin.value() if hasattr(self, "cursor_x_offset_spin") else 0,
             self.cursor_y_offset_spin.value() if hasattr(self, "cursor_y_offset_spin") else 0,
             self.highlight_y_offset_spin.value() if hasattr(self, "highlight_y_offset_spin") else 0,
             getattr(self, "title_color", (255, 255, 255)),
@@ -2474,49 +3655,34 @@ class MainWindow(QMainWindow):
         )
 
         if getattr(self, "_cached_preview_key", None) == cache_key and self._cached_preview_pixmap:
-            scaled_pix = self._cached_preview_pixmap.scaled(
-                target_size,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            self.preview_image.setPixmap(scaled_pix)
-            self.preview_image.setText("")
+            if not getattr(self, "_is_preview_playing", False):
+                scaled_pix = self._cached_preview_pixmap.scaled(
+                    target_size,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                self.preview_image.setPixmap(scaled_pix)
+                self.preview_image.setText("")
             return
 
-        # If user is previewing intro presentation card
+        # Pre-render intro card if intro enabled or user is previewing intro
+        intro_enabled = (hasattr(self, "intro_enabled_check") and self.intro_enabled_check.isChecked())
+        if intro_enabled or getattr(self, "_previewing_intro", False):
+            self._render_intro_card_pixmap(valid_bg)
+
+        # If user explicitly toggled "Preview Intro Card", display intro card and return
         if getattr(self, "_previewing_intro", False):
-            try:
-                with tempfile.TemporaryDirectory(prefix="nasheed_intro_prev_") as tmp:
-                    card_path = create_intro_card(
-                        width=1280,
-                        height=720,
-                        background_path=valid_bg,
-                        logo_path=self.logo_path or None,
-                        collection_title=self._committed_title or "Nasheed Collection",
-                        template=self.template_combo.currentText(),
-                        out_dir=tmp,
-                        title_font_family=title_fam,
-                        title_font_style=title_style,
-                        title_font_size=title_sz,
-                        website_text=web_txt,
-                        website_show=web_show,
-                        website_opacity=web_op,
-                        website_font_size=web_sz,
-                        website_font_family=getattr(self, "website_font_family", None) or title_fam,
-                        website_font_style=getattr(self, "website_font_style", "Regular"),
-                        website_color=getattr(self, "website_color", None),
-                    )
-                    pix = QPixmap(card_path)
-                    scaled_pix = pix.scaled(
-                        target_size,
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation,
-                    )
-                    self.preview_image.setPixmap(scaled_pix)
-                    self.preview_image.setText("")
-            except Exception as exc:
+            if self._cached_intro_pixmap and not self._cached_intro_pixmap.isNull():
+                scaled_pix = self._cached_intro_pixmap.scaled(
+                    target_size,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                self.preview_image.setPixmap(scaled_pix)
+                self.preview_image.setText("")
+            else:
                 self.preview_image.setPixmap(QPixmap())
-                self.preview_image.setText(f"Intro preview unavailable: {exc}")
+                self.preview_image.setText("Intro preview unavailable.")
             return
 
         try:
@@ -2545,7 +3711,7 @@ class MainWindow(QMainWindow):
                     indicator_mode=cur_mode,
                     cursor_path=self.cursor_path or None,
                     cursor_size=cur_cursor_size,
-                    preview_only_first_overlay=True,
+                    preview_only_first_overlay=False,
                     active_track_index=cur_track_row,
                     title_font_family=title_fam,
                     title_font_style=title_style,
@@ -2554,6 +3720,9 @@ class MainWindow(QMainWindow):
                     track_font_style=track_style,
                     track_font_size=track_sz,
                     logo_position=logo_pos,
+                    logo_scale=round(self.logo_scale_spin.value() / 100.0, 2) if hasattr(self, "logo_scale_spin") else 1.0,
+                    logo_x_offset=self.logo_x_offset_spin.value() if hasattr(self, "logo_x_offset_spin") else 0,
+                    logo_y_offset=self.logo_y_offset_spin.value() if hasattr(self, "logo_y_offset_spin") else 0,
                     website_text=web_txt,
                     website_position=web_pos,
                     website_font_size=web_sz,
@@ -2562,17 +3731,26 @@ class MainWindow(QMainWindow):
                     website_font_family=getattr(self, "website_font_family", None) or track_fam,
                     website_font_style=getattr(self, "website_font_style", "Regular"),
                     website_color=getattr(self, "website_color", None),
+                    website_x_offset=self.website_x_offset_spin.value() if hasattr(self, "website_x_offset_spin") else 0,
+                    website_y_offset=self.website_y_offset_spin.value() if hasattr(self, "website_y_offset_spin") else 0,
                     playlist_position=self.playlist_pos_combo.currentText() if hasattr(self, "playlist_pos_combo") else "Left",
+                    playlist_x_offset=self.playlist_x_offset_spin.value() if hasattr(self, "playlist_x_offset_spin") else 0,
+                    playlist_y_offset=self.playlist_y_offset_spin.value() if hasattr(self, "playlist_y_offset_spin") else 0,
                     playlist_columns=self.playlist_cols_spin.value() if hasattr(self, "playlist_cols_spin") else 1,
+                    playlist_column_distribution_mode=self.playlist_col_mode_combo.currentText().lower() if hasattr(self, "playlist_col_mode_combo") else "automatic",
+                    playlist_column_distribution=self.playlist_col_dist_edit.text().strip() if hasattr(self, "playlist_col_dist_edit") else "",
                     playlist_row_spacing=round(self.track_spacing_spin.value(), 2) if hasattr(self, "track_spacing_spin") else 1.85,
                     playlist_col_spacing=col_sp,
                     track_max_chars=max_chars,
                     playlist_bg_opacity=round(self.playlist_bg_slider.value() / 100.0, 2) if hasattr(self, "playlist_bg_slider") else 0.0,
                     logo_cleanup_mode="auto" if (hasattr(self, "logo_cleanup_check") and self.logo_cleanup_check.isChecked()) else "none",
                     title_position=self.title_pos_combo.currentText() if hasattr(self, "title_pos_combo") else "Top-Center",
+                    title_x_offset=self.title_x_offset_spin.value() if hasattr(self, "title_x_offset_spin") else 0,
+                    title_y_offset=self.title_y_offset_spin.value() if hasattr(self, "title_y_offset_spin") else 0,
                     title_show=self.title_show_check.isChecked() if hasattr(self, "title_show_check") else True,
                     title_color=getattr(self, "title_color", (255, 255, 255)),
                     track_color=getattr(self, "track_color", (255, 255, 255)),
+                    cursor_x_offset=self.cursor_x_offset_spin.value() if hasattr(self, "cursor_x_offset_spin") else 0,
                     cursor_y_offset=self.cursor_y_offset_spin.value() if hasattr(self, "cursor_y_offset_spin") else 0,
                     highlight_y_offset=self.highlight_y_offset_spin.value() if hasattr(self, "highlight_y_offset_spin") else 0,
                     active_track_color=getattr(self, "active_track_color", None),
@@ -2591,68 +3769,163 @@ class MainWindow(QMainWindow):
                     track_softening=text_soft,
                 )
 
-                # Cache transparent foreground overlay for real-time video playback preview
                 fg_path = Path(tmp) / "composition_fg.png"
-                if fg_path.is_file():
-                    try:
-                        fg_img = Image.open(fg_path).convert("RGBA")
-                        if overlays:
-                            fg_img = Image.alpha_composite(fg_img, Image.open(overlays[0]).convert("RGBA"))
-                        fg_cached = Path(tmp) / "cached_live_overlay.png"
-                        fg_img.save(fg_cached)
-                        self._current_overlay_pixmap = QPixmap(str(fg_cached))
-                    except Exception:
-                        self._current_overlay_pixmap = None
+                fg_img = Image.open(fg_path).convert("RGBA") if fg_path.is_file() else None
+                base_img = Image.open(base).convert("RGBA")
 
-                img = Image.open(base).convert("RGBA")
+                self._cached_composition_pixmaps = []
+                self._cached_video_overlays = []
+
+                def _pil_to_pixmap(im: Image.Image) -> QPixmap:
+                    if im.mode != "RGBA":
+                        im = im.convert("RGBA")
+                    data = im.tobytes("raw", "RGBA")
+                    qimg = QImage(data, im.width, im.height, QImage.Format.Format_RGBA8888).copy()
+                    return QPixmap.fromImage(qimg)
+
                 if overlays:
-                    img = Image.alpha_composite(img, Image.open(overlays[0]).convert("RGBA"))
-                preview_path = Path(tmp) / "preview.png"
-                img.save(preview_path)
-                pix = QPixmap(str(preview_path))
+                    for ov_p in overlays:
+                        try:
+                            ov_img = Image.open(ov_p).convert("RGBA")
+                            comp_img = Image.alpha_composite(base_img.copy(), ov_img)
+                            self._cached_composition_pixmaps.append(_pil_to_pixmap(comp_img))
+                            if fg_img:
+                                vid_overlay = Image.alpha_composite(fg_img.copy(), ov_img)
+                                self._cached_video_overlays.append(_pil_to_pixmap(vid_overlay))
+                            else:
+                                self._cached_video_overlays.append(_pil_to_pixmap(ov_img))
+                        except Exception:
+                            pass
+                else:
+                    self._cached_composition_pixmaps.append(_pil_to_pixmap(base_img))
+                    if fg_img:
+                        self._cached_video_overlays.append(_pil_to_pixmap(fg_img))
+
+                if self._cached_composition_pixmaps:
+                    sel_idx = min(cur_track_row, len(self._cached_composition_pixmaps) - 1)
+                    self._cached_preview_pixmap = self._cached_composition_pixmaps[sel_idx]
+                if self._cached_video_overlays:
+                    sel_idx = min(cur_track_row, len(self._cached_video_overlays) - 1)
+                    self._current_overlay_pixmap = self._cached_video_overlays[sel_idx]
+
                 self._cached_preview_key = cache_key
-                self._cached_preview_pixmap = pix
+
+                tot_d = self._get_project_timeline_duration()
+                if hasattr(self, "timeline_scrubber"):
+                    self.timeline_scrubber.blockSignals(True)
+                    self.timeline_scrubber.setRange(0, int(round(tot_d * 10)))
+                    self.timeline_scrubber.blockSignals(False)
+                if hasattr(self, "scrubber_total_label"):
+                    tm, ts = divmod(int(tot_d), 60)
+                    self.scrubber_total_label.setText(f"{tm:02d}:{ts:02d}")
 
                 if not getattr(self, "_is_preview_playing", False):
-                    scaled_pix = pix.scaled(
-                        target_size,
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation,
-                    )
-                    self.preview_image.setPixmap(scaled_pix)
-                    self.preview_image.setText("")
+                    pix = self._cached_preview_pixmap
+                    if pix and not pix.isNull():
+                        scaled_pix = pix.scaled(
+                            target_size,
+                            Qt.AspectRatioMode.KeepAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation,
+                        )
+                        self.preview_image.setPixmap(scaled_pix)
+                        self.preview_image.setText("")
         except Exception as exc:
             self.preview_image.setPixmap(QPixmap())
             self.preview_image.setText(f"Preview unavailable: {exc}")
 
     def _toggle_video_preview(self) -> None:
-        """Toggle live playback preview of video background."""
-        if not self.background_path or not is_video_file(self.background_path):
-            return
-        if self._is_preview_playing:
-            self._stop_video_preview()
+        """Backwards-compatible wrapper for preview playback."""
+        self._toggle_preview_playback()
+
+    def _toggle_preview_playback(self) -> None:
+        """Toggle interactive live playback preview of composition and audio (Prompt 13)."""
+        if getattr(self, "_is_preview_playing", False):
+            self._pause_preview_playback()
         else:
-            self._start_video_preview()
+            self._start_preview_playback()
 
     def _start_video_preview(self) -> None:
-        """Start playing moving background video preview."""
-        if not self.background_path or not Path(self.background_path).is_file():
-            return
-        if not self._video_player:
-            self._video_player = QMediaPlayer(self)
-            self._video_sink = QVideoSink(self)
-            self._video_player.setVideoSink(self._video_sink)
-            self._video_sink.videoFrameChanged.connect(self._on_video_frame_received)
-            self._video_player.setLoops(QMediaPlayer.Loops.Infinite)
+        """Backwards-compatible wrapper for starting preview playback."""
+        self._start_preview_playback()
 
-        st_ms = int(self.video_start_spin.value() * 1000.0) if hasattr(self, "video_start_spin") else 0
-        self._video_player.setSource(QUrl.fromLocalFile(str(Path(self.background_path).resolve())))
-        self._video_player.setPosition(st_ms)
-        self._video_player.play()
+    def _start_preview_playback(self) -> None:
+        """Start interactive preview playback of audio and video/image composition."""
         self._is_preview_playing = True
         if hasattr(self, "play_preview_btn"):
-            self.play_preview_btn.setText("Pause Video Preview")
+            self.play_preview_btn.setText("Pause Preview")
             self.play_preview_btn.setIcon(get_svg_icon("pause", 13, "#edf2ee"))
+        if hasattr(self, "scrubber_play_btn"):
+            self.scrubber_play_btn.setIcon(get_svg_icon("pause", 13, "#edf2ee"))
+        if hasattr(self, "preview_badge"):
+            self.preview_badge.setText("PREVIEW · Interactive (Approximate)")
+
+        tot_d = self._get_project_timeline_duration()
+        if getattr(self, "_preview_current_time", 0.0) >= tot_d - 0.2:
+            self._preview_current_time = 0.0
+
+        if self.background_path and is_video_file(self.background_path) and Path(self.background_path).is_file():
+            if not self._video_player:
+                self._video_player = QMediaPlayer(self)
+                self._video_sink = QVideoSink(self)
+                self._video_player.setVideoSink(self._video_sink)
+                self._video_sink.videoFrameChanged.connect(self._on_video_frame_received)
+                self._video_player.setLoops(QMediaPlayer.Loops.Infinite)
+
+            st_ms = int(self.video_start_spin.value() * 1000.0) if hasattr(self, "video_start_spin") else 0
+            intro_enabled = (hasattr(self, "intro_enabled_check") and self.intro_enabled_check.isChecked())
+            intro_dur = float(self.intro_dur_spin.value()) if (intro_enabled and hasattr(self, "intro_dur_spin")) else 0.0
+            vid_pos = st_ms + max(0, int((self._preview_current_time - intro_dur) * 1000))
+            self._video_player.setSource(QUrl.fromLocalFile(str(Path(self.background_path).resolve())))
+            self._video_player.setPosition(vid_pos)
+            self._video_player.play()
+
+        self._last_playback_tick = time.monotonic()
+        self._preview_audio_buffer_start = time.monotonic()
+        if hasattr(self, "_preview_timeline_timer"):
+            self._preview_timeline_timer.start(100)
+
+        self._sync_playback_state(self._preview_current_time, is_playing=True, is_seek=True)
+
+    def _pause_preview_playback(self) -> None:
+        """Pause preview playback and retain current timestamp."""
+        self._is_preview_playing = False
+        if hasattr(self, "_preview_timeline_timer") and self._preview_timeline_timer.isActive():
+            self._preview_timeline_timer.stop()
+
+        if hasattr(self, "play_preview_btn"):
+            self.play_preview_btn.setText("Play Preview")
+            self.play_preview_btn.setIcon(get_svg_icon("play", 13, "#edf2ee"))
+        if hasattr(self, "scrubber_play_btn"):
+            self.scrubber_play_btn.setIcon(get_svg_icon("play", 13, "#edf2ee"))
+        self._update_resolution_badge()
+
+        if hasattr(self, "_preview_audio_player") and self._preview_audio_player:
+            try:
+                self._preview_audio_player.pause()
+            except Exception:
+                pass
+
+        if hasattr(self, "_video_player") and self._video_player:
+            try:
+                self._video_player.pause()
+            except Exception:
+                pass
+
+    def _stop_video_preview(self) -> None:
+        """Backwards-compatible wrapper for stopping preview playback."""
+        self._stop_preview_playback()
+
+    def _stop_preview_playback(self) -> None:
+        """Stop preview playback, reset timeline to beginning, and update view."""
+        self._pause_preview_playback()
+        self._seek_preview(0.0)
+        if hasattr(self, "_preview_audio_player") and self._preview_audio_player:
+            try:
+                self._preview_audio_player.stop()
+            except Exception:
+                pass
+            self._preview_audio_current_src = ""
+            self._preview_audio_current_track_idx = None
 
     def _release_video_player(self) -> None:
         """Fully stop and release QMediaPlayer decoder resources."""
@@ -2665,46 +3938,384 @@ class MainWindow(QMainWindow):
             self._video_player = None
         self._is_preview_playing = False
 
-    def _stop_video_preview(self) -> None:
-        """Stop/pause live moving video preview and restore static representative frame."""
-        if self._video_player:
+    def _release_preview_player(self) -> None:
+        """Fully stop preview playback and release audio player resources."""
+        if hasattr(self, "_preview_timeline_timer") and self._preview_timeline_timer.isActive():
+            self._preview_timeline_timer.stop()
+        if hasattr(self, "_preview_audio_player") and self._preview_audio_player:
             try:
-                self._video_player.pause()
+                self._preview_audio_player.stop()
+                self._preview_audio_player.setSource(QUrl())
             except Exception:
                 pass
+            self._preview_audio_player = None
+            self._preview_audio_output = None
         self._is_preview_playing = False
-        if hasattr(self, "play_preview_btn"):
-            self.play_preview_btn.setText("Play Video Preview")
-            self.play_preview_btn.setIcon(get_svg_icon("play", 13, "#edf2ee"))
-        # Refresh to pristine representative frame
-        if getattr(self, "_cached_preview_pixmap", None) and not self._cached_preview_pixmap.isNull():
-            target_size = self.preview_frame.size()
-            if target_size.width() <= 10 or target_size.height() <= 10:
-                target_size = QSize(640, 360)
-            scaled_pix = self._cached_preview_pixmap.scaled(
-                target_size,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            self.preview_image.setPixmap(scaled_pix)
-            self.preview_image.setText("")
+        self._preview_audio_current_src = ""
+        self._preview_audio_current_track_idx = None
 
-    def _on_video_frame_received(self, frame) -> None:
-        """Render live video frame with playlist typography overlay composited on top."""
-        if not self._is_preview_playing or frame is None or not frame.isValid():
+    def _seek_preview(self, time_sec: float) -> None:
+        """Seek preview audio and visual composition to specified timeline position in seconds."""
+        total_d = self._get_project_timeline_duration()
+        self._preview_current_time = max(0.0, min(total_d, time_sec))
+
+        if hasattr(self, "timeline_scrubber"):
+            self.timeline_scrubber.blockSignals(True)
+            self.timeline_scrubber.setValue(int(round(self._preview_current_time * 10)))
+            self.timeline_scrubber.blockSignals(False)
+
+        if hasattr(self, "scrubber_cur_label"):
+            m, s = divmod(int(self._preview_current_time), 60)
+            self.scrubber_cur_label.setText(f"{m:02d}:{s:02d}")
+
+        if self.background_path and is_video_file(self.background_path) and hasattr(self, "_video_player") and self._video_player:
+            st_ms = int(self.video_start_spin.value() * 1000.0) if hasattr(self, "video_start_spin") else 0
+            intro_enabled = (hasattr(self, "intro_enabled_check") and self.intro_enabled_check.isChecked())
+            intro_dur = float(self.intro_dur_spin.value()) if (intro_enabled and hasattr(self, "intro_dur_spin")) else 0.0
+            vid_pos = st_ms + max(0, int((self._preview_current_time - intro_dur) * 1000))
+            self._video_player.setPosition(vid_pos)
+
+        self._sync_playback_state(self._preview_current_time, is_playing=getattr(self, "_is_preview_playing", False), is_seek=True)
+        if not getattr(self, "_is_preview_playing", False):
+            self._update_preview_visual_at_time(self._preview_current_time)
+
+    def _on_scrubber_user_seek(self, val: int) -> None:
+        self._preview_user_seeking = True
+        t = val / 10.0
+        self._seek_preview(t)
+
+    def _on_scrubber_user_release(self) -> None:
+        self._preview_user_seeking = False
+        self._last_playback_tick = time.monotonic()
+        self._preview_audio_buffer_start = time.monotonic()
+        if getattr(self, "_is_preview_playing", False):
+            self._sync_playback_state(self._preview_current_time, is_playing=True, is_seek=True)
+
+    def _on_scrubber_value_changed(self, val: int) -> None:
+        if (hasattr(self, "timeline_scrubber") and self.timeline_scrubber.isSliderDown()) or getattr(self, "_preview_user_seeking", False):
+            t = val / 10.0
+            self._seek_preview(t)
+
+    def _on_preview_timeline_tick(self) -> None:
+        if not getattr(self, "_is_preview_playing", False):
             return
-        qimg = frame.toImage()
-        if qimg.isNull():
+        if getattr(self, "_preview_user_seeking", False) or (hasattr(self, "timeline_scrubber") and self.timeline_scrubber.isSliderDown()):
             return
+
+        now = time.monotonic()
+        dt = now - getattr(self, "_last_playback_tick", now)
+        self._last_playback_tick = now
+
+        if dt > 1.0:
+            dt = 0.1
+
+        audio_synced = False
+        intro_enabled = (hasattr(self, "intro_enabled_check") and self.intro_enabled_check.isChecked())
+        intro_dur = float(self.intro_dur_spin.value()) if (intro_enabled and hasattr(self, "intro_dur_spin")) else 0.0
+
+        if hasattr(self, "_preview_audio_player") and self._preview_audio_player:
+            player_state = self._preview_audio_player.playbackState()
+            media_status = self._preview_audio_player.mediaStatus()
+            cur_pos_ms = self._preview_audio_player.position()
+            trk_idx = getattr(self, "_preview_audio_current_track_idx", None)
+
+            if player_state == QMediaPlayer.PlaybackState.PlayingState or media_status == QMediaPlayer.MediaStatus.LoadingMedia:
+                if trk_idx == -1:
+                    if cur_pos_ms > 0:
+                        calc_t = cur_pos_ms / 1000.0
+                        self._preview_current_time = max(self._preview_current_time, calc_t)
+                        audio_synced = True
+                    elif cur_pos_ms == 0:
+                        audio_buffering_age = now - getattr(self, "_preview_audio_buffer_start", now)
+                        if audio_buffering_age < 1.5:
+                            audio_synced = True
+                elif trk_idx is not None and 0 <= trk_idx < len(self.tracks):
+                    accum = sum(float(self.tracks[i].get("duration", 0.0)) for i in range(trk_idx))
+                    trk_dur = float(self.tracks[trk_idx].get("duration", 0.0))
+                    if media_status == QMediaPlayer.MediaStatus.EndOfMedia or (trk_dur > 0 and cur_pos_ms / 1000.0 >= trk_dur - 0.05):
+                        self._preview_current_time = intro_dur + accum + trk_dur + 0.02
+                        audio_synced = True
+                    elif cur_pos_ms > 0:
+                        calc_t = intro_dur + accum + (cur_pos_ms / 1000.0)
+                        self._preview_current_time = max(self._preview_current_time, calc_t)
+                        audio_synced = True
+                    elif cur_pos_ms == 0:
+                        audio_buffering_age = now - getattr(self, "_preview_audio_buffer_start", now)
+                        if audio_buffering_age < 1.5:
+                            audio_synced = True
+
+        if not audio_synced:
+            self._preview_current_time += dt
+
+        total_d = self._get_project_timeline_duration()
+
+        if self._preview_current_time >= total_d:
+            self._preview_current_time = total_d
+            self._pause_preview_playback()
+            self._seek_preview(0.0)
+            return
+
+        if hasattr(self, "timeline_scrubber") and not self.timeline_scrubber.isSliderDown():
+            self.timeline_scrubber.blockSignals(True)
+            self.timeline_scrubber.setValue(int(round(self._preview_current_time * 10)))
+            self.timeline_scrubber.blockSignals(False)
+
+        if hasattr(self, "scrubber_cur_label"):
+            m, s = divmod(int(self._preview_current_time), 60)
+            self.scrubber_cur_label.setText(f"{m:02d}:{s:02d}")
+
+        self._sync_playback_state(self._preview_current_time, is_playing=True, is_seek=False)
+        if not (self.background_path and is_video_file(self.background_path)):
+            self._update_preview_visual_at_time(self._preview_current_time)
+
+    def _get_effective_preview_volume(self) -> float:
+        if getattr(self, "_preview_is_muted", False):
+            return 0.0
+        val = self.preview_volume_slider.value() if hasattr(self, "preview_volume_slider") else getattr(self, "_preview_volume", 70)
+        return max(0.0, min(1.0, float(val) / 100.0))
+
+    def _on_preview_volume_changed(self, value: int) -> None:
+        self._preview_volume = value
+        if value <= 0:
+            self._preview_is_muted = True
+            if hasattr(self, "preview_volume_btn"):
+                self.preview_volume_btn.setIcon(get_svg_icon("volume_mute", 13, "#edf2ee"))
+                self.preview_volume_btn.setToolTip("Unmute preview audio")
+        else:
+            self._preview_is_muted = False
+            if hasattr(self, "preview_volume_btn"):
+                self.preview_volume_btn.setIcon(get_svg_icon("volume_high", 13, "#edf2ee"))
+                self.preview_volume_btn.setToolTip("Mute preview audio")
+        if hasattr(self, "preview_volume_label"):
+            self.preview_volume_label.setText(f"{value}%")
+        if hasattr(self, "_preview_audio_output") and self._preview_audio_output:
+            self._preview_audio_output.setVolume(self._get_effective_preview_volume())
+
+    def _toggle_preview_mute(self) -> None:
+        if not hasattr(self, "preview_volume_slider"):
+            return
+        if getattr(self, "_preview_is_muted", False) or self.preview_volume_slider.value() == 0:
+            restore = getattr(self, "_preview_pre_mute_volume", 70)
+            if restore <= 0:
+                restore = 70
+            self._preview_is_muted = False
+            self.preview_volume_slider.setValue(restore)
+        else:
+            self._preview_pre_mute_volume = max(1, self.preview_volume_slider.value())
+            self._preview_is_muted = True
+            self.preview_volume_slider.setValue(0)
+
+    def _sync_playback_state(self, time_sec: float, is_playing: bool, is_seek: bool = False) -> None:
+        intro_enabled = (hasattr(self, "intro_enabled_check") and self.intro_enabled_check.isChecked())
+        intro_dur = float(self.intro_dur_spin.value()) if (intro_enabled and hasattr(self, "intro_dur_spin")) else 0.0
+
+        if not hasattr(self, "_preview_audio_player") or self._preview_audio_player is None:
+            self._preview_audio_player = QMediaPlayer(self)
+            self._preview_audio_output = QAudioOutput(self)
+            self._preview_audio_player.setAudioOutput(self._preview_audio_output)
+            self._preview_audio_output.setVolume(self._get_effective_preview_volume())
+
+        if time_sec < intro_dur:
+            self._preview_active_visual_idx = -1
+            if intro_enabled and self.intro_audio_path and Path(self.intro_audio_path).is_file():
+                resolved_iap = str(Path(self.intro_audio_path).resolve())
+                need_source_change = (self._preview_audio_current_track_idx != -1 or self._preview_audio_current_src != resolved_iap)
+                if need_source_change:
+                    self._preview_audio_player.setSource(QUrl.fromLocalFile(resolved_iap))
+                    self._preview_audio_current_src = resolved_iap
+                    self._preview_audio_current_track_idx = -1
+                    self._preview_audio_buffer_start = time.monotonic()
+                    if time_sec > 0.05:
+                        self._preview_audio_player.setPosition(int(time_sec * 1000))
+                    if self._preview_audio_output:
+                        self._preview_audio_output.setVolume(self._get_effective_preview_volume())
+                    if is_playing:
+                        self._preview_audio_player.play()
+                elif is_seek:
+                    self._preview_audio_buffer_start = time.monotonic()
+                    self._preview_audio_player.setPosition(int(time_sec * 1000))
+                    if self._preview_audio_output:
+                        self._preview_audio_output.setVolume(self._get_effective_preview_volume())
+                    if is_playing and self._preview_audio_player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
+                        if self._preview_audio_player.mediaStatus() != QMediaPlayer.MediaStatus.EndOfMedia:
+                            self._preview_audio_player.play()
+                else:
+                    if self._preview_audio_output:
+                        self._preview_audio_output.setVolume(self._get_effective_preview_volume())
+                    if is_playing and self._preview_audio_player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
+                        if self._preview_audio_player.mediaStatus() != QMediaPlayer.MediaStatus.EndOfMedia:
+                            self._preview_audio_player.play()
+
+                fade_in = float(self.intro_fade_in_spin.value()) if hasattr(self, "intro_fade_in_spin") else 0.5
+                fade_out = float(self.intro_fade_out_spin.value()) if hasattr(self, "intro_fade_out_spin") else 0.5
+                v = 1.0
+                if fade_in > 0 and time_sec < fade_in:
+                    v = min(v, max(0.0, time_sec / fade_in))
+                rem = intro_dur - time_sec
+                if fade_out > 0 and rem < fade_out:
+                    v = min(v, max(0.0, rem / fade_out))
+                if self._preview_audio_output:
+                    self._preview_audio_output.setVolume(v * self._get_effective_preview_volume())
+            else:
+                if self._preview_audio_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+                    self._preview_audio_player.pause()
+        else:
+            playlist_t = max(0.0, time_sec - intro_dur)
+            active_idx = 0
+            track_offset = 0.0
+            if self.tracks:
+                accum = 0.0
+                for i, trk in enumerate(self.tracks):
+                    dur = float(trk.get("duration", 0.0))
+                    if playlist_t < accum + dur or i == len(self.tracks) - 1:
+                        active_idx = i
+                        track_offset = max(0.0, playlist_t - accum)
+                        break
+                    accum += dur
+
+            self._preview_active_visual_idx = active_idx
+
+            if self.tracks and active_idx < len(self.tracks):
+                trk = self.tracks[active_idx]
+                trk_path = trk.get("path")
+                if trk_path and Path(trk_path).is_file():
+                    resolved_tp = str(Path(trk_path).resolve())
+                    need_source_change = (self._preview_audio_current_track_idx != active_idx or self._preview_audio_current_src != resolved_tp)
+                    if need_source_change:
+                        self._preview_audio_player.setSource(QUrl.fromLocalFile(resolved_tp))
+                        self._preview_audio_current_src = resolved_tp
+                        self._preview_audio_current_track_idx = active_idx
+                        self._preview_audio_buffer_start = time.monotonic()
+                        if track_offset > 0.05:
+                            self._preview_audio_player.setPosition(int(track_offset * 1000))
+                        if self._preview_audio_output:
+                            self._preview_audio_output.setVolume(self._get_effective_preview_volume())
+                        if is_playing:
+                            self._preview_audio_player.play()
+                    elif is_seek:
+                        self._preview_audio_buffer_start = time.monotonic()
+                        self._preview_audio_player.setPosition(int(track_offset * 1000))
+                        if self._preview_audio_output:
+                            self._preview_audio_output.setVolume(self._get_effective_preview_volume())
+                        if is_playing and self._preview_audio_player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
+                            if self._preview_audio_player.mediaStatus() != QMediaPlayer.MediaStatus.EndOfMedia:
+                                self._preview_audio_player.play()
+                    else:
+                        if self._preview_audio_output:
+                            self._preview_audio_output.setVolume(self._get_effective_preview_volume())
+                        if is_playing and self._preview_audio_player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
+                            if self._preview_audio_player.mediaStatus() != QMediaPlayer.MediaStatus.EndOfMedia:
+                                self._preview_audio_player.play()
+                else:
+                    if self._preview_audio_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+                        self._preview_audio_player.pause()
+            else:
+                if self._preview_audio_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+                    self._preview_audio_player.pause()
+
+    def _update_preview_visual_at_time(self, time_sec: float) -> None:
+        intro_enabled = (hasattr(self, "intro_enabled_check") and self.intro_enabled_check.isChecked())
+        intro_dur = float(self.intro_dur_spin.value()) if (intro_enabled and hasattr(self, "intro_dur_spin")) else 0.0
+
         target_size = self.preview_frame.size()
         if target_size.width() <= 10 or target_size.height() <= 10:
             target_size = QSize(640, 360)
+
+        if time_sec < intro_dur:
+            if getattr(self, "_cached_intro_pixmap", None) and not self._cached_intro_pixmap.isNull():
+                scaled_pix = self._cached_intro_pixmap.scaled(
+                    target_size,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                self.preview_image.setPixmap(scaled_pix)
+                self.preview_image.setText("")
+        else:
+            playlist_t = max(0.0, time_sec - intro_dur)
+            active_idx = 0
+            if self.tracks:
+                accum = 0.0
+                for i, trk in enumerate(self.tracks):
+                    dur = float(trk.get("duration", 0.0))
+                    if playlist_t < accum + dur or i == len(self.tracks) - 1:
+                        active_idx = i
+                        break
+                    accum += dur
+
+            self._preview_active_visual_idx = active_idx
+
+            if self.background_path and is_video_file(self.background_path):
+                if self._video_player:
+                    st_ms = int(self.video_start_spin.value() * 1000.0) if hasattr(self, "video_start_spin") else 0
+                    self._video_player.setPosition(st_ms + int(playlist_t * 1000))
+                if getattr(self, "_cached_video_overlays", None):
+                    sel_idx = min(active_idx, len(self._cached_video_overlays) - 1)
+                    self._current_overlay_pixmap = self._cached_video_overlays[sel_idx]
+            else:
+                if getattr(self, "_cached_composition_pixmaps", None) and self._cached_composition_pixmaps:
+                    sel_idx = min(active_idx, len(self._cached_composition_pixmaps) - 1)
+                    pix = self._cached_composition_pixmaps[sel_idx]
+                    scaled_pix = pix.scaled(
+                        target_size,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                    self.preview_image.setPixmap(scaled_pix)
+                    self.preview_image.setText("")
+                elif getattr(self, "_cached_preview_pixmap", None) and not self._cached_preview_pixmap.isNull():
+                    scaled_pix = self._cached_preview_pixmap.scaled(
+                        target_size,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                    self.preview_image.setPixmap(scaled_pix)
+                    self.preview_image.setText("")
+
+    def _on_shortcut_space_preview(self) -> None:
+        """Spacebar shortcut toggle: ignore if user is actively editing text."""
+        from PySide6.QtWidgets import QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox
+        focus_w = QApplication.focusWidget()
+        if focus_w and isinstance(focus_w, (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox)):
+            return
+        self._toggle_preview_playback()
+
+    def _on_video_frame_received(self, frame) -> None:
+        """Render live video frame with playlist typography overlay composited on top."""
+        if not getattr(self, "_is_preview_playing", False) or frame is None or not frame.isValid():
+            return
+
+        now = time.monotonic()
+        if now - getattr(self, "_last_video_frame_time", 0.0) < 0.033:
+            return
+        self._last_video_frame_time = now
+
+        target_size = self.preview_frame.size()
+        if target_size.width() <= 10 or target_size.height() <= 10:
+            target_size = QSize(640, 360)
+
+        intro_enabled = (hasattr(self, "intro_enabled_check") and self.intro_enabled_check.isChecked())
+        intro_dur = float(self.intro_dur_spin.value()) if (intro_enabled and hasattr(self, "intro_dur_spin")) else 0.0
+
+        if getattr(self, "_preview_current_time", 0.0) < intro_dur:
+            if getattr(self, "_cached_intro_pixmap", None) and not self._cached_intro_pixmap.isNull():
+                scaled_intro = self._cached_intro_pixmap.scaled(
+                    target_size,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                self.preview_image.setPixmap(scaled_intro)
+                self.preview_image.setText("")
+                return
+
+        qimg = frame.toImage()
+        if qimg.isNull():
+            return
 
         fit = self.video_fit_combo.currentText().lower() if hasattr(self, "video_fit_combo") else "fill"
         w, h = target_size.width(), target_size.height()
 
         if "pad" in fit or "letterbox" in fit:
-            scaled = qimg.scaled(target_size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            scaled = qimg.scaled(target_size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.FastTransformation)
             canvas = QImage(target_size, QImage.Format.Format_ARGB32_Premultiplied)
             canvas.fill(Qt.GlobalColor.black)
             p = QPainter(canvas)
@@ -2712,20 +4323,28 @@ class MainWindow(QMainWindow):
             oy = (h - scaled.height()) // 2
             p.drawImage(ox, oy, scaled)
         elif "stretch" in fit:
-            canvas = qimg.scaled(target_size, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            canvas = qimg.scaled(target_size, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.FastTransformation)
             p = QPainter(canvas)
         else:  # "fill / crop (cover)"
-            scaled = qimg.scaled(target_size, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
+            scaled = qimg.scaled(target_size, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.FastTransformation)
             ox = max(0, (scaled.width() - w) // 2)
             oy = max(0, (scaled.height() - h) // 2)
             canvas = scaled.copy(ox, oy, w, h)
             p = QPainter(canvas)
 
-        if getattr(self, "_current_overlay_pixmap", None) and not self._current_overlay_pixmap.isNull():
-            ov_cache_key = (id(self._current_overlay_pixmap), w, h)
+        active_idx = getattr(self, "_preview_active_visual_idx", 0)
+        ov_pix = None
+        if getattr(self, "_cached_video_overlays", None):
+            sel_idx = min(max(0, active_idx), len(self._cached_video_overlays) - 1)
+            ov_pix = self._cached_video_overlays[sel_idx]
+        elif getattr(self, "_current_overlay_pixmap", None) and not self._current_overlay_pixmap.isNull():
+            ov_pix = self._current_overlay_pixmap
+
+        if ov_pix and not ov_pix.isNull():
+            ov_cache_key = (id(ov_pix), w, h)
             if getattr(self, "_scaled_overlay_cache_key", None) != ov_cache_key or not hasattr(self, "_scaled_overlay_pixmap"):
                 self._scaled_overlay_cache_key = ov_cache_key
-                self._scaled_overlay_pixmap = self._current_overlay_pixmap.scaled(
+                self._scaled_overlay_pixmap = ov_pix.scaled(
                     target_size,
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation,
@@ -2928,6 +4547,8 @@ class MainWindow(QMainWindow):
 
             # 3b. Stop and release media player decoder and clean up child processes
             self._release_video_player()
+            self._release_preview_player()
+            self._release_intro_audio_player()
             from src.services.process_manager import cleanup_all_processes
             cleanup_all_processes(timeout_per_process=1.5)
 
@@ -2947,9 +4568,11 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _mark_dirty(self, *args) -> None:
-        if not self._loading_project:
+        if not self._loading_project and not getattr(self, "_undoing_or_redoing", False):
             self._is_dirty = True
             self._update_project_ui_indicators()
+            if hasattr(self, "_undo_timer"):
+                self._undo_timer.start(300)
 
     def has_unsaved_changes(self) -> bool:
         if self._is_dirty:
@@ -2981,7 +4604,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "unsaved_pill"):
             self.unsaved_pill.setVisible(dirty)
         star = " *" if dirty else ""
-        self.setWindowTitle(f"Nasheed Studio · {name}{star}")
+        self.setWindowTitle(f"NCN Studio · {name}{star}")
 
     def _get_recent_projects(self) -> list[str]:
         settings = QSettings("NasheedStudio", "NasheedStudio")
@@ -3076,6 +4699,7 @@ class MainWindow(QMainWindow):
             self.logo_path = ""
             self.cursor_path = ""
             self.sfx_path = ""
+            self.intro_audio_path = ""
             self._previewing_intro = False
             self.tracks = []
             self.project_path = ""
@@ -3096,6 +4720,12 @@ class MainWindow(QMainWindow):
             self.cursor_size_spin.setValue(32)
             if hasattr(self, "logo_pos_combo"):
                 self.logo_pos_combo.setCurrentText("Bottom-Right")
+            if hasattr(self, "logo_scale_spin"):
+                self.logo_scale_spin.setValue(100)
+            if hasattr(self, "logo_x_offset_spin"):
+                self.logo_x_offset_spin.setValue(0)
+            if hasattr(self, "logo_y_offset_spin"):
+                self.logo_y_offset_spin.setValue(0)
             if hasattr(self, "title_font_combo"):
                 self.title_font_combo.setCurrentText("Segoe UI" if "Segoe UI" in [self.title_font_combo.itemText(i) for i in range(self.title_font_combo.count())] else self.title_font_combo.itemText(0))
                 self.title_style_combo.setCurrentText("Bold")
@@ -3124,6 +4754,19 @@ class MainWindow(QMainWindow):
                 self.website_font_family = None
                 self.website_font_style = "Regular"
                 self.website_color = None
+                self._update_website_color_btn()
+                if hasattr(self, "website_x_offset_spin"):
+                    self.website_x_offset_spin.setValue(0)
+                if hasattr(self, "website_y_offset_spin"):
+                    self.website_y_offset_spin.setValue(0)
+                if hasattr(self, "playlist_x_offset_spin"):
+                    self.playlist_x_offset_spin.setValue(0)
+                if hasattr(self, "playlist_y_offset_spin"):
+                    self.playlist_y_offset_spin.setValue(0)
+                if hasattr(self, "title_x_offset_spin"):
+                    self.title_x_offset_spin.setValue(0)
+                if hasattr(self, "title_y_offset_spin"):
+                    self.title_y_offset_spin.setValue(0)
                 self.overlap_warning.setVisible(False)
             if hasattr(self, "intro_check"):
                 self.intro_check.setChecked(False)
@@ -3133,6 +4776,36 @@ class MainWindow(QMainWindow):
             if hasattr(self, "sfx_check"):
                 self.sfx_check.setChecked(False)
                 self.sfx_vol_slider.setValue(70)
+            if hasattr(self, "intro_title_edit"):
+                self.intro_title_edit.setText("")
+            if hasattr(self, "intro_title_size_spin"):
+                self.intro_title_size_spin.setValue(56)
+            if hasattr(self, "intro_title_y_offset_spin"):
+                self.intro_title_y_offset_spin.setValue(0)
+            self.intro_title_color = (255, 255, 255)
+            self._update_intro_title_color_btn()
+            if hasattr(self, "intro_logo_show_check"):
+                self.intro_logo_show_check.setChecked(True)
+            if hasattr(self, "intro_logo_scale_spin"):
+                self.intro_logo_scale_spin.setValue(100)
+            if hasattr(self, "intro_logo_y_offset_spin"):
+                self.intro_logo_y_offset_spin.setValue(0)
+            if hasattr(self, "intro_website_show_check"):
+                self.intro_website_show_check.setChecked(True)
+            if hasattr(self, "intro_website_edit"):
+                self.intro_website_edit.setText("")
+            if hasattr(self, "intro_website_size_spin"):
+                self.intro_website_size_spin.setValue(20)
+            if hasattr(self, "intro_website_opacity_slider"):
+                self.intro_website_opacity_slider.setValue(90)
+            if hasattr(self, "intro_website_y_offset_spin"):
+                self.intro_website_y_offset_spin.setValue(0)
+            self.intro_website_color = (204, 204, 204)
+            self._update_intro_website_color_btn()
+            if hasattr(self, "intro_blur_spin"):
+                self.intro_blur_spin.setValue(28)
+            if hasattr(self, "intro_card_opacity_slider"):
+                self.intro_card_opacity_slider.setValue(70)
             self.highlight_color = (248, 220, 139)
             self._update_highlight_color_btn()
             self.title_color = (255, 255, 255)
@@ -3140,6 +4813,8 @@ class MainWindow(QMainWindow):
             self.track_color = (255, 255, 255)
             self._update_track_color_btn()
             self.active_track_color = None
+            if hasattr(self, "cursor_x_offset_spin"):
+                self.cursor_x_offset_spin.setValue(0)
             if hasattr(self, "cursor_y_offset_spin"):
                 self.cursor_y_offset_spin.setValue(0)
             if hasattr(self, "highlight_y_offset_spin"):
@@ -3159,6 +4834,9 @@ class MainWindow(QMainWindow):
             self._refresh_preview()
             self._is_dirty = False
             self._last_saved_snapshot = None
+            self._undo_stack = [copy.deepcopy(self._project())]
+            self._redo_stack.clear()
+            self._update_undo_redo_actions()
             self._update_project_ui_indicators()
             self.status_label.setText("New project ready.")
         finally:
@@ -3174,7 +4852,7 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(
             self, "Save project",
             default_path,
-            "Nasheed Studio project (*.json)"
+            "NCN Studio project (*.json)"
         )
         if path:
             if not path.lower().endswith(".json"):
@@ -3251,7 +4929,7 @@ class MainWindow(QMainWindow):
         templates_dir = user_tmpl_dir if user_tmpl_dir.is_dir() else get_templates_dir()
         path, _ = QFileDialog.getOpenFileName(
             self, "Apply Reusable Template", str(templates_dir),
-            "Nasheed Studio Template (*.json);;All files (*.*)"
+            "NCN Studio Template (*.json);;All files (*.*)"
         )
         if not path:
             return
@@ -3426,6 +5104,12 @@ class MainWindow(QMainWindow):
                     pass
         if "logo_position" in tmpl:
             _set_combo_case_insensitive(self.logo_pos_combo, tmpl["logo_position"])
+        if "logo_scale" in tmpl and hasattr(self, "logo_scale_spin"):
+            self.logo_scale_spin.setValue(int(float(tmpl["logo_scale"]) * 100))
+        if "logo_x_offset" in tmpl and hasattr(self, "logo_x_offset_spin"):
+            self.logo_x_offset_spin.setValue(int(tmpl["logo_x_offset"]))
+        if "logo_y_offset" in tmpl and hasattr(self, "logo_y_offset_spin"):
+            self.logo_y_offset_spin.setValue(int(tmpl["logo_y_offset"]))
         if "website_position" in tmpl:
             _set_combo_case_insensitive(self.website_pos_combo, tmpl["website_position"])
         if "website_font_size" in tmpl:
@@ -3441,6 +5125,11 @@ class MainWindow(QMainWindow):
         if "website_color" in tmpl:
             wc = tmpl["website_color"]
             self.website_color = tuple(wc) if isinstance(wc, (list, tuple)) else wc
+            self._update_website_color_btn()
+        if "website_x_offset" in tmpl and hasattr(self, "website_x_offset_spin"):
+            self.website_x_offset_spin.setValue(int(tmpl["website_x_offset"]))
+        if "website_y_offset" in tmpl and hasattr(self, "website_y_offset_spin"):
+            self.website_y_offset_spin.setValue(int(tmpl["website_y_offset"]))
         if "intro_enabled" in tmpl:
             self.intro_check.setChecked(bool(tmpl["intro_enabled"]))
         if "intro_duration" in tmpl:
@@ -3460,11 +5149,40 @@ class MainWindow(QMainWindow):
             elif not sp:
                 self.sfx_path = ""
                 self._set_asset_label(self.sfx_label, "")
+        if "intro_audio_path" in tmpl and hasattr(self, "intro_audio_label"):
+            iap = tmpl["intro_audio_path"]
+            if iap and Path(iap).is_file():
+                self.intro_audio_path = iap
+                self._set_asset_label(self.intro_audio_label, iap)
+            elif not iap:
+                self.intro_audio_path = ""
+                self._set_asset_label(self.intro_audio_label, "")
+                self.intro_audio_label.setText("No intro audio selected")
+        if "intro_audio_fade_in" in tmpl and hasattr(self, "intro_fade_in_spin"):
+            self.intro_fade_in_spin.setValue(float(tmpl["intro_audio_fade_in"]))
+        if "intro_audio_fade_out" in tmpl and hasattr(self, "intro_fade_out_spin"):
+            self.intro_fade_out_spin.setValue(float(tmpl["intro_audio_fade_out"]))
         if "playlist_position" in tmpl and hasattr(self, "playlist_pos_combo"):
             _set_combo_case_insensitive(self.playlist_pos_combo, tmpl["playlist_position"])
+        if "playlist_x_offset" in tmpl and hasattr(self, "playlist_x_offset_spin"):
+            self.playlist_x_offset_spin.setValue(int(tmpl["playlist_x_offset"]))
+        if "playlist_y_offset" in tmpl and hasattr(self, "playlist_y_offset_spin"):
+            self.playlist_y_offset_spin.setValue(int(tmpl["playlist_y_offset"]))
+        if "title_x_offset" in tmpl and hasattr(self, "title_x_offset_spin"):
+            self.title_x_offset_spin.setValue(int(tmpl["title_x_offset"]))
+        if "title_y_offset" in tmpl and hasattr(self, "title_y_offset_spin"):
+            self.title_y_offset_spin.setValue(int(tmpl["title_y_offset"]))
         tmpl_tmpl = str(tmpl.get("template", "")).strip().lower()
         if "playlist_columns" in tmpl and hasattr(self, "playlist_cols_spin"):
             self.playlist_cols_spin.setValue(int(tmpl["playlist_columns"]))
+        if "playlist_column_distribution_mode" in tmpl and hasattr(self, "playlist_col_mode_combo"):
+            _set_combo_case_insensitive(self.playlist_col_mode_combo, tmpl["playlist_column_distribution_mode"])
+            self._on_col_distribution_mode_changed(self.playlist_col_mode_combo.currentText())
+        if "playlist_column_distribution" in tmpl and hasattr(self, "playlist_col_dist_edit"):
+            d_val = tmpl["playlist_column_distribution"]
+            if isinstance(d_val, (list, tuple)):
+                d_val = ", ".join(str(x) for x in d_val)
+            self.playlist_col_dist_edit.setText(str(d_val))
         elif tmpl_tmpl in ("two-column", "two column", "2-column") or (hasattr(self, "template_combo") and self.template_combo.currentText() == "Two-column"):
             if hasattr(self, "playlist_cols_spin"):
                 self.playlist_cols_spin.setValue(2)
@@ -3494,6 +5212,41 @@ class MainWindow(QMainWindow):
         if "highlight_color" in tmpl:
             self.highlight_color = tmpl["highlight_color"]
             self._update_highlight_color_btn()
+        if "intro_title_font_family" in tmpl and hasattr(self, "intro_title_font_combo"):
+            _set_combo_case_insensitive(self.intro_title_font_combo, tmpl["intro_title_font_family"])
+            self._update_intro_title_styles()
+            if "intro_title_font_style" in tmpl and hasattr(self, "intro_title_style_combo"):
+                _set_combo_case_insensitive(self.intro_title_style_combo, tmpl["intro_title_font_style"])
+        if "intro_title_font_size" in tmpl and hasattr(self, "intro_title_size_spin"):
+            self.intro_title_size_spin.setValue(int(tmpl["intro_title_font_size"]))
+        if "intro_title_y_offset" in tmpl and hasattr(self, "intro_title_y_offset_spin"):
+            self.intro_title_y_offset_spin.setValue(int(tmpl["intro_title_y_offset"]))
+        if "intro_title_color" in tmpl:
+            raw_itc = tmpl["intro_title_color"]
+            self.intro_title_color = tuple(raw_itc) if isinstance(raw_itc, (list, tuple)) else raw_itc
+            self._update_intro_title_color_btn()
+        if "intro_logo_show" in tmpl and hasattr(self, "intro_logo_show_check"):
+            self.intro_logo_show_check.setChecked(bool(tmpl["intro_logo_show"]))
+        if "intro_logo_scale" in tmpl and hasattr(self, "intro_logo_scale_spin"):
+            self.intro_logo_scale_spin.setValue(int(round(float(tmpl["intro_logo_scale"]) * 100)))
+        if "intro_logo_y_offset" in tmpl and hasattr(self, "intro_logo_y_offset_spin"):
+            self.intro_logo_y_offset_spin.setValue(int(tmpl["intro_logo_y_offset"]))
+        if "intro_website_show" in tmpl and hasattr(self, "intro_website_show_check"):
+            self.intro_website_show_check.setChecked(bool(tmpl["intro_website_show"]))
+        if "intro_website_font_size" in tmpl and hasattr(self, "intro_website_size_spin"):
+            self.intro_website_size_spin.setValue(int(tmpl["intro_website_font_size"]))
+        if "intro_website_opacity" in tmpl and hasattr(self, "intro_website_opacity_slider"):
+            self.intro_website_opacity_slider.setValue(int(round(float(tmpl["intro_website_opacity"]) * 100)))
+        if "intro_website_color" in tmpl:
+            raw_iwc = tmpl["intro_website_color"]
+            self.intro_website_color = tuple(raw_iwc) if isinstance(raw_iwc, (list, tuple)) else raw_iwc
+            self._update_intro_website_color_btn()
+        if "intro_website_y_offset" in tmpl and hasattr(self, "intro_website_y_offset_spin"):
+            self.intro_website_y_offset_spin.setValue(int(tmpl["intro_website_y_offset"]))
+        if "intro_blur_radius" in tmpl and hasattr(self, "intro_blur_spin"):
+            self.intro_blur_spin.setValue(int(tmpl["intro_blur_radius"]))
+        if "intro_card_opacity" in tmpl and hasattr(self, "intro_card_opacity_slider"):
+            self.intro_card_opacity_slider.setValue(int(round(float(tmpl["intro_card_opacity"]) * 100)))
         if "highlight_bg_opacity" in tmpl and hasattr(self, "highlight_opacity_slider"):
             self.highlight_opacity_slider.setValue(int(float(tmpl["highlight_bg_opacity"]) * 100))
         if "title_color" in tmpl:
@@ -3502,6 +5255,8 @@ class MainWindow(QMainWindow):
         if "track_color" in tmpl:
             self.track_color = tmpl["track_color"]
             self._update_track_color_btn()
+        if "cursor_x_offset" in tmpl and hasattr(self, "cursor_x_offset_spin"):
+            self.cursor_x_offset_spin.setValue(int(tmpl["cursor_x_offset"]))
         if "cursor_y_offset" in tmpl and hasattr(self, "cursor_y_offset_spin"):
             self.cursor_y_offset_spin.setValue(int(tmpl["cursor_y_offset"]))
         if "highlight_y_offset" in tmpl and hasattr(self, "highlight_y_offset_spin"):
@@ -3573,7 +5328,7 @@ class MainWindow(QMainWindow):
             if answer != QMessageBox.StandardButton.Yes:
                 return
         path, _ = QFileDialog.getOpenFileName(
-            self, "Open project", "", "Nasheed Studio project (*.json)"
+            self, "Open project", "", "NCN Studio project (*.json)"
         )
         if not path:
             return
@@ -3598,189 +5353,420 @@ class MainWindow(QMainWindow):
                 return
 
             self.missing_assets = check_missing_assets(data)
-            self._loading_project = True
-            try:
-                if hasattr(self, "_title_timer") and self._title_timer.isActive():
-                    self._title_timer.stop()
-                self._committed_title = data.get("collection_title", "Nasheed Collection")
-                self.background_path = data.get("background", "")
-                self.background_type = data.get("background_type", "video" if is_video_file(self.background_path) else "image")
-                if self.background_path and Path(self.background_path).is_file():
-                    self._apply_background_file(self.background_path)
-                else:
-                    self.clear_background()
-
-                if hasattr(self, "video_fit_combo") and "video_fit_mode" in data:
-                    _set_combo_case_insensitive(self.video_fit_combo, data["video_fit_mode"])
-                if hasattr(self, "video_start_spin") and "video_start_time" in data:
-                    self.video_start_spin.setValue(float(data["video_start_time"]))
-                if hasattr(self, "video_loop_check") and "video_loop" in data:
-                    self.video_loop_check.setChecked(bool(data["video_loop"]))
-                if hasattr(self, "video_mute_check") and "video_mute_audio" in data:
-                    self.video_mute_check.setChecked(bool(data["video_mute_audio"]))
-
-                self.logo_path = data.get("logo", "")
-                self.cursor_path = data.get("cursor_path", "")
-                self.sfx_path = data.get("transition_sfx_path", "")
-                self._previewing_intro = False
-                self.tracks = data.get("tracks", [])
-                self.collection_title.setText(self._committed_title)
-                self.title_apply_btn.setEnabled(False)
-                _set_combo_case_insensitive(self.template_combo, data.get("template", "Cinematic"))
-                if not _set_combo_case_insensitive(self.resolution_combo, data.get("resolution", "1080p · Full HD")):
-                    self.resolution_combo.setCurrentText(data.get("resolution", "1080p · Full HD"))
-                self._set_combo_from_mode(data.get("indicator_mode", "both"))
-                self.cursor_size_spin.setValue(int(data.get("cursor_size", 32) or 32))
-
-                # Custom Fonts registration
-                self.custom_title_font_path = data.get("custom_title_font_path", "")
-                self.custom_track_font_path = data.get("custom_track_font_path", "")
-                if self.custom_title_font_path and Path(self.custom_title_font_path).is_file():
-                    try:
-                        from src.services.font_service import register_custom_font
-                        register_custom_font(self.custom_title_font_path)
-                    except Exception:
-                        pass
-                if self.custom_track_font_path and Path(self.custom_track_font_path).is_file():
-                    try:
-                        from src.services.font_service import register_custom_font
-                        register_custom_font(self.custom_track_font_path)
-                    except Exception:
-                        pass
-                self._refresh_system_fonts(initial=False)
-
-                if hasattr(self, "logo_pos_combo"):
-                    _set_combo_case_insensitive(self.logo_pos_combo, data.get("logo_position", "Bottom-Right"))
-                if hasattr(self, "title_font_combo"):
-                    _set_combo_case_insensitive(self.title_font_combo, data.get("title_font_family", "Segoe UI"))
-                    self._update_title_styles()
-                    _set_combo_case_insensitive(self.title_style_combo, data.get("title_font_style", "Bold"))
-                    self.title_size_spin.setValue(int(data.get("title_font_size", 46) or 46))
-                if hasattr(self, "title_spacing_spin") and "title_playlist_spacing" in data:
-                    self.title_spacing_spin.setValue(int(data["title_playlist_spacing"]))
-                if hasattr(self, "title_opacity_slider") and "title_opacity" in data:
-                    self.title_opacity_slider.setValue(int(float(data["title_opacity"]) * 100))
-                if hasattr(self, "track_font_combo"):
-                    _set_combo_case_insensitive(self.track_font_combo, data.get("track_font_family", "Segoe UI"))
-                    self._update_track_styles()
-                    _set_combo_case_insensitive(self.track_style_combo, data.get("track_font_style", "Bold"))
-                    self.track_size_spin.setValue(int(data.get("track_font_size", 22) or 22))
-                if hasattr(self, "track_opacity_slider") and "track_opacity" in data:
-                    self.track_opacity_slider.setValue(int(float(data["track_opacity"]) * 100))
-                if hasattr(self, "text_softening_spin"):
-                    if "text_softening" in data:
-                        self.text_softening_spin.setValue(float(data["text_softening"]))
-                    elif "title_softening" in data:
-                        self.text_softening_spin.setValue(float(data["title_softening"]))
-                if hasattr(self, "website_edit"):
-                    self.website_edit.setText(data.get("website_text", ""))
-                    _set_combo_case_insensitive(self.website_pos_combo, data.get("website_position", "Top-Right"))
-                    self.website_size_spin.setValue(int(data.get("website_font_size", 18) or 18))
-                    if hasattr(self, "website_show_check"):
-                        self.website_show_check.setChecked(bool(data.get("website_show", True)))
-                    if hasattr(self, "website_opacity_slider"):
-                        web_op_val = int(float(data.get("website_opacity", 1.0) if data.get("website_opacity") is not None else 1.0) * 100)
-                        self.website_opacity_slider.setValue(web_op_val)
-                    self.website_font_family = data.get("website_font_family", None)
-                    self.website_font_style = data.get("website_font_style", "Regular")
-                    raw_wc = data.get("website_color", None)
-                    self.website_color = tuple(raw_wc) if isinstance(raw_wc, (list, tuple)) else raw_wc
-                if hasattr(self, "intro_check"):
-                    self.intro_check.setChecked(bool(data.get("intro_enabled", False)))
-                    self.intro_dur_spin.setValue(float(data.get("intro_duration", 3.0) or 3.0))
-                    _set_combo_case_insensitive(self.intro_anim_combo, data.get("intro_animation", "Fade in / out"))
-                    self.preview_intro_btn.setText("Preview Intro Card")
-                if hasattr(self, "sfx_check"):
-                    self.sfx_check.setChecked(bool(data.get("transition_sfx_enabled", False)))
-                    sfx_vol = int(float(data.get("transition_sfx_volume", 0.7) if data.get("transition_sfx_volume") is not None else 0.7) * 100)
-                    self.sfx_vol_slider.setValue(sfx_vol)
-                if hasattr(self, "resource_profile_combo") and "resource_profile" in data:
-                    _set_combo_case_insensitive(self.resource_profile_combo, data["resource_profile"])
-                if hasattr(self, "export_quality_combo") and "export_quality" in data:
-                    _set_combo_case_insensitive(self.export_quality_combo, data["export_quality"])
-                if hasattr(self, "playlist_pos_combo") and "playlist_position" in data:
-                    _set_combo_case_insensitive(self.playlist_pos_combo, data["playlist_position"])
-                if hasattr(self, "playlist_cols_spin") and "playlist_columns" in data:
-                    self.playlist_cols_spin.setValue(int(data["playlist_columns"]))
-                if hasattr(self, "track_spacing_spin") and "playlist_row_spacing" in data:
-                    self.track_spacing_spin.setValue(float(data["playlist_row_spacing"]))
-                if hasattr(self, "col_spacing_spin") and "playlist_col_spacing" in data:
-                    self.col_spacing_spin.setValue(int(data["playlist_col_spacing"]))
-                if hasattr(self, "track_max_chars_spin") and "track_max_chars" in data:
-                    self.track_max_chars_spin.setValue(int(data["track_max_chars"]))
-                if hasattr(self, "playlist_bg_slider") and "playlist_bg_opacity" in data:
-                    self.playlist_bg_slider.setValue(int(float(data["playlist_bg_opacity"]) * 100))
-                if hasattr(self, "title_pos_combo") and "title_position" in data:
-                    _set_combo_case_insensitive(self.title_pos_combo, data["title_position"])
-                if hasattr(self, "title_show_check") and "title_show" in data:
-                    self.title_show_check.setChecked(bool(data["title_show"]))
-                self._update_title_spacing_enabled()
-                if hasattr(self, "highlight_style_combo") and "highlight_style" in data:
-                    _set_combo_case_insensitive(self.highlight_style_combo, data["highlight_style"])
-                if "title_color" in data:
-                    self.title_color = data["title_color"]
-                    self._update_title_color_btn()
-                if "track_color" in data:
-                    self.track_color = data["track_color"]
-                    self._update_track_color_btn()
-                if "active_track_color" in data:
-                    self.active_track_color = data["active_track_color"]
-                if hasattr(self, "cursor_y_offset_spin") and "cursor_y_offset" in data:
-                    self.cursor_y_offset_spin.setValue(int(data["cursor_y_offset"]))
-                if hasattr(self, "highlight_y_offset_spin") and "highlight_y_offset" in data:
-                    self.highlight_y_offset_spin.setValue(int(data["highlight_y_offset"]))
-                if hasattr(self, "highlight_outline_spin") and "highlight_outline_width" in data:
-                    self.highlight_outline_spin.setValue(int(data["highlight_outline_width"]))
-                if hasattr(self, "highlight_corner_combo") and "highlight_corner_radius" in data:
-                    rad = data["highlight_corner_radius"]
-                    if rad == 0 or rad == "0":
-                        self.highlight_corner_combo.setCurrentText("Square (Sharp)")
-                    else:
-                        self.highlight_corner_combo.setCurrentText("Rounded")
-                if hasattr(self, "highlight_target_combo") and "highlight_target" in data:
-                    tgt = str(data["highlight_target"]).lower().strip()
-                    if tgt == "text" or "text" in tgt:
-                        self.highlight_target_combo.setCurrentText("Surround Text")
-                    else:
-                        self.highlight_target_combo.setCurrentText("Full Row")
-                if "highlight_color" in data:
-                    self.highlight_color = data["highlight_color"]
-                    self._update_highlight_color_btn()
-                if hasattr(self, "highlight_opacity_slider") and "highlight_bg_opacity" in data:
-                    self.highlight_opacity_slider.setValue(int(float(data["highlight_bg_opacity"]) * 100))
-                if hasattr(self, "logo_cleanup_check") and "logo_cleanup_mode" in data:
-                    self.logo_cleanup_check.setChecked(data["logo_cleanup_mode"] != "none")
-                self.output_edit.setText(
-                    data.get("output_path", str(Path.home() / "Videos" / "nasheed_collection.mp4"))
-                )
-                self.project_path = path
-                self._set_asset_label(self.background_label, self.background_path)
-                if not self.background_path:
-                    self.background_label.setText("No background selected")
-                self._set_asset_label(self.logo_label, self.logo_path)
-                if not self.logo_path:
-                    self.logo_label.setText("No logo selected")
-                if self.cursor_path:
-                    self._set_asset_label(self.cursor_label, self.cursor_path)
-                else:
-                    self._set_asset_label(self.cursor_label, "")
-                    self.cursor_label.setText("Default arrow cursor")
-                if hasattr(self, "sfx_label"):
-                    if self.sfx_path:
-                        self._set_asset_label(self.sfx_label, self.sfx_path)
-                    else:
-                        self._set_asset_label(self.sfx_label, "")
-                        self.sfx_label.setText("No sound effect selected")
-                self._check_logo_website_overlap()
-                self._refresh_tracks()
-                self._refresh_preview()
-                self._is_dirty = False
-                self._last_saved_snapshot = self._project()
-                self._update_project_ui_indicators()
-            finally:
-                self._loading_project = False
-
+            self._restore_project_state(data)
+            self.project_path = path
+            self._is_dirty = False
+            self._last_saved_snapshot = copy.deepcopy(self._project())
+            self._undo_stack = [copy.deepcopy(self._last_saved_snapshot)]
+            self._redo_stack.clear()
+            self._update_undo_redo_actions()
+            self._update_project_ui_indicators()
             self._add_recent_project(path)
             self.status_label.setText(f"Project opened: {path}")
         except Exception as exc:
             QMessageBox.critical(self, "Could not open project", str(exc))
+
+    # ------------------------------------------------------------------
+    # Project State Restoration, Undo/Redo & Essential Shortcuts
+    # ------------------------------------------------------------------
+
+    def _restore_project_state(self, data: dict) -> None:
+        """Restores the full project UI and data model to match the given snapshot dictionary."""
+        self._loading_project = True
+        try:
+            if hasattr(self, "_title_timer") and self._title_timer.isActive():
+                self._title_timer.stop()
+            self._committed_title = data.get("collection_title", "Nasheed Collection")
+            self.collection_title.setText(self._committed_title)
+            self.title_apply_btn.setEnabled(False)
+
+            self.background_path = data.get("background", "")
+            self.background_type = data.get("background_type", "video" if is_video_file(self.background_path) else "image")
+            if self.background_path and Path(self.background_path).is_file():
+                self._apply_background_file(self.background_path)
+            else:
+                self.clear_background()
+
+            if hasattr(self, "video_fit_combo") and "video_fit_mode" in data:
+                _set_combo_case_insensitive(self.video_fit_combo, data["video_fit_mode"])
+            if hasattr(self, "video_start_spin") and "video_start_time" in data:
+                self.video_start_spin.setValue(float(data["video_start_time"]))
+            if hasattr(self, "video_loop_check") and "video_loop" in data:
+                self.video_loop_check.setChecked(bool(data["video_loop"]))
+            if hasattr(self, "video_mute_check") and "video_mute_audio" in data:
+                self.video_mute_check.setChecked(bool(data["video_mute_audio"]))
+
+            self.logo_path = data.get("logo", "")
+            if self.logo_path and Path(self.logo_path).is_file():
+                self._set_asset_label(self.logo_label, self.logo_path)
+            else:
+                self.logo_path = ""
+                self._set_asset_label(self.logo_label, "")
+                self.logo_label.setText("No logo selected")
+
+            self.cursor_path = data.get("cursor_path", "")
+            if self.cursor_path and Path(self.cursor_path).is_file():
+                self._set_asset_label(self.cursor_label, self.cursor_path)
+            else:
+                self.cursor_path = ""
+                self._set_asset_label(self.cursor_label, "")
+                self.cursor_label.setText("Default arrow cursor")
+
+            self.sfx_path = data.get("transition_sfx_path", "")
+            if hasattr(self, "sfx_label"):
+                if self.sfx_path and Path(self.sfx_path).is_file():
+                    self._set_asset_label(self.sfx_label, self.sfx_path)
+                else:
+                    self.sfx_path = ""
+                    self._set_asset_label(self.sfx_label, "")
+                    self.sfx_label.setText("No sound effect selected")
+
+            self._previewing_intro = False
+            self.tracks = copy.deepcopy(data.get("tracks", []))
+
+            _set_combo_case_insensitive(self.template_combo, data.get("template", "Cinematic"))
+            if not _set_combo_case_insensitive(self.resolution_combo, data.get("resolution", "1080p · Full HD")):
+                self.resolution_combo.setCurrentText(data.get("resolution", "1080p · Full HD"))
+            self._set_combo_from_mode(data.get("indicator_mode", "both"))
+            self.cursor_size_spin.setValue(int(data.get("cursor_size", 32) or 32))
+
+            # Custom Fonts registration
+            self.custom_title_font_path = data.get("custom_title_font_path", "")
+            self.custom_track_font_path = data.get("custom_track_font_path", "")
+            if self.custom_title_font_path and Path(self.custom_title_font_path).is_file():
+                try:
+                    from src.services.font_service import register_custom_font
+                    register_custom_font(self.custom_title_font_path)
+                except Exception:
+                    pass
+            if self.custom_track_font_path and Path(self.custom_track_font_path).is_file():
+                try:
+                    from src.services.font_service import register_custom_font
+                    register_custom_font(self.custom_track_font_path)
+                except Exception:
+                    pass
+            self._refresh_system_fonts(initial=False)
+
+            if hasattr(self, "logo_pos_combo"):
+                _set_combo_case_insensitive(self.logo_pos_combo, data.get("logo_position", "Bottom-Right"))
+            if hasattr(self, "logo_scale_spin") and "logo_scale" in data:
+                self.logo_scale_spin.setValue(int(float(data["logo_scale"]) * 100))
+            if hasattr(self, "logo_x_offset_spin") and "logo_x_offset" in data:
+                self.logo_x_offset_spin.setValue(int(data["logo_x_offset"]))
+            if hasattr(self, "logo_y_offset_spin") and "logo_y_offset" in data:
+                self.logo_y_offset_spin.setValue(int(data["logo_y_offset"]))
+            if hasattr(self, "title_font_combo"):
+                _set_combo_case_insensitive(self.title_font_combo, data.get("title_font_family", "Segoe UI"))
+                self._update_title_styles()
+                _set_combo_case_insensitive(self.title_style_combo, data.get("title_font_style", "Bold"))
+                self.title_size_spin.setValue(int(data.get("title_font_size", 46) or 46))
+            if hasattr(self, "title_spacing_spin") and "title_playlist_spacing" in data:
+                self.title_spacing_spin.setValue(int(data["title_playlist_spacing"]))
+            if hasattr(self, "title_opacity_slider") and "title_opacity" in data:
+                self.title_opacity_slider.setValue(int(float(data["title_opacity"]) * 100))
+            if hasattr(self, "track_font_combo"):
+                _set_combo_case_insensitive(self.track_font_combo, data.get("track_font_family", "Segoe UI"))
+                self._update_track_styles()
+                _set_combo_case_insensitive(self.track_style_combo, data.get("track_font_style", "Bold"))
+                self.track_size_spin.setValue(int(data.get("track_font_size", 22) or 22))
+            if hasattr(self, "track_opacity_slider") and "track_opacity" in data:
+                self.track_opacity_slider.setValue(int(float(data["track_opacity"]) * 100))
+            if hasattr(self, "text_softening_spin"):
+                if "text_softening" in data:
+                    self.text_softening_spin.setValue(float(data["text_softening"]))
+                elif "title_softening" in data:
+                    self.text_softening_spin.setValue(float(data["title_softening"]))
+            if hasattr(self, "website_edit"):
+                self.website_edit.setText(data.get("website_text", ""))
+                _set_combo_case_insensitive(self.website_pos_combo, data.get("website_position", "Top-Right"))
+                self.website_size_spin.setValue(int(data.get("website_font_size", 18) or 18))
+                if hasattr(self, "website_show_check"):
+                    self.website_show_check.setChecked(bool(data.get("website_show", True)))
+                if hasattr(self, "website_opacity_slider"):
+                    web_op_val = int(float(data.get("website_opacity", 1.0) if data.get("website_opacity") is not None else 1.0) * 100)
+                    self.website_opacity_slider.setValue(web_op_val)
+                self.website_font_family = data.get("website_font_family", None)
+                self.website_font_style = data.get("website_font_style", "Regular")
+                raw_wc = data.get("website_color", None)
+                self.website_color = tuple(raw_wc) if isinstance(raw_wc, (list, tuple)) else raw_wc
+                self._update_website_color_btn()
+                if hasattr(self, "website_x_offset_spin") and "website_x_offset" in data:
+                    self.website_x_offset_spin.setValue(int(data["website_x_offset"]))
+                if hasattr(self, "website_y_offset_spin") and "website_y_offset" in data:
+                    self.website_y_offset_spin.setValue(int(data["website_y_offset"]))
+            if hasattr(self, "intro_check"):
+                self.intro_check.setChecked(bool(data.get("intro_enabled", False)))
+                self.intro_dur_spin.setValue(float(data.get("intro_duration", 3.0) or 3.0))
+                _set_combo_case_insensitive(self.intro_anim_combo, data.get("intro_animation", "Fade in / out"))
+                self.preview_intro_btn.setText("Preview Intro Card")
+            self.intro_audio_path = data.get("intro_audio_path", "")
+            if hasattr(self, "intro_audio_label"):
+                if self.intro_audio_path and Path(self.intro_audio_path).is_file():
+                    self._set_asset_label(self.intro_audio_label, self.intro_audio_path)
+                else:
+                    self.intro_audio_path = ""
+                    self._set_asset_label(self.intro_audio_label, "")
+                    self.intro_audio_label.setText("No intro audio selected")
+            if hasattr(self, "intro_fade_in_spin"):
+                self.intro_fade_in_spin.setValue(float(data.get("intro_audio_fade_in", 0.5) if data.get("intro_audio_fade_in") is not None else 0.5))
+            if hasattr(self, "intro_fade_out_spin"):
+                self.intro_fade_out_spin.setValue(float(data.get("intro_audio_fade_out", 0.5) if data.get("intro_audio_fade_out") is not None else 0.5))
+            if hasattr(self, "intro_blur_spin") and "intro_blur_radius" in data:
+                self.intro_blur_spin.setValue(int(data.get("intro_blur_radius", 28) or 28))
+            if hasattr(self, "intro_card_opacity_slider") and "intro_card_opacity" in data:
+                self.intro_card_opacity_slider.setValue(int(float(data.get("intro_card_opacity", 0.70) or 0.70) * 100))
+            if hasattr(self, "intro_title_edit"):
+                self.intro_title_edit.setText(data.get("intro_title_text", ""))
+            if hasattr(self, "intro_title_font_combo"):
+                _set_combo_case_insensitive(self.intro_title_font_combo, data.get("intro_title_font_family", "Segoe UI"))
+                self._update_intro_title_styles()
+                _set_combo_case_insensitive(self.intro_title_style_combo, data.get("intro_title_font_style", "Bold"))
+            if hasattr(self, "intro_title_size_spin"):
+                self.intro_title_size_spin.setValue(int(data.get("intro_title_font_size", 56) or 56))
+            raw_itc = data.get("intro_title_color", (255, 255, 255))
+            self.intro_title_color = tuple(raw_itc) if isinstance(raw_itc, (list, tuple)) else raw_itc
+            self._update_intro_title_color_btn()
+            if hasattr(self, "intro_logo_show_check"):
+                self.intro_logo_show_check.setChecked(bool(data.get("intro_logo_show", True)))
+            if hasattr(self, "intro_logo_scale_spin"):
+                self.intro_logo_scale_spin.setValue(int(round(float(data.get("intro_logo_scale", 1.0) or 1.0) * 100)))
+            if hasattr(self, "intro_website_show_check"):
+                self.intro_website_show_check.setChecked(bool(data.get("intro_website_show", True)))
+            if hasattr(self, "intro_website_edit"):
+                self.intro_website_edit.setText(data.get("intro_website_text", ""))
+            if hasattr(self, "intro_website_size_spin"):
+                self.intro_website_size_spin.setValue(int(data.get("intro_website_font_size", 20) or 20))
+            if hasattr(self, "intro_website_opacity_slider") and "intro_website_opacity" in data:
+                self.intro_website_opacity_slider.setValue(int(float(data.get("intro_website_opacity", 0.90) or 0.90) * 100))
+            raw_iwc = data.get("intro_website_color", (204, 204, 204))
+            self.intro_website_color = tuple(raw_iwc) if isinstance(raw_iwc, (list, tuple)) else raw_iwc
+            self._update_intro_website_color_btn()
+            if hasattr(self, "intro_title_y_offset_spin") and "intro_title_y_offset" in data:
+                self.intro_title_y_offset_spin.setValue(int(data.get("intro_title_y_offset", 0) or 0))
+            if hasattr(self, "intro_logo_y_offset_spin") and "intro_logo_y_offset" in data:
+                self.intro_logo_y_offset_spin.setValue(int(data.get("intro_logo_y_offset", 0) or 0))
+            if hasattr(self, "intro_website_y_offset_spin") and "intro_website_y_offset" in data:
+                self.intro_website_y_offset_spin.setValue(int(data.get("intro_website_y_offset", 0) or 0))
+            if hasattr(self, "sfx_check"):
+                self.sfx_check.setChecked(bool(data.get("transition_sfx_enabled", False)))
+                sfx_vol = int(float(data.get("transition_sfx_volume", 0.7) if data.get("transition_sfx_volume") is not None else 0.7) * 100)
+                self.sfx_vol_slider.setValue(sfx_vol)
+            if hasattr(self, "resource_profile_combo") and "resource_profile" in data:
+                _set_combo_case_insensitive(self.resource_profile_combo, data["resource_profile"])
+            if hasattr(self, "export_quality_combo") and "export_quality" in data:
+                _set_combo_case_insensitive(self.export_quality_combo, data["export_quality"])
+            if hasattr(self, "playlist_pos_combo") and "playlist_position" in data:
+                _set_combo_case_insensitive(self.playlist_pos_combo, data["playlist_position"])
+            if hasattr(self, "playlist_x_offset_spin") and "playlist_x_offset" in data:
+                self.playlist_x_offset_spin.setValue(int(data["playlist_x_offset"]))
+            if hasattr(self, "playlist_y_offset_spin") and "playlist_y_offset" in data:
+                self.playlist_y_offset_spin.setValue(int(data["playlist_y_offset"]))
+            if hasattr(self, "title_x_offset_spin") and "title_x_offset" in data:
+                self.title_x_offset_spin.setValue(int(data["title_x_offset"]))
+            if hasattr(self, "title_y_offset_spin") and "title_y_offset" in data:
+                self.title_y_offset_spin.setValue(int(data["title_y_offset"]))
+            if hasattr(self, "playlist_cols_spin") and "playlist_columns" in data:
+                self.playlist_cols_spin.setValue(int(data["playlist_columns"]))
+            if hasattr(self, "playlist_col_mode_combo"):
+                dist_mode = data.get("playlist_column_distribution_mode") or data.get("column_distribution_mode", "Automatic")
+                _set_combo_case_insensitive(self.playlist_col_mode_combo, dist_mode)
+                self._on_col_distribution_mode_changed(self.playlist_col_mode_combo.currentText())
+            if hasattr(self, "playlist_col_dist_edit"):
+                dist_val = data.get("playlist_column_distribution") or data.get("column_distribution", "12, 12")
+                if isinstance(dist_val, (list, tuple)):
+                    dist_val = ", ".join(str(x) for x in dist_val)
+                self.playlist_col_dist_edit.setText(str(dist_val))
+            if hasattr(self, "track_spacing_spin") and "playlist_row_spacing" in data:
+                self.track_spacing_spin.setValue(float(data["playlist_row_spacing"]))
+            if hasattr(self, "col_spacing_spin") and "playlist_col_spacing" in data:
+                self.col_spacing_spin.setValue(int(data["playlist_col_spacing"]))
+            if hasattr(self, "track_max_chars_spin") and "track_max_chars" in data:
+                self.track_max_chars_spin.setValue(int(data["track_max_chars"]))
+            if hasattr(self, "playlist_bg_slider") and "playlist_bg_opacity" in data:
+                self.playlist_bg_slider.setValue(int(float(data["playlist_bg_opacity"]) * 100))
+            if hasattr(self, "title_pos_combo") and "title_position" in data:
+                _set_combo_case_insensitive(self.title_pos_combo, data["title_position"])
+            if hasattr(self, "title_show_check") and "title_show" in data:
+                self.title_show_check.setChecked(bool(data["title_show"]))
+            self._update_title_spacing_enabled()
+            if hasattr(self, "highlight_style_combo") and "highlight_style" in data:
+                _set_combo_case_insensitive(self.highlight_style_combo, data["highlight_style"])
+            if "title_color" in data:
+                self.title_color = data["title_color"]
+                self._update_title_color_btn()
+            if "track_color" in data:
+                self.track_color = data["track_color"]
+                self._update_track_color_btn()
+            if "active_track_color" in data:
+                self.active_track_color = data["active_track_color"]
+            if hasattr(self, "cursor_x_offset_spin") and "cursor_x_offset" in data:
+                self.cursor_x_offset_spin.setValue(int(data["cursor_x_offset"]))
+            if hasattr(self, "cursor_y_offset_spin") and "cursor_y_offset" in data:
+                self.cursor_y_offset_spin.setValue(int(data["cursor_y_offset"]))
+            if hasattr(self, "highlight_y_offset_spin") and "highlight_y_offset" in data:
+                self.highlight_y_offset_spin.setValue(int(data["highlight_y_offset"]))
+            if hasattr(self, "highlight_outline_spin") and "highlight_outline_width" in data:
+                self.highlight_outline_spin.setValue(int(data["highlight_outline_width"]))
+            if hasattr(self, "highlight_corner_combo") and "highlight_corner_radius" in data:
+                rad = data["highlight_corner_radius"]
+                if rad == 0 or rad == "0":
+                    self.highlight_corner_combo.setCurrentText("Square (Sharp)")
+                else:
+                    self.highlight_corner_combo.setCurrentText("Rounded")
+            if hasattr(self, "highlight_target_combo") and "highlight_target" in data:
+                tgt = str(data["highlight_target"]).lower().strip()
+                if tgt == "text" or "text" in tgt:
+                    self.highlight_target_combo.setCurrentText("Surround Text")
+                else:
+                    self.highlight_target_combo.setCurrentText("Full Row")
+            if "highlight_color" in data:
+                self.highlight_color = data["highlight_color"]
+                self._update_highlight_color_btn()
+            if hasattr(self, "highlight_opacity_slider") and "highlight_bg_opacity" in data:
+                self.highlight_opacity_slider.setValue(int(float(data["highlight_bg_opacity"]) * 100))
+            if hasattr(self, "logo_cleanup_check") and "logo_cleanup_mode" in data:
+                self.logo_cleanup_check.setChecked(data["logo_cleanup_mode"] != "none")
+            if "output_path" in data and data["output_path"]:
+                self.output_edit.setText(data["output_path"])
+
+            self._check_logo_website_overlap()
+            self._refresh_tracks()
+            self._refresh_preview()
+            self._update_project_ui_indicators()
+        finally:
+            self._loading_project = False
+
+    def _push_undo_snapshot(self) -> None:
+        if getattr(self, "_loading_project", False) or getattr(self, "_undoing_or_redoing", False):
+            return
+        current = copy.deepcopy(self._project())
+        if not self._undo_stack:
+            self._undo_stack.append(current)
+            self._update_undo_redo_actions()
+            return
+        if self._undo_stack[-1] == current:
+            return
+        self._undo_stack.append(current)
+        if len(self._undo_stack) > self._max_undo_depth:
+            self._undo_stack.pop(0)
+        self._redo_stack.clear()
+        self._update_undo_redo_actions()
+
+    def _commit_undo_snapshot(self) -> None:
+        if getattr(self, "_loading_project", False) or getattr(self, "_undoing_or_redoing", False):
+            return
+        if hasattr(self, "_undo_timer") and self._undo_timer.isActive():
+            self._undo_timer.stop()
+        self._push_undo_snapshot()
+
+    def undo(self) -> None:
+        fw = QApplication.focusWidget()
+        if isinstance(fw, (QLineEdit, QTextEdit, QPlainTextEdit)):
+            if hasattr(fw, "undo"):
+                fw.undo()
+                return
+
+        if hasattr(self, "_undo_timer") and self._undo_timer.isActive():
+            self._undo_timer.stop()
+            current = copy.deepcopy(self._project())
+            if not self._undo_stack or self._undo_stack[-1] != current:
+                self._undo_stack.append(current)
+
+        if len(self._undo_stack) <= 1:
+            self.status_label.setText("Nothing to undo.")
+            return
+
+        self._undoing_or_redoing = True
+        try:
+            current_state = self._undo_stack.pop()
+            self._redo_stack.append(current_state)
+            prev_state = self._undo_stack[-1]
+            self._restore_project_state(prev_state)
+            self._is_dirty = (self._project() != self._last_saved_snapshot) if self._last_saved_snapshot is not None else True
+            self._update_project_ui_indicators()
+            self.status_label.setText("Undo applied.")
+        finally:
+            self._undoing_or_redoing = False
+            self._update_undo_redo_actions()
+
+    def redo(self) -> None:
+        fw = QApplication.focusWidget()
+        if isinstance(fw, (QLineEdit, QTextEdit, QPlainTextEdit)):
+            if hasattr(fw, "redo"):
+                fw.redo()
+                return
+
+        if not self._redo_stack:
+            self.status_label.setText("Nothing to redo.")
+            return
+
+        self._undoing_or_redoing = True
+        try:
+            next_state = self._redo_stack.pop()
+            self._undo_stack.append(next_state)
+            self._restore_project_state(next_state)
+            self._is_dirty = (self._project() != self._last_saved_snapshot) if self._last_saved_snapshot is not None else True
+            self._update_project_ui_indicators()
+            self.status_label.setText("Redo applied.")
+        finally:
+            self._undoing_or_redoing = False
+            self._update_undo_redo_actions()
+
+    def _update_undo_redo_actions(self) -> None:
+        can_undo = len(self._undo_stack) > 1
+        can_redo = len(self._redo_stack) > 0
+        if hasattr(self, "undo_act"):
+            self.undo_act.setEnabled(can_undo)
+        if hasattr(self, "redo_act"):
+            self.redo_act.setEnabled(can_redo)
+
+    def _on_shortcut_delete_track(self) -> None:
+        fw = QApplication.focusWidget()
+        if isinstance(fw, (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox)):
+            return
+        self.remove_track()
+
+    def _on_shortcut_rename_track(self) -> None:
+        fw = QApplication.focusWidget()
+        if isinstance(fw, (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox)):
+            return
+        self._on_rename_track_clicked()
+
+    def _on_shortcut_move_up(self) -> None:
+        fw = QApplication.focusWidget()
+        if isinstance(fw, (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox)):
+            return
+        self.move_track(-1)
+
+    def _on_shortcut_move_down(self) -> None:
+        fw = QApplication.focusWidget()
+        if isinstance(fw, (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox)):
+            return
+        self.move_track(1)
+
+    def clear_all_tracks(self) -> None:
+        if not self.tracks:
+            return
+        self.tracks.clear()
+        self._commit_undo_snapshot()
+        self._mark_dirty()
+        self._refresh_tracks()
+        self._schedule_preview(200)
+        self.status_label.setText("All tracks cleared. Press Ctrl+Z to undo.")
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        fw = QApplication.focusWidget()
+        if isinstance(fw, (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox)):
+            super().keyPressEvent(event)
+            return
+
+        if event.key() == Qt.Key.Key_Space:
+            if hasattr(self, "_toggle_intro_preview"):
+                self._toggle_intro_preview()
+                event.accept()
+                return
+        elif event.key() == Qt.Key.Key_F5:
+            self._refresh_preview()
+            event.accept()
+            return
+        super().keyPressEvent(event)

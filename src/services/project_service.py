@@ -29,6 +29,8 @@ TEMPLATE_DESIGN_KEYS = [
     # Playlist layout, positioning, dimensions & density
     "playlist_position",
     "playlist_columns",
+    "playlist_column_distribution_mode",
+    "playlist_column_distribution",
     "playlist_row_spacing",
     "playlist_col_spacing",
     "playlist_width_ratio",
@@ -43,6 +45,8 @@ TEMPLATE_DESIGN_KEYS = [
     "playlist_bg_radius",
 
     # Collection title styling & positioning
+    "title_x_offset",
+    "title_y_offset",
     "title_font_family",
     "title_font_style",
     "title_font_size",
@@ -85,12 +89,15 @@ TEMPLATE_DESIGN_KEYS = [
     "highlight_padding_x",
     "highlight_padding_y",
     "highlight_opacity",
+    "cursor_x_offset",
     "cursor_y_offset",
     "highlight_y_offset",
 
     # Logo placement & cleanup
     "logo_position",
     "logo_scale",
+    "logo_x_offset",
+    "logo_y_offset",
     "logo_cleanup_mode",
 
     # Website watermark placement & styling
@@ -101,11 +108,33 @@ TEMPLATE_DESIGN_KEYS = [
     "website_font_family",
     "website_font_style",
     "website_color",
+    "website_x_offset",
+    "website_y_offset",
 
     # Intro presentation card & animations
     "intro_enabled",
     "intro_duration",
     "intro_animation",
+    "intro_audio_path",
+    "intro_audio_fade_in",
+    "intro_audio_fade_out",
+    "intro_title_text",
+    "intro_title_font_family",
+    "intro_title_font_style",
+    "intro_title_font_size",
+    "intro_title_color",
+    "intro_title_y_offset",
+    "intro_logo_show",
+    "intro_logo_scale",
+    "intro_logo_y_offset",
+    "intro_website_show",
+    "intro_website_text",
+    "intro_website_font_size",
+    "intro_website_opacity",
+    "intro_website_color",
+    "intro_website_y_offset",
+    "intro_blur_radius",
+    "intro_card_opacity",
 
     # Video background behavior
     "background_type",
@@ -186,7 +215,7 @@ def extract_template(project_data: dict, template_name: str = "Custom Template")
                         data[key] = str(src_p)
                 else:
                     data[key] = ""
-            elif key == "transition_sfx_path":
+            elif key in ("transition_sfx_path", "intro_audio_path"):
                 if val and Path(str(val)).is_file() and not is_temp_or_obsolete_path(val):
                     data[key] = str(Path(str(val)).resolve())
                 else:
@@ -293,6 +322,11 @@ def check_missing_assets(project_data: dict) -> Dict[str, List[Dict[str, str]]]:
     if project_data.get("transition_sfx_enabled") and sfx and not Path(sfx).is_file():
         missing["sfx"].append({"path": sfx, "field": "transition_sfx_path"})
 
+    # Intro Audio
+    intro_audio = project_data.get("intro_audio_path", "")
+    if project_data.get("intro_enabled") and intro_audio and not Path(intro_audio).is_file():
+        missing.setdefault("intro_audio", []).append({"path": intro_audio, "field": "intro_audio_path"})
+
     # Custom Fonts
     for font_key in ["custom_title_font_path", "custom_track_font_path"]:
         fp = project_data.get(font_key, "")
@@ -322,7 +356,7 @@ def relink_asset(project_data: dict, old_path: str, new_path: str) -> dict:
         return updated
 
     # Check top-level asset fields
-    for field in ["background", "logo", "cursor_path", "transition_sfx_path", "custom_title_font_path", "custom_track_font_path"]:
+    for field in ["background", "logo", "cursor_path", "transition_sfx_path", "intro_audio_path", "custom_title_font_path", "custom_track_font_path"]:
         cur = updated.get(field, "")
         if cur and str(Path(cur).resolve()) == old_norm:
             updated[field] = new_norm
@@ -389,6 +423,10 @@ def bundle_managed_assets(project_data: dict, project_bundle_dir: Path) -> dict:
     # 4. SFX
     if managed.get("transition_sfx_path"):
         managed["transition_sfx_path"] = copy_file_safe(managed["transition_sfx_path"], "audio")
+
+    # 4b. Intro Audio
+    if managed.get("intro_audio_path"):
+        managed["intro_audio_path"] = copy_file_safe(managed["intro_audio_path"], "audio")
 
     # 5. Custom Fonts
     if managed.get("custom_title_font_path"):

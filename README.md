@@ -1,151 +1,208 @@
-# Nasheed Studio
+# NCN Studio (Nasheed Video Automation Studio)
 
-A professional Windows desktop application designed to automate the production of high-quality Nasheed playlist collection videos with synchronized track indicators, flexible multi-column layouts, customizable branding, and high-resolution MP4 export.
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Qt 6 / PySide6](https://img.shields.io/badge/Qt-6.5+-green.svg)](https://www.qt.io/)
+[![FFmpeg](https://img.shields.io/badge/FFmpeg-6.0+-orange.svg)](https://ffmpeg.org/)
+[![Platform](https://img.shields.io/badge/platform-Windows%20x64-lightgrey.svg)](https://microsoft.com/windows)
+[![Tests](https://img.shields.io/badge/tests-340+%20passing-brightgreen.svg)](tests/)
+
+**NCN Studio** is a high-performance desktop workstation engineered to automate the production of publication-ready Nasheed playlist videos for YouTube and digital distribution. Combining an asynchronous, GPU-accelerated **PySide6 (Qt 6)** graphical interface with an industrial-grade **FFmpeg** multimedia rendering engine, NCN Studio enables content creators to build videos featuring synchronized active track indicators, dynamic multi-column layouts, customizable typography, brand logos, website watermarks, animated intro sequences, frosted glass cards, and transition sound effects.
 
 ---
 
-## Delivery Package Structure
+## Architecture Overview
 
-The project is delivered as a comprehensive, self-contained master distribution package (`final_deliverable/` or `Nasheed_Studio_Complete_Project_v1.0.zip`), containing everything needed for both immediate end-user operation and future developer maintenance:
+NCN Studio follows a clean, decoupled architecture separating UI state management, rendering composition, media probing, process management, and export pipelines.
 
 ```
-final_deliverable/
-├── Application/
-│   └── Nasheed Studio/
-│       ├── Nasheed Studio.exe        # Standalone executable (zero external dependencies required)
-│       ├── _internal/                # Bundled Python 3.10 runtime & PySide6 Qt 6 libraries
-│       └── tools/                    # Static FFmpeg 8.1 & FFprobe binaries
-├── Source_Code/                      # Complete clean Python source code
-│   ├── app.py                        # Application entry point
-│   ├── build_release.py              # Automated packaging & distribution builder
-│   ├── nasheed_studio.spec           # PyInstaller build specification
-│   ├── requirements.txt              # Python runtime dependencies
-│   ├── src/                          # Modular services and PySide6 UI components
-│   └── assets/                       # Bundled fonts, icons, and templates
-├── Documentation/                    # Comprehensive user and technical guides
-│   ├── USER_GUIDE.md                 # End-user operational guide & feature walkthrough
-│   ├── DEVELOPER_GUIDE.md            # Architecture, pipeline, and developer build instructions
-│   ├── TROUBLESHOOTING.md            # Diagnostics, process lifecycle, and FAQs
-│   ├── INSTALLATION.md               # Quick-start extraction and launch guide
-│   └── ACCEPTANCE_TEST_GUIDE.md      # 25-step manual QA verification checklist
-├── Evidence/                         # Real-world verification proofs and audit reports
-│   ├── ultra_detail_master_render_1080p.mp4  # Verified 12.75 Mbps CRF 18 master export
-│   ├── verification_render_1080p_crf22.mp4   # Verified 6.40 Mbps balanced export
-│   ├── verification_audit_report.txt         # Zero-orphan process lifecycle audit report
-│   ├── ultra_detail_frame_03s.png            # Frame proof at 3.0s
-│   ├── ultra_detail_frame_15s_loop.png       # Seamless video background loop proof at 15.0s
-│   └── clean_environment_test_export_1080p.mp4 # Standalone clean-machine test export
-├── Templates/                        # Reusable Nasheed design layout presets (JSON)
-├── Scripts/                          # Test suite runner and automated build scripts
-└── MANIFEST.md                       # Delivery manifest, file index, and SHA-256 checksums
+┌────────────────────────────────────────────────────────────────────────┐
+│                        NCN Studio UI (PySide6)                         │
+│  ┌───────────────────────┬───────────────────┬──────────────────────┐  │
+│  │     Playlist Pane     │  16:9 Viewport    │   Inspector Panel    │  │
+│  │ (Multi-Select, Reorder│ (Live Scrubber &  │(4 Scrollable Tabs,   │  │
+│  │  Manual Columns Split)│  Playback Sync)   │ Visual Fine-Tuning)  │  │
+│  └───────────────────────┴───────────────────┴──────────────────────┘  │
+│                                  │                                     │
+├──────────────────────────────────┼─────────────────────────────────────┤
+│                          Core Services                                 │
+│  ┌───────────────────────┬───────────────────┬──────────────────────┐  │
+│  │   Compositor Service  │  Render Service   │    Export Service    │  │
+│  │  (Pillow 16:9 Canvas, │ (FFmpeg Filter-   │ (Two-Stage Staging,  │  │
+│  │  Zero-Halo Compositing│  graph Generator) │  Atomic Save/Export) │  │
+│  ├───────────────────────┼───────────────────┼──────────────────────┤  │
+│  │    Font / Probing     │  Project Service  │   Process Manager    │  │
+│  │ (Registry Discovery & │ (Atomic JSON I/O, │ (Win32 Job Objects,  │  │
+│  │  Silent FFprobe API)  │  Presets Engine)  │  Subprocess Cleanup) │  │
+│  └───────────────────────┴───────────────────┴──────────────────────┘  │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
----
+### Module Responsibilities
 
-## Key Features
-
-### 1. Ultra Detail · Master Quality Rendering Engine
-- **Restored Unconstrained CRF 18:** Encodes via `libx264` with no artificial bitrate clamping (`-maxrate` and `-bufsize` omitted in master mode). Preserves the finest details, including starry skies, atmospheric smoke, particle effects, and film grain on looping video backgrounds without macroblocking or color banding.
-- **Studio-Grade AAC Audio:** 320 kbps AAC stereo encoding preserving full dynamic audio range and crisp acoustics.
-- **Selectable Quality Presets:**
-  - **Ultra Detail · Master Quality (Recommended):** Unconstrained CRF 18, 320 kbps audio (~12–14 Mbps total bitrate; ~850–900 MB for a 10-minute 1080p video).
-  - **High Quality · Balanced:** CRF 22 with gentle caps, 192 kbps audio (~5–6 Mbps total bitrate; ~400–450 MB for 10 minutes).
-  - **Web / Fast:** CRF 26 with tighter caps, 128 kbps audio (~2.5–3.5 Mbps total bitrate; ~200–250 MB for 10 minutes).
-- **Multi-Resolution Export:** Supports 1080p Full HD (1920×1080), 1440p QHD (2560×1440), and 4K UHD (3840×2160).
-- **Atomic Two-Stage Export:** Renders to a temporary `.part.mp4` file and atomically commits upon 100% completion, protecting existing files from corruption.
-
-### 2. Process Lifecycle Management & Zero Zombie Safety
-- **Centralized `ProcessManager`:** All child subprocesses (`ffmpeg.exe`, `ffprobe.exe`) are launched through a centralized manager (`src/services/process_manager.py`) with `CREATE_NO_WINDOW` creation flags, completely eliminating black command-window flashing and Command Prompt hosts.
-- **Win32 Job Object Protection:** Background render jobs are assigned to a Windows Job Object configured with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. Even if the application terminates unexpectedly, Windows automatically reaps all child processes.
-- **Bounded Graceful Termination:** Subprocesses receive graceful termination signals followed by bounded timeout escalation (`wait(2.0)` → `terminate()` → `kill()`).
-- **Comprehensive Cleanup Hooks:** Safe shutdown triggers on normal exit, window close (`closeEvent`), render cancellation, render failure, and Python `atexit`.
-
-### 3. Looping Video & Image Backgrounds
-- **Seamless MP4 Video Backgrounds:** Import any MP4 or MOV video. The rendering engine loops the background seamlessly across the entire timeline to match the combined duration of all audio tracks.
-- **Still Image Backgrounds:** Full support for PNG, JPG, JPEG, and WebP images.
-- **Aspect-Aware Scaling:** Auto-centers and scales media to 16:9 canvas dimensions without distortion.
-
-### 4. Audio & Playlist Management
-- **Multi-Format Ingestion:** Import MP3, WAV, AAC, FLAC, and M4A audio files.
-- **Automated Metadata Extraction:** Millisecond-accurate duration probing using bundled FFprobe.
-- **Interactive Editing:** Double-click any track in the playlist pane to rename display titles independently of original filenames.
-- **Flexible Ordering:** Drag-and-drop reordering with live preview canvas updates.
-- **Layout Columns:** Choose between 1-column and 2-column layouts with adjustable column gap, playlist width, and horizontal/vertical positioning.
-
-### 5. Active Track Indicators
-- **Independent Highlight Modes:**
-  - **Pill:** Modern rounded pill highlight behind the active track.
-  - **Rectangle:** Clean rectangular highlight box with adjustable margins and padding.
-  - **Outline:** Sleek border outline accent.
-  - **Glass:** Frosted, translucent backdrop accent.
-  - Full control over highlight color, opacity, and margin offsets.
-- **Custom Animated Cursors:**
-  - Built-in pointers or custom image cursors (PNG/SVG).
-  - Adjustable size and font-cap-height-normalized vertical alignment.
-  - Toggle cursor and highlight independently or use both simultaneously.
-
-### 6. Typography, Branding & Watermarks
-- **Independent Typography Controls:** Separate font family, style (Regular, Bold, Italic), and size controls for Collection Title and Playlist items.
-- **Bundled Fonts:** Ships with modern typography including Montserrat, Bebas Neue, Oswald, and Cinzel, alongside full Windows system font discovery.
-- **Brand Logo:** 4-corner placement (Top-Left, Top-Right, Bottom-Left, Bottom-Right) with adjustable scale, alpha opacity, and background cleanup.
-- **Website Watermark:** Corner website URL watermark with collision-avoiding safety margins.
-
-### 7. Intro Animation & Sound Effects
-- **Intro Sequence:** Configurable opening card with animated collection title, subtitle, duration (1–10s), and fade/slide/zoom transitions.
-- **Track Transition SFX:** Optional audio cues (chimes, clicks, or custom sound effects) that trigger at each track transition with custom volume control.
+| Subsystem | Primary Module | Core Functionality |
+| :--- | :--- | :--- |
+| **UI Shell** | `src/ui/main_window.py` | 3-pane layout, event loops, real-time preview sync, debounced updates. |
+| **Icons & Style** | `src/ui/icons.py`, `src/ui/style.py` | Embedded SVG vector icons, theme tokens, high-contrast dark styling. |
+| **Compositor** | `src/services/compositor.py` | 16:9 canvas layout, N-column auto-flow, antialiased pills, frosted glass intro card. |
+| **Timeline Engine** | `src/services/timeline.py` | Cumulative audio timeline calculator, interval bounds, track duration validation. |
+| **Render Engine** | `src/services/render_service.py` | FFmpeg complex filtergraphs, audio normalization, SFX delays, intro silence. |
+| **Process Manager** | `src/services/process_manager.py` | Win32 Job Object binding (`KILL_ON_JOB_CLOSE`), process tracking, clean kill. |
+| **Export Service** | `src/services/export_job.py` | Threaded rendering jobs, progress streaming, cancellation, workspace staging. |
+| **Project Service** | `src/services/project_service.py` | Atomic JSON read/write (`os.replace`), preset loader, dirty state tracking. |
+| **Font Service** | `src/services/font_service.py` | Windows Registry font discovery, fallback fall-through, Pillow font metrics. |
+| **Media Probing** | `src/services/media_probe.py` | Headless stream inspection, sample rates, channels, duration validation. |
 
 ---
 
-## Quick Start (No Python Required)
+## Core Features
 
-1. Unzip the delivery archive (`final_deliverable.zip` or `Nasheed_Studio_Complete_Project_v1.0.zip`).
-2. Open the `Application\Nasheed Studio\` folder.
-3. Double-click **`Nasheed Studio.exe`**.
-4. The application launches immediately. No Python, FFmpeg, or external codecs are required.
+- **Dynamic N-Column Playlist Engine**: Distributes tracks intelligently across 1, 2, 3, or 4 columns with automatic bounding-box safety and boundary padding. Supports manual column splits.
+- **Synchronized Active Indicators**: 4 distinct indicator modes (`both`, `cursor_only`, `highlight_only`, `neither`). Supports custom vector SVG and raster cursors with dynamic scaling and X-offset alignment.
+- **Antialiased Pill Accent Bar**: Subpixel-smooth rounded accent bar with centered multiline highlight alignment and zero corner fringe over light, dark, or transparent backgrounds.
+- **Frosted Glass Intro Presentation**: Cinematic Gaussian blur backdrop with customizable frosted presentation card, independent typography, duration, and audio intro track with fade curves.
+- **Interactive Preview Playback**: Live playback engine with Play/Pause toggle, real-time timeline scrubber, synchronized indicator tracking, and continuous audio preview across track boundaries.
+- **50-Step Undo/Redo Engine**: Full Command Pattern history stack with `Ctrl+Z`, `Ctrl+Y`, `Alt+Up/Down` reordering, `Delete` shortcut, and active text-input safety guards.
+- **Watermark & Logo Positioning**: Bidirectional X/Y offsets, dynamic logo scaling preserving aspect ratio, native `QColorDialog` hex color picking, and collision avoidance algorithms.
+- **Zero-Fringe Typography**: Windows system font discovery via Registry scanning with resolution scaling across 1080p, 1440p, and 4K UHD.
+- **Unconstrained CRF 18 Master Video Export**: Studio-grade master video encoding pipeline with multi-input audio normalization and sample-accurate transition SFX.
+- **Bulletproof Process Lifecycle**: Subprocesses attached to Windows Job Objects (`KILL_ON_JOB_CLOSE`), guaranteeing zero orphaned processes or memory leaks.
 
 ---
 
-## Running from Source (Developer Setup)
+## Installation & Setup
 
-### Requirements
-- **OS:** Windows 10 or Windows 11 (64-bit)
-- **Python:** 3.10 (recommended)
-- **FFmpeg & FFprobe:** Included in `tools/` or available on system `PATH`
+### Prerequisites
+- **Operating System:** Windows 10 (1903+) or Windows 11 (64-bit)
+- **Python:** Python 3.10 or higher
+- **FFmpeg:** FFmpeg 6.0+ static binaries (placed in `tools/` or available in system `PATH`)
 
-### Step-by-Step Setup
+### Quick Start (Source Code)
+
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/Rubaitzk/Nasheed-Studio.git
+   cd Nasheed-Studio
+   ```
+
+2. **Create and activate a virtual environment:**
+   ```powershell
+   python -m venv .venv
+   .\.venv\Scripts\Activate.ps1
+   ```
+
+3. **Install dependencies:**
+   ```powershell
+   pip install --upgrade pip
+   pip install -r requirements.txt
+   ```
+
+4. **Verify FFmpeg binaries:**
+   Ensure `ffmpeg.exe` and `ffprobe.exe` are placed in the `tools/` folder or installed in your system PATH:
+   ```powershell
+   .\tools\ffmpeg.exe -version
+   .\tools\ffprobe.exe -version
+   ```
+
+5. **Launch NCN Studio:**
+   ```powershell
+   python app.py
+   ```
+
+---
+
+## Operational Guide
+
+### 1. Project Setup
+- **New Project:** Click `File → New Project` (`Ctrl+N`).
+- **Workspace:** On initial launch, a dedicated workspace is initialized at `C:\Users\<User>\NasheedStudio\` containing `projects/`, `exports/`, and `logs/`.
+
+### 2. Building the Playlist
+- Click **Add Audio** (`Ctrl+O`) to import `.mp3`, `.wav`, `.aac`, `.flac`, `.ogg`, or `.m4a` files.
+- Reorder tracks using **Move Up** (`Alt+Up`) and **Move Down** (`Alt+Down`).
+- Remove tracks individually with `Delete` or select multiple tracks using `Shift+Click` / `Ctrl+Click` for bulk removal.
+- Edit track titles inline; changes are debounced and update the live preview automatically.
+
+### 3. Visual Styling & Fine Tuning
+- **Layout Tab:** Select 1 to 4 columns or enable Manual Column Distribution. Configure Big Title and Nasheed Title X/Y offsets.
+- **Text & Font Tab:** Customize font family, style, and size for collection title and track items. Adjust website watermark text, hex color, opacity, and X/Y offsets.
+- **Indicator Tab:** Choose active track indicator mode (`Both`, `Cursor Only`, `Highlight Only`, `Neither`). Configure cursor size, custom SVG/PNG cursor path, and Cursor X-Offset.
+- **Sound & Intro Tab:** Configure intro sequence duration, transition animation (Fade, Zoom, Slide), intro audio track with fade-in/out, and transition SFX audio.
+
+### 4. Interactive Preview Playback
+- Use the preview scrubber and Play/Pause button (`Space`) to test track transitions, audio sync, and visual indicator animations before exporting.
+- Adjust preview volume or toggle mute directly from the preview toolbar.
+
+### 5. Master Video Export
+- Click **Export Video** in the bottom control panel.
+- Select output resolution (1080p Full HD, 1440p 2K, 2160p 4K UHD).
+- Select quality preset:
+  - **Master Quality (CRF 18)**: Default visually lossless archival quality.
+  - **Balanced (CRF 22)**: Fast turnaround with excellent compression.
+- Monitor real-time progress and timecode. Renders can be safely cancelled at any moment with clean temporary workspace purging.
+
+---
+
+## Keyboard Shortcuts Reference
+
+| Shortcut | Context | Action |
+| :--- | :--- | :--- |
+| `Ctrl+N` | Global | Create a new project |
+| `Ctrl+O` | Global | Add audio tracks to playlist |
+| `Ctrl+S` | Global | Save current project |
+| `Ctrl+Shift+S` | Global | Save project as new file |
+| `Ctrl+Z` | Global (outside text fields) | Undo last action |
+| `Ctrl+Y` / `Ctrl+Shift+Z` | Global (outside text fields) | Redo last undone action |
+| `Alt+Up` | Playlist | Move selected track up |
+| `Alt+Down` | Playlist | Move selected track down |
+| `Delete` | Playlist | Remove selected track(s) |
+| `Enter` | Title Input | Commit title draft |
+| `Escape` | Title Input | Cancel title draft |
+| `Space` | Preview Player | Toggle Play / Pause |
+
+---
+
+## Developer Guide & Testing
+
+### Running Automated Test Suite
+NCN Studio includes over 340 regression, unit, and integration tests covering the entire feature matrix:
+
 ```powershell
-# 1. Navigate to the project root
-cd Source_Code
+# Run entire test suite
+.\.venv\Scripts\python.exe -m pytest
 
-# 2. Create and activate a virtual environment
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-
-# 3. Install dependencies
-pip install --upgrade pip
-pip install -r requirements.txt
-
-# 4. Launch the application
-python app.py
-
-# 5. Run the automated test suite (246 tests)
-python -m pytest tests/ -v
+# Run specific functional suites
+.\.venv\Scripts\python.exe -m pytest tests/test_undo_and_shortcuts.py
+.\.venv\Scripts\python.exe -m pytest tests/test_watermark_controls.py
+.\.venv\Scripts\python.exe -m pytest tests/test_preview_audio_continuous.py
+.\.venv\Scripts\python.exe -m pytest tests/test_lifecycle_and_export_settings.py
 ```
 
----
-
-## Building Standalone Executables
-
-To reproduce the self-contained Windows executable bundling the Python runtime, PySide6, FFmpeg, and assets:
+### Building Standalone Windows Executable
+To package a standalone Windows executable (`dist/NCN Studio/NCN Studio.exe`):
 
 ```powershell
+# Compile via PyInstaller using project spec
+pyinstaller nasheed_studio.spec --noconfirm
+
+# Or execute full distribution builder
 python build_release.py
 ```
 
-The compiled release package will be generated inside `release_build/`.
+---
+
+## Troubleshooting & Diagnostics
+
+- **FFmpeg not detected:** Ensure `ffmpeg.exe` and `ffprobe.exe` are placed in `tools/` or present in Windows system `PATH`.
+- **Audio concat issues:** NCN Studio automatically normalizes mixed sample rates and channel counts to stereo 44.1 kHz via `aformat` filters prior to concatenation.
+- **Process management:** All worker subprocesses are assigned to Windows Job Objects. If Python terminates unexpectedly, Windows kernel limits terminate child encoders automatically.
+- **Log inspection:** Detailed export and diagnostic logs are written to `<Workspace>/logs/`.
 
 ---
 
-## License
-
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+## Project Phases & Evolution
+For detailed architectural breakdown and engineering history across each milestone, see the [`phases/`](phases/) directory:
+- [`Phase 1: Stabilization & Bug Fixes`](phases/Phase1_Stabilization.md)
+- [`Phase 2: Timeline Sync & Indicator Modes`](phases/Phase2_CoreFeatures.md)
+- [`Phase 3: Visual Customization & Safe Closing`](phases/Phase3_VisualCustomization.md)
+- [`Phase 4: Production Hardening & Master Encoding Engine`](phases/Phase4_ProductionHardening.md)
+- [`Phase 5: Client Delivery & Post-Delivery Polish`](phases/Phase5_ClientDeliveryAndPolish.md)
