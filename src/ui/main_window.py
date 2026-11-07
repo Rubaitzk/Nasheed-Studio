@@ -1274,7 +1274,8 @@ class MainWindow(QMainWindow):
         self.playlist_cols_spin = QSpinBox()
         self.playlist_cols_spin.setRange(1, 4)
         self.playlist_cols_spin.setValue(1)
-        self.playlist_cols_spin.setFixedWidth(54)
+        self.playlist_cols_spin.setFixedWidth(68)
+        self.playlist_cols_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.playlist_cols_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
         pl_col_row.addWidget(cols_lbl)
         pl_col_row.addWidget(self.playlist_cols_spin)
@@ -3505,18 +3506,22 @@ class MainWindow(QMainWindow):
                 if hasattr(self, "intro_card_opacity_slider")
                 else 0.70
             )
-            web_show = self.website_show_check.isChecked() if hasattr(self, "website_show_check") else True
             intro_web_show = (
                 self.intro_website_show_check.isChecked()
                 if hasattr(self, "intro_website_show_check")
-                else web_show
+                else True
             )
-            web_txt = self.website_edit.text().strip() if hasattr(self, "website_edit") else ""
-            intro_web_txt = (
+            raw_intro_txt = (
                 self.intro_website_edit.text().strip()
-                if hasattr(self, "intro_website_edit") and self.intro_website_edit.text().strip()
-                else web_txt
+                if hasattr(self, "intro_website_edit")
+                else ""
             )
+            main_web_txt = (
+                self.website_edit.text().strip()
+                if hasattr(self, "website_edit")
+                else ""
+            )
+            intro_web_txt = raw_intro_txt or (main_web_txt if intro_web_show else "")
             intro_web_sz = (
                 self.intro_website_size_spin.value()
                 if hasattr(self, "intro_website_size_spin")
@@ -3578,15 +3583,10 @@ class MainWindow(QMainWindow):
         track_style = self.track_style_combo.currentText() if hasattr(self, "track_style_combo") else "Bold"
         track_sz = self.track_size_spin.value() if hasattr(self, "track_size_spin") else 22
         logo_pos = self.logo_pos_combo.currentText() if hasattr(self, "logo_pos_combo") else "Bottom-Right"
-        raw_web_t = self.website_edit.text().strip() if hasattr(self, "website_edit") else ""
-        raw_intro_t = self.intro_website_edit.text().strip() if hasattr(self, "intro_website_edit") else ""
-        web_txt = raw_web_t or raw_intro_t
+        web_txt = self.website_edit.text().strip() if hasattr(self, "website_edit") else ""
         web_pos = self.website_pos_combo.currentText() if hasattr(self, "website_pos_combo") else "Top-Right"
         web_sz = self.website_size_spin.value() if hasattr(self, "website_size_spin") else 18
-        if not raw_web_t and raw_intro_t:
-            web_show = self.intro_website_show_check.isChecked() if hasattr(self, "intro_website_show_check") else True
-        else:
-            web_show = self.website_show_check.isChecked() if hasattr(self, "website_show_check") else True
+        web_show = self.website_show_check.isChecked() if hasattr(self, "website_show_check") else True
         web_op = round(self.website_opacity_slider.value() / 100.0, 2) if hasattr(self, "website_opacity_slider") else 1.0
         cur_mode = self._mode_from_combo()
         cur_cursor_size = self.cursor_size_spin.value() if hasattr(self, "cursor_size_spin") else 32
@@ -3880,10 +3880,11 @@ class MainWindow(QMainWindow):
             self._video_player.play()
 
         self._last_playback_tick = time.monotonic()
+        self._preview_audio_buffer_start = time.monotonic()
         if hasattr(self, "_preview_timeline_timer"):
             self._preview_timeline_timer.start(100)
 
-        self._sync_playback_state(self._preview_current_time, is_playing=True)
+        self._sync_playback_state(self._preview_current_time, is_playing=True, is_seek=True)
 
     def _pause_preview_playback(self) -> None:
         """Pause preview playback and retain current timestamp."""
@@ -3967,7 +3968,14 @@ class MainWindow(QMainWindow):
             m, s = divmod(int(self._preview_current_time), 60)
             self.scrubber_cur_label.setText(f"{m:02d}:{s:02d}")
 
-        self._sync_playback_state(self._preview_current_time, is_playing=getattr(self, "_is_preview_playing", False))
+        if self.background_path and is_video_file(self.background_path) and hasattr(self, "_video_player") and self._video_player:
+            st_ms = int(self.video_start_spin.value() * 1000.0) if hasattr(self, "video_start_spin") else 0
+            intro_enabled = (hasattr(self, "intro_enabled_check") and self.intro_enabled_check.isChecked())
+            intro_dur = float(self.intro_dur_spin.value()) if (intro_enabled and hasattr(self, "intro_dur_spin")) else 0.0
+            vid_pos = st_ms + max(0, int((self._preview_current_time - intro_dur) * 1000))
+            self._video_player.setPosition(vid_pos)
+
+        self._sync_playback_state(self._preview_current_time, is_playing=getattr(self, "_is_preview_playing", False), is_seek=True)
         if not getattr(self, "_is_preview_playing", False):
             self._update_preview_visual_at_time(self._preview_current_time)
 
@@ -3978,6 +3986,10 @@ class MainWindow(QMainWindow):
 
     def _on_scrubber_user_release(self) -> None:
         self._preview_user_seeking = False
+        self._last_playback_tick = time.monotonic()
+        self._preview_audio_buffer_start = time.monotonic()
+        if getattr(self, "_is_preview_playing", False):
+            self._sync_playback_state(self._preview_current_time, is_playing=True, is_seek=True)
 
     def _on_scrubber_value_changed(self, val: int) -> None:
         if (hasattr(self, "timeline_scrubber") and self.timeline_scrubber.isSliderDown()) or getattr(self, "_preview_user_seeking", False):
@@ -3987,6 +3999,9 @@ class MainWindow(QMainWindow):
     def _on_preview_timeline_tick(self) -> None:
         if not getattr(self, "_is_preview_playing", False):
             return
+        if getattr(self, "_preview_user_seeking", False) or (hasattr(self, "timeline_scrubber") and self.timeline_scrubber.isSliderDown()):
+            return
+
         now = time.monotonic()
         dt = now - getattr(self, "_last_playback_tick", now)
         self._last_playback_tick = now
@@ -3994,7 +4009,44 @@ class MainWindow(QMainWindow):
         if dt > 1.0:
             dt = 0.1
 
-        self._preview_current_time += dt
+        audio_synced = False
+        intro_enabled = (hasattr(self, "intro_enabled_check") and self.intro_enabled_check.isChecked())
+        intro_dur = float(self.intro_dur_spin.value()) if (intro_enabled and hasattr(self, "intro_dur_spin")) else 0.0
+
+        if hasattr(self, "_preview_audio_player") and self._preview_audio_player:
+            player_state = self._preview_audio_player.playbackState()
+            media_status = self._preview_audio_player.mediaStatus()
+            cur_pos_ms = self._preview_audio_player.position()
+            trk_idx = getattr(self, "_preview_audio_current_track_idx", None)
+
+            if player_state == QMediaPlayer.PlaybackState.PlayingState or media_status == QMediaPlayer.MediaStatus.LoadingMedia:
+                if trk_idx == -1:
+                    if cur_pos_ms > 0:
+                        calc_t = cur_pos_ms / 1000.0
+                        self._preview_current_time = max(self._preview_current_time, calc_t)
+                        audio_synced = True
+                    elif cur_pos_ms == 0:
+                        audio_buffering_age = now - getattr(self, "_preview_audio_buffer_start", now)
+                        if audio_buffering_age < 1.5:
+                            audio_synced = True
+                elif trk_idx is not None and 0 <= trk_idx < len(self.tracks):
+                    accum = sum(float(self.tracks[i].get("duration", 0.0)) for i in range(trk_idx))
+                    trk_dur = float(self.tracks[trk_idx].get("duration", 0.0))
+                    if media_status == QMediaPlayer.MediaStatus.EndOfMedia or (trk_dur > 0 and cur_pos_ms / 1000.0 >= trk_dur - 0.05):
+                        self._preview_current_time = intro_dur + accum + trk_dur + 0.02
+                        audio_synced = True
+                    elif cur_pos_ms > 0:
+                        calc_t = intro_dur + accum + (cur_pos_ms / 1000.0)
+                        self._preview_current_time = max(self._preview_current_time, calc_t)
+                        audio_synced = True
+                    elif cur_pos_ms == 0:
+                        audio_buffering_age = now - getattr(self, "_preview_audio_buffer_start", now)
+                        if audio_buffering_age < 1.5:
+                            audio_synced = True
+
+        if not audio_synced:
+            self._preview_current_time += dt
+
         total_d = self._get_project_timeline_duration()
 
         if self._preview_current_time >= total_d:
@@ -4012,7 +4064,7 @@ class MainWindow(QMainWindow):
             m, s = divmod(int(self._preview_current_time), 60)
             self.scrubber_cur_label.setText(f"{m:02d}:{s:02d}")
 
-        self._sync_playback_state(self._preview_current_time, is_playing=True)
+        self._sync_playback_state(self._preview_current_time, is_playing=True, is_seek=False)
         if not (self.background_path and is_video_file(self.background_path)):
             self._update_preview_visual_at_time(self._preview_current_time)
 
@@ -4053,7 +4105,7 @@ class MainWindow(QMainWindow):
             self._preview_is_muted = True
             self.preview_volume_slider.setValue(0)
 
-    def _sync_playback_state(self, time_sec: float, is_playing: bool) -> None:
+    def _sync_playback_state(self, time_sec: float, is_playing: bool, is_seek: bool = False) -> None:
         intro_enabled = (hasattr(self, "intro_enabled_check") and self.intro_enabled_check.isChecked())
         intro_dur = float(self.intro_dur_spin.value()) if (intro_enabled and hasattr(self, "intro_dur_spin")) else 0.0
 
@@ -4067,20 +4119,32 @@ class MainWindow(QMainWindow):
             self._preview_active_visual_idx = -1
             if intro_enabled and self.intro_audio_path and Path(self.intro_audio_path).is_file():
                 resolved_iap = str(Path(self.intro_audio_path).resolve())
-                if self._preview_audio_current_track_idx != -1 or self._preview_audio_current_src != resolved_iap:
+                need_source_change = (self._preview_audio_current_track_idx != -1 or self._preview_audio_current_src != resolved_iap)
+                if need_source_change:
                     self._preview_audio_player.setSource(QUrl.fromLocalFile(resolved_iap))
                     self._preview_audio_current_src = resolved_iap
                     self._preview_audio_current_track_idx = -1
-                    self._preview_audio_player.setPosition(int(time_sec * 1000))
+                    self._preview_audio_buffer_start = time.monotonic()
+                    if time_sec > 0.05:
+                        self._preview_audio_player.setPosition(int(time_sec * 1000))
+                    if self._preview_audio_output:
+                        self._preview_audio_output.setVolume(self._get_effective_preview_volume())
                     if is_playing:
                         self._preview_audio_player.play()
-                else:
-                    cur_p = self._preview_audio_player.position()
-                    target_p = int(time_sec * 1000)
-                    if abs(cur_p - target_p) > 300:
-                        self._preview_audio_player.setPosition(target_p)
+                elif is_seek:
+                    self._preview_audio_buffer_start = time.monotonic()
+                    self._preview_audio_player.setPosition(int(time_sec * 1000))
+                    if self._preview_audio_output:
+                        self._preview_audio_output.setVolume(self._get_effective_preview_volume())
                     if is_playing and self._preview_audio_player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
-                        self._preview_audio_player.play()
+                        if self._preview_audio_player.mediaStatus() != QMediaPlayer.MediaStatus.EndOfMedia:
+                            self._preview_audio_player.play()
+                else:
+                    if self._preview_audio_output:
+                        self._preview_audio_output.setVolume(self._get_effective_preview_volume())
+                    if is_playing and self._preview_audio_player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
+                        if self._preview_audio_player.mediaStatus() != QMediaPlayer.MediaStatus.EndOfMedia:
+                            self._preview_audio_player.play()
 
                 fade_in = float(self.intro_fade_in_spin.value()) if hasattr(self, "intro_fade_in_spin") else 0.5
                 fade_out = float(self.intro_fade_out_spin.value()) if hasattr(self, "intro_fade_out_spin") else 0.5
@@ -4116,25 +4180,32 @@ class MainWindow(QMainWindow):
                 trk_path = trk.get("path")
                 if trk_path and Path(trk_path).is_file():
                     resolved_tp = str(Path(trk_path).resolve())
-                    if self._preview_audio_current_track_idx != active_idx or self._preview_audio_current_src != resolved_tp:
-                        if self._preview_audio_current_src != resolved_tp:
-                            self._preview_audio_player.setSource(QUrl.fromLocalFile(resolved_tp))
-                            self._preview_audio_current_src = resolved_tp
+                    need_source_change = (self._preview_audio_current_track_idx != active_idx or self._preview_audio_current_src != resolved_tp)
+                    if need_source_change:
+                        self._preview_audio_player.setSource(QUrl.fromLocalFile(resolved_tp))
+                        self._preview_audio_current_src = resolved_tp
                         self._preview_audio_current_track_idx = active_idx
-                        self._preview_audio_player.setPosition(int(track_offset * 1000))
+                        self._preview_audio_buffer_start = time.monotonic()
+                        if track_offset > 0.05:
+                            self._preview_audio_player.setPosition(int(track_offset * 1000))
                         if self._preview_audio_output:
                             self._preview_audio_output.setVolume(self._get_effective_preview_volume())
                         if is_playing:
                             self._preview_audio_player.play()
-                    else:
-                        cur_p = self._preview_audio_player.position()
-                        target_p = int(track_offset * 1000)
-                        if abs(cur_p - target_p) > 300:
-                            self._preview_audio_player.setPosition(target_p)
+                    elif is_seek:
+                        self._preview_audio_buffer_start = time.monotonic()
+                        self._preview_audio_player.setPosition(int(track_offset * 1000))
                         if self._preview_audio_output:
                             self._preview_audio_output.setVolume(self._get_effective_preview_volume())
                         if is_playing and self._preview_audio_player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
-                            self._preview_audio_player.play()
+                            if self._preview_audio_player.mediaStatus() != QMediaPlayer.MediaStatus.EndOfMedia:
+                                self._preview_audio_player.play()
+                    else:
+                        if self._preview_audio_output:
+                            self._preview_audio_output.setVolume(self._get_effective_preview_volume())
+                        if is_playing and self._preview_audio_player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
+                            if self._preview_audio_player.mediaStatus() != QMediaPlayer.MediaStatus.EndOfMedia:
+                                self._preview_audio_player.play()
                 else:
                     if self._preview_audio_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
                         self._preview_audio_player.pause()

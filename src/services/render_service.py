@@ -117,19 +117,14 @@ def build_render_command(
     track_font_size = int(project.get("track_font_size", 22) or 22)
     logo_position = project.get("logo_position", "Bottom-Right")
     raw_web_txt = project.get("website_text", "")
-    raw_intro_txt = project.get("intro_website_text", "")
-    effective_web_text = (raw_web_txt.strip() if raw_web_txt else "") or (raw_intro_txt.strip() if raw_intro_txt else "")
-    website_text = effective_web_text
+    website_text = raw_web_txt.strip() if (raw_web_txt and isinstance(raw_web_txt, str)) else ""
     website_position = project.get("website_position", "Top-Right")
     website_font_size = int(project.get("website_font_size", 18) or 18)
-    if not (raw_web_txt and raw_web_txt.strip()) and (raw_intro_txt and raw_intro_txt.strip()):
-        website_show = bool(project.get("intro_website_show", True) if "intro_website_show" in project else True)
-    else:
-        website_show = bool(project.get("website_show", True) if "website_show" in project else True)
+    website_show = bool(project.get("website_show", True) if "website_show" in project else True)
     website_opacity = float(project.get("website_opacity", 1.0) if project.get("website_opacity") is not None else 1.0)
     website_font_family = project.get("website_font_family") or track_font_family
     website_font_style = project.get("website_font_style") or "Regular"
-    website_color = project.get("website_color", None) or project.get("intro_website_color", None)
+    website_color = project.get("website_color", None)
 
     # Intro & SFX settings
     intro_enabled = bool(project.get("intro_enabled", False))
@@ -318,7 +313,8 @@ def build_render_command(
         intro_logo_sc = float(project.get("intro_logo_scale", 1.0) if project.get("intro_logo_scale") is not None else 1.0)
         intro_web_show = bool(project.get("intro_website_show", True) if "intro_website_show" in project else True)
         raw_intro_web_txt = project.get("intro_website_text")
-        intro_web_txt = raw_intro_web_txt.strip() if (raw_intro_web_txt and raw_intro_web_txt.strip()) else website_text
+        intro_custom_txt = raw_intro_web_txt.strip() if (raw_intro_web_txt and isinstance(raw_intro_web_txt, str)) else ""
+        intro_web_txt = intro_custom_txt or (website_text if intro_web_show else "")
         intro_web_sz = int(project.get("intro_website_font_size", 20) or 20)
         intro_web_op = float(project.get("intro_website_opacity", 0.9) if project.get("intro_website_opacity") is not None else 0.9)
         intro_web_col = project.get("intro_website_color")

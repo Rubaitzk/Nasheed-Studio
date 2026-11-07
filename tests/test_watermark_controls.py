@@ -18,6 +18,16 @@ def _get_app():
     return _app
 
 
+def _pix_to_bytes(pix):
+    if not pix or pix.isNull():
+        return b""
+    from PySide6.QtCore import QBuffer, QIODevice
+    buf = QBuffer()
+    buf.open(QIODevice.OpenModeFlag.WriteOnly)
+    pix.save(buf, "PNG")
+    return bytes(buf.data())
+
+
 class TestWatermarkControls(unittest.TestCase):
 
     def setUp(self):
@@ -227,8 +237,11 @@ class TestWatermarkUIControls(unittest.TestCase):
         finally:
             Path(p).unlink(missing_ok=True)
 
-    def test_sound_section_watermark_propagation_to_export(self):
-        """Watermark configured in Sound section propagates to export composition when project website_text is empty."""
+    def test_watermark_case_a_and_case_b_conditions(self):
+        """Case A: When main watermark is populated and intro watermark is enabled,
+        intro card shows main watermark with intro controls applied.
+        Disabling intro watermark hides it on intro card.
+        Case B: Intro watermark does NOT leak to main video composition when main watermark is empty."""
         import wave
         from src.services.render_service import build_render_command
 
@@ -244,76 +257,175 @@ class TestWatermarkUIControls(unittest.TestCase):
             bg_path = tmp / "bg.png"
             Image.new("RGB", (640, 360), (30, 35, 40)).save(str(bg_path))
 
-            proj = {
+            # Baseline blank composition (neither watermark set)
+            blank_proj = {
                 "version": 1,
                 "collection_title": "Test Title",
                 "background": str(bg_path),
                 "background_type": "image",
                 "tracks": [{"title": "Track 1", "path": str(audio_path), "duration": 1.0}],
                 "template": "Cinematic",
-                "output_path": str(tmp / "out.mp4"),
+                "output_path": str(tmp / "out_blank.mp4"),
                 "website_text": "",
-                "intro_enabled": False,
-                "intro_website_show": True,
-                "intro_website_text": "www.SoundWatermarkTest.com",
-                "intro_website_color": (0, 255, 200),
-            }
-
-            work_dir = tmp / "work_sound_wm"
-            build_render_command(proj, work_dir)
-
-            # Baseline blank composition (no watermark)
-            blank_dir = tmp / "work_blank"
-            proj_blank = dict(proj)
-            proj_blank["intro_website_text"] = ""
-            build_render_command(proj_blank, blank_dir)
-
-            with Image.open(work_dir / "composition.png") as im_wm, Image.open(blank_dir / "composition.png") as im_blank:
-                data_wm = list(im_wm.get_flattened_data() if hasattr(im_wm, "get_flattened_data") else im_wm.getdata())
-                data_blank = list(im_blank.get_flattened_data() if hasattr(im_blank, "get_flattened_data") else im_blank.getdata())
-                diff = [p1 != p2 for p1, p2 in zip(data_wm, data_blank)]
-                self.assertTrue(any(diff), "Watermark set in Sound section must be rendered onto composition.png")
-
-    def test_blank_intro_watermark_inherits_project_watermark_on_intro_card(self):
-        """Blank intro_website_text inherits project website_text on intro card."""
-        import wave
-        from src.services.render_service import build_render_command
-
-        with tempfile.TemporaryDirectory() as td:
-            tmp = Path(td)
-            audio_path = tmp / "audio2.wav"
-            with wave.open(str(audio_path), "wb") as wf:
-                wf.setnchannels(2)
-                wf.setsampwidth(2)
-                wf.setframerate(44100)
-                wf.writeframes(b"\x00" * 44100 * 2)
-
-            bg_path = tmp / "bg.png"
-            Image.new("RGB", (640, 360), (30, 35, 40)).save(str(bg_path))
-
-            proj = {
-                "version": 1,
-                "collection_title": "Test Title",
-                "background": str(bg_path),
-                "background_type": "image",
-                "tracks": [{"title": "Track 1", "path": str(audio_path), "duration": 1.0}],
-                "template": "Cinematic",
-                "output_path": str(tmp / "out2.mp4"),
-                "website_text": "www.ProjectWatermarkFallback.com",
-                "website_show": True,
                 "intro_enabled": True,
                 "intro_website_show": True,
-                "intro_website_text": "",  # Blank: must fallback to website_text
+                "intro_website_text": "",
             }
+            blank_dir = tmp / "work_blank"
+            build_render_command(blank_proj, blank_dir)
 
-            work_dir = tmp / "work_intro_inherit"
-            build_render_command(proj, work_dir)
+            # Scenario 1 (Case A enabled): Main watermark populated, Intro text blank, intro_website_show=True
+            # Must render on main composition AND show main watermark on intro card
+            case_a_enabled_proj = dict(blank_proj)
+            case_a_enabled_proj["website_text"] = "www.MainWatermark.com"
+            case_a_enabled_proj["intro_website_text"] = ""
+            case_a_enabled_proj["intro_website_show"] = True
+            case_a_dir = tmp / "work_case_a_enabled"
+            build_render_command(case_a_enabled_proj, case_a_dir)
 
-            intro_overlay = work_dir / "intro_overlay.png"
-            self.assertTrue(intro_overlay.exists())
-            with Image.open(intro_overlay) as im:
-                bbox = im.crop((0, 700, 1920, 1080)).getbbox()
-                self.assertIsNotNone(bbox, "Intro overlay must render watermark text when falling back to project watermark")
+            with Image.open(case_a_dir / "composition.png") as im_wm, Image.open(blank_dir / "composition.png") as im_blank:
+                self.assertNotEqual(im_wm.tobytes(), im_blank.tobytes(), "Main watermark must render on main composition")
+
+            with Image.open(case_a_dir / "intro_overlay.png") as im_intro:
+                bbox = im_intro.crop((0, 700, 1920, 1080)).getbbox()
+                self.assertIsNotNone(bbox, "Intro overlay must show main watermark when intro watermark is enabled and blank")
+
+            # Scenario 1b (Case A disabled): Main watermark populated, Intro text blank, intro_website_show=False
+            # Must render on main composition, but NOT on intro card
+            case_a_disabled_proj = dict(case_a_enabled_proj)
+            case_a_disabled_proj["intro_website_show"] = False
+            case_a_dis_dir = tmp / "work_case_a_disabled"
+            build_render_command(case_a_disabled_proj, case_a_dis_dir)
+
+            with Image.open(case_a_dis_dir / "intro_overlay.png") as im_intro_dis:
+                bbox_dis = im_intro_dis.crop((0, 700, 1920, 1080)).getbbox()
+                self.assertIsNone(bbox_dis, "Disabling intro watermark must prevent watermark from showing on intro card")
+
+            # Scenario 1c (Case A intro controls applied): Intro watermark Y-offset moves the watermark on intro card
+            case_a_shifted_proj = dict(case_a_enabled_proj)
+            case_a_shifted_proj["intro_website_y_offset"] = -50
+            case_a_shifted_dir = tmp / "work_case_a_shifted"
+            build_render_command(case_a_shifted_proj, case_a_shifted_dir)
+
+            with Image.open(case_a_dir / "intro_overlay.png") as im_orig, Image.open(case_a_shifted_dir / "intro_overlay.png") as im_shift:
+                self.assertNotEqual(im_orig.tobytes(), im_shift.tobytes(), "Intro watermark controls (e.g. Y-offset) must apply to intro card")
+
+            # Scenario 2 (Case B): Intro watermark populated, Main watermark empty
+            # Must render on intro card, but NOT on main composition (no reverse leaking)
+            intro_only_proj = dict(blank_proj)
+            intro_only_proj["website_text"] = ""
+            intro_only_proj["intro_website_text"] = "www.IntroOnlyWatermark.com"
+            intro_dir = tmp / "work_intro_only"
+            build_render_command(intro_only_proj, intro_dir)
+
+            with Image.open(intro_dir / "composition.png") as im_wm, Image.open(blank_dir / "composition.png") as im_blank:
+                self.assertEqual(im_wm.tobytes(), im_blank.tobytes(), "Intro watermark must NOT leak onto main video composition")
+
+            with Image.open(intro_dir / "intro_overlay.png") as im_intro:
+                bbox = im_intro.crop((0, 700, 1920, 1080)).getbbox()
+                self.assertIsNotNone(bbox, "Intro watermark must render on intro card")
+
+    def test_interactive_case_a_and_intro_controls_in_mainwindow(self):
+        """Case A in MainWindow UI: Main watermark propagates to intro card when intro watermark is enabled,
+        intro controls (size, opacity, color, Y-offset) apply as intended, and Case B main video does not leak."""
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            bg_path = f.name
+        try:
+            Image.new("RGB", (640, 360), (35, 40, 45)).save(bg_path)
+            self.win.background_path = bg_path
+            self.win.tracks = [{"title": "Test Track", "duration": 30.0}]
+
+            # Baseline blank intro card
+            self.win.website_edit.setText("")
+            self.win.intro_website_edit.setText("")
+            self.win.intro_website_show_check.setChecked(False)
+            _get_app().processEvents()
+            blank_intro = self.win._render_intro_card_pixmap(bg_path)
+            self.assertIsNotNone(blank_intro)
+            blank_bytes = _pix_to_bytes(blank_intro)
+
+            # Case A: Main watermark populated, Intro text blank, Intro show = True
+            self.win.website_edit.setText("www.NasheedStudioMain.com")
+            self.win.intro_website_edit.setText("")
+            self.win.intro_website_show_check.setChecked(True)
+            _get_app().processEvents()
+            intro_enabled_pix = self.win._render_intro_card_pixmap(bg_path)
+            self.assertIsNotNone(intro_enabled_pix)
+            enabled_bytes = _pix_to_bytes(intro_enabled_pix)
+            self.assertNotEqual(enabled_bytes, blank_bytes, "Intro card MUST show main watermark when intro watermark is enabled")
+
+            # Case A with Intro show = False
+            self.win.intro_website_show_check.setChecked(False)
+            _get_app().processEvents()
+            intro_disabled_pix = self.win._render_intro_card_pixmap(bg_path)
+            self.assertIsNotNone(intro_disabled_pix)
+            disabled_bytes = _pix_to_bytes(intro_disabled_pix)
+            self.assertEqual(disabled_bytes, blank_bytes, "Intro card MUST NOT show watermark when intro watermark is disabled")
+
+            # Verify intro controls apply
+            self.win.intro_website_show_check.setChecked(True)
+            _get_app().processEvents()
+            base_bytes = _pix_to_bytes(self.win._render_intro_card_pixmap(bg_path))
+
+            # Size
+            self.win.intro_website_size_spin.setValue(40)
+            _get_app().processEvents()
+            self.assertNotEqual(_pix_to_bytes(self.win._render_intro_card_pixmap(bg_path)), base_bytes, "Intro size spinbox must affect intro watermark")
+            self.win.intro_website_size_spin.setValue(20)
+
+            # Opacity
+            self.win.intro_website_opacity_slider.setValue(20)
+            _get_app().processEvents()
+            self.assertNotEqual(_pix_to_bytes(self.win._render_intro_card_pixmap(bg_path)), base_bytes, "Intro opacity slider must affect intro watermark")
+            self.win.intro_website_opacity_slider.setValue(90)
+
+            # Y-offset
+            self.win.intro_website_y_offset_spin.setValue(-80)
+            _get_app().processEvents()
+            self.assertNotEqual(_pix_to_bytes(self.win._render_intro_card_pixmap(bg_path)), base_bytes, "Intro Y-offset spinbox must affect intro watermark")
+            self.win.intro_website_y_offset_spin.setValue(0)
+
+            # Custom text override
+            self.win.intro_website_edit.setText("www.CustomOverride.com")
+            _get_app().processEvents()
+            self.assertNotEqual(_pix_to_bytes(self.win._render_intro_card_pixmap(bg_path)), base_bytes, "Custom intro text must override main watermark")
+            self.win.intro_website_edit.setText("")
+
+            # Case B: Main blank, Intro populated -> Main video preview MUST NOT leak intro watermark
+            self.win.website_edit.setText("")
+            self.win.intro_website_edit.setText("www.IntroCustomOnly.com")
+            self.win.website_show_check.setChecked(True)
+            self.win.intro_website_show_check.setChecked(True)
+            self.win._refresh_preview()
+            _get_app().processEvents()
+            main_pix = self.win.preview_image.pixmap()
+
+            self.win.intro_website_edit.setText("")
+            self.win._refresh_preview()
+            _get_app().processEvents()
+            blank_main_pix = self.win.preview_image.pixmap()
+            self.assertEqual(_pix_to_bytes(main_pix), _pix_to_bytes(blank_main_pix), "Main video MUST NOT leak intro watermark when main watermark is empty")
+        finally:
+            Path(bg_path).unlink(missing_ok=True)
+
+    def test_playlist_cols_spin_visibility_and_layout(self):
+        """Playlist columns spinbox displays number cleanly without button overlap."""
+        self.win.show()
+        _get_app().processEvents()
+
+        spin = self.win.playlist_cols_spin
+        self.assertGreaterEqual(spin.width(), 60, "Columns spinbox width must be at least 60px")
+        line_edit = spin.lineEdit()
+        self.assertIsNotNone(line_edit)
+        self.assertGreaterEqual(line_edit.width(), 35, "Columns spinbox text area must be wide enough to clearly show digits")
+
+        # Verify editing and value changing works
+        spin.setValue(2)
+        self.assertEqual(spin.value(), 2)
+        self.assertEqual(line_edit.text(), "2")
+        spin.setValue(1)
+        self.assertEqual(spin.value(), 1)
+        self.assertEqual(line_edit.text(), "1")
 
     def test_inspector_panel_no_horizontal_clipping(self):
         """Inspector panel tabs have no horizontally clipped widgets at startup or minimum size."""

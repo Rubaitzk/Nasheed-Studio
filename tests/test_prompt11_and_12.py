@@ -130,6 +130,10 @@ def test_intro_audio_template_extraction_and_apply(dummy_audio_files):
     with patch("src.services.project_service.is_temp_or_obsolete_path", return_value=False):
         from unittest.mock import patch
     with patch("src.services.project_service.is_temp_or_obsolete_path", return_value=False):
+        from unittest.mock import patch
+    with patch("src.services.project_service.is_temp_or_obsolete_path", return_value=False):
+        from unittest.mock import patch
+    with patch("src.services.project_service.is_temp_or_obsolete_path", return_value=False):
         tmpl = extract_template(project_data, template_name="Intro Sound Template")
     assert tmpl["intro_audio_path"] == str(Path(dummy_audio_files["intro"]).resolve())
     assert tmpl["intro_audio_fade_in"] == 1.5

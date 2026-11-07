@@ -244,7 +244,6 @@ def verify_bundle(bundle: Path) -> None:
         data_root / "tools" / "ffprobe.exe",
         data_root / "assets",
         data_root / "user_templates",
-    ]
     missing = [str(p) for p in critical if not p.exists()]
     if missing:
         die(f"Critical bundle contents missing:\n  " + "\n  ".join(missing))
@@ -480,7 +479,7 @@ final_deliverable/
   Scripts/
     build_release.py        ← Reproduces this build
     build_exe.py            ← Legacy packaging helper
-    tests/                  ← Automated test suite (246 tests)
+    tests/                  ← Automated test suite (346 tests)
   Templates/                ← Seed design templates (JSON)
   Installation/
     INSTALLATION.md         ← Installation and first-run instructions
@@ -488,7 +487,7 @@ final_deliverable/
     USER_GUIDE.md           ← End-user operational guide
     DEVELOPER_GUIDE.md      ← Developer / build guide
     TROUBLESHOOTING.md      ← Diagnostics & process lifecycle guide
-    ACCEPTANCE_TEST_GUIDE.md← 25-step QA checklist
+    ACCEPTANCE_TEST_GUIDE.md← 30-step QA checklist
   Evidence/                 ← Clean-environment test screenshots and master exports
   MANIFEST.md               ← This file
 ```
