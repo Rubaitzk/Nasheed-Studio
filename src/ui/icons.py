@@ -152,7 +152,7 @@ SVG_ICONS = {
 }
 
 
-def get_svg_pixmap(name: str, size: int = 16, color: str = "#edf2ee") -> QPixmap:
+def get_svg_pixmap(name: str, size: int = 16, color: str = "#F0F2F5") -> QPixmap:
     """Render an SVG string to a QPixmap with the specified size and color."""
     svg_str = SVG_ICONS.get(name)
     if not svg_str:
@@ -174,7 +174,7 @@ def get_svg_pixmap(name: str, size: int = 16, color: str = "#edf2ee") -> QPixmap
     return pix
 
 
-def get_svg_icon(name: str, size: int = 16, color: str = "#edf2ee") -> QIcon:
+def get_svg_icon(name: str, size: int = 16, color: str = "#F0F2F5") -> QIcon:
     """Create a QIcon from an SVG icon name."""
     pix = get_svg_pixmap(name, size, color)
     return QIcon(pix)

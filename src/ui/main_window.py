@@ -34,8 +34,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional, Union
 
-from PySide6.QtCore import Qt, Signal, QObject, QTimer, QSettings, QEvent, QSize, QUrl
-from PySide6.QtGui import QPixmap, QAction, QIcon, QDragEnterEvent, QDropEvent, QColor, QPainter, QImage, QKeySequence, QShortcut, QKeyEvent
+from PySide6.QtCore import Qt, Signal, QObject, QTimer, QSettings, QEvent, QSize, QUrl, QRect
+from PySide6.QtGui import QPixmap, QAction, QIcon, QDragEnterEvent, QDropEvent, QColor, QPainter, QImage, QKeySequence, QShortcut, QKeyEvent, QFont, QFontMetrics
 from PySide6.QtMultimedia import QMediaPlayer, QVideoSink, QAudioOutput
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -161,13 +161,159 @@ class AspectRatioContainer(QWidget):
 # Drag & Drop Aware Track List with Crisp Rendering
 # ---------------------------------------------------------------------------
 
-class PlaylistDelegate(QStyledItemDelegate):
-    """Item delegate that removes State_HasFocus to prevent dotted focus rects or white artifacts."""
+class CollapsibleSection(QWidget):
+    """Clean Resolve-style collapsible inspector section with twirl arrow."""
 
-    def paint(self, painter, option, index):
+    def __init__(self, title: str, collapsed: bool = False, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._is_collapsed = collapsed
+        self._title_text = title
+
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 2, 0, 4)
+        main_layout.setSpacing(4)
+
+        # Header button
+        self.toggle_btn = QPushButton()
+        self.toggle_btn.setObjectName("twirl_header")
+        self.toggle_btn.setCheckable(True)
+        self.toggle_btn.setChecked(not collapsed)
+        self.toggle_btn.setFixedHeight(28)
+        self.toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.toggle_btn.clicked.connect(self._on_toggle)
+        main_layout.addWidget(self.toggle_btn)
+
+        # Content widget
+        self.content_widget = QWidget()
+        self.content_layout = QVBoxLayout(self.content_widget)
+        self.content_layout.setContentsMargins(2, 2, 2, 4)
+        self.content_layout.setSpacing(6)
+        main_layout.addWidget(self.content_widget)
+
+        self.content_widget.setVisible(not collapsed)
+        self._update_header()
+
+    def _on_toggle(self) -> None:
+        self._is_collapsed = not self.toggle_btn.isChecked()
+        self.content_widget.setVisible(not self._is_collapsed)
+        self._update_header()
+
+    def setCollapsed(self, collapsed: bool) -> None:
+        self._is_collapsed = collapsed
+        self.toggle_btn.setChecked(not collapsed)
+        self.content_widget.setVisible(not collapsed)
+        self._update_header()
+
+    def isCollapsed(self) -> bool:
+        return self._is_collapsed
+
+    def _update_header(self) -> None:
+        arrow = "▼" if not self._is_collapsed else "▶"
+        self.toggle_btn.setText(f" {arrow}  {self._title_text}")
+
+
+class PlaylistDelegate(QStyledItemDelegate):
+    """Item delegate that suppresses focus rects, prevents layout distortion from long titles,
+    and provides a clean, modern Resolve-style row with a restrained blue accent indicator."""
+
+    ROW_HEIGHT = 44
+
+    def sizeHint(self, option: QStyleOptionViewItem, index) -> QSize:
+        w = option.rect.width() if option.rect.width() > 0 else 240
+        return QSize(w, self.ROW_HEIGHT)
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:
         opt = QStyleOptionViewItem(option)
         opt.state &= ~QStyle.StateFlag.State_HasFocus
-        super().paint(painter, opt, index)
+
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        rect = opt.rect.adjusted(2, 2, -2, -2)
+        is_selected = bool(opt.state & QStyle.StateFlag.State_Selected)
+        is_hover = bool(opt.state & QStyle.StateFlag.State_MouseOver)
+
+        # Background card
+        if is_selected:
+            bg_color = QColor("#253042")
+            border_color = QColor("#38455C")
+        elif is_hover:
+            bg_color = QColor("#242A36")
+            border_color = QColor("#333B4A")
+        else:
+            bg_color = QColor("#1E222A")
+            border_color = QColor("#242933")
+
+        painter.setPen(border_color)
+        painter.setBrush(bg_color)
+        painter.drawRoundedRect(rect, 4, 4)
+
+        # 3px Blue Accent Indicator on Left Edge for Selected Item
+        if is_selected:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor("#6C9FE8"))
+            painter.drawRoundedRect(QRect(rect.left(), rect.top() + 3, 3, rect.height() - 6), 1.5, 1.5)
+
+        # Extract text content
+        raw_text = index.data(Qt.ItemDataRole.DisplayRole) or ""
+        lines = raw_text.split("\n")
+        title_line = lines[0] if lines else ""
+        meta_line = lines[1].strip() if len(lines) > 1 else ""
+
+        # Track index & clean title
+        idx_str = f"{index.row() + 1:02d}"
+        title_str = title_line
+        if title_line.startswith(idx_str):
+            title_str = title_line[len(idx_str):].strip()
+
+        # Duration & filename
+        dur_str = ""
+        filename_str = meta_line
+        if "·" in meta_line:
+            parts = meta_line.split("·", 1)
+            dur_str = parts[0].strip()
+            filename_str = parts[1].strip()
+        elif ":" in meta_line and "·" not in meta_line:
+            dur_str = meta_line
+            filename_str = ""
+
+        fm = painter.fontMetrics()
+
+        # 1. Track Index
+        idx_color = QColor("#6C9FE8") if is_selected else QColor("#626976")
+        font_bold = QFont(painter.font())
+        font_bold.setBold(True)
+        painter.setFont(font_bold)
+        painter.setPen(idx_color)
+        painter.drawText(rect.left() + 10, rect.top() + 18, idx_str)
+
+        # 2. Duration (Right-aligned)
+        font_normal = QFont(painter.font())
+        font_normal.setBold(False)
+        dur_w = 0
+        if dur_str:
+            painter.setFont(font_normal)
+            painter.setPen(QColor("#9CA3AF"))
+            dur_w = fm.horizontalAdvance(dur_str)
+            painter.drawText(rect.right() - dur_w - 10, rect.top() + 18, dur_str)
+
+        # 3. Track Title (Elided to avoid layout distortion)
+        title_x = rect.left() + 34
+        avail_title_w = max(40, rect.right() - dur_w - 18 - title_x)
+        painter.setFont(font_bold if is_selected else font_normal)
+        painter.setPen(QColor("#FFFFFF") if is_selected else QColor("#F0F2F5"))
+        elided_title = fm.elidedText(title_str, Qt.TextElideMode.ElideRight, avail_title_w)
+        painter.drawText(title_x, rect.top() + 18, elided_title)
+
+        # 4. Filename (Second line, elided)
+        if filename_str:
+            painter.setFont(font_normal)
+            painter.setPen(QColor("#626976"))
+            avail_sub_w = max(40, rect.right() - 10 - title_x)
+            elided_sub = fm.elidedText(filename_str, Qt.TextElideMode.ElideRight, avail_sub_w)
+            painter.drawText(title_x, rect.top() + 34, elided_sub)
+
+        painter.restore()
 
 
 class PlaylistListWidget(QListWidget):
@@ -417,7 +563,7 @@ class MainWindow(QMainWindow):
 
         # App Brand & Name
         brand_icon = QLabel()
-        brand_icon.setPixmap(get_svg_pixmap("app", 20, "#3d8b58"))
+        brand_icon.setPixmap(get_svg_pixmap("app", 20, "#6C9FE8"))
         tbl.addWidget(brand_icon)
 
         title_lbl = QLabel("NCN Studio")
@@ -447,13 +593,13 @@ class MainWindow(QMainWindow):
 
         # Top Bar Action Buttons
         self.new_btn = QPushButton("New")
-        self.new_btn.setIcon(get_svg_icon("new", 14, "#edf2ee"))
+        self.new_btn.setIcon(get_svg_icon("new", 14, "#F0F2F5"))
         self.new_btn.setToolTip("Create new project (Ctrl+N)")
         self.new_btn.clicked.connect(self.new_project)
         tbl.addWidget(self.new_btn)
 
         self.open_btn = QPushButton("Open")
-        self.open_btn.setIcon(get_svg_icon("open", 14, "#edf2ee"))
+        self.open_btn.setIcon(get_svg_icon("open", 14, "#F0F2F5"))
         self.open_btn.setToolTip("Open existing project (Ctrl+O)")
         self.open_btn.clicked.connect(self.open_project)
         tbl.addWidget(self.open_btn)
@@ -461,7 +607,7 @@ class MainWindow(QMainWindow):
         # Save is the ONLY filled button in the top bar
         self.save_btn = QPushButton("Save")
         self.save_btn.setObjectName("primary")
-        self.save_btn.setIcon(get_svg_icon("save", 14, "#ffffff"))
+        self.save_btn.setIcon(get_svg_icon("save", 14, "#0E141E"))
         self.save_btn.setToolTip("Save project changes (Ctrl+S)")
         self.save_btn.clicked.connect(self.save_project)
         tbl.addWidget(self.save_btn)
@@ -469,7 +615,7 @@ class MainWindow(QMainWindow):
         # Templates dropdown menu button
         self.templates_btn = QToolButton()
         self.templates_btn.setText("Templates ▾")
-        self.templates_btn.setIcon(get_svg_icon("template", 14, "#edf2ee"))
+        self.templates_btn.setIcon(get_svg_icon("template", 14, "#F0F2F5"))
         self.templates_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         tmpl_menu = QMenu(self.templates_btn)
         act_apply_tmpl = tmpl_menu.addAction("Apply Reusable Template…")
@@ -486,7 +632,7 @@ class MainWindow(QMainWindow):
         # Inspector toggle button
         self.inspector_toggle_btn = QToolButton()
         self.inspector_toggle_btn.setText("Inspector")
-        self.inspector_toggle_btn.setIcon(get_svg_icon("inspector", 14, "#edf2ee"))
+        self.inspector_toggle_btn.setIcon(get_svg_icon("inspector", 14, "#F0F2F5"))
         self.inspector_toggle_btn.setCheckable(True)
         self.inspector_toggle_btn.setChecked(True)
         self.inspector_toggle_btn.setToolTip("Toggle Inspector Panel")
@@ -556,7 +702,7 @@ class MainWindow(QMainWindow):
         btn_row.setSpacing(6)
 
         self.add_tracks_btn = QPushButton()
-        self.add_tracks_btn.setIcon(get_svg_icon("add", 16, "#edf2ee"))
+        self.add_tracks_btn.setIcon(get_svg_icon("add", 16, "#F0F2F5"))
         self.add_tracks_btn.setIconSize(QSize(16, 16))
         self.add_tracks_btn.setToolTip("Add Audio (Ctrl+Shift+O / Ctrl+I) — Add audio files (MP3, WAV, M4A, AAC, FLAC)")
         self.add_tracks_btn.setAccessibleName("Add Audio")
@@ -564,7 +710,7 @@ class MainWindow(QMainWindow):
         self.add_tracks_btn.clicked.connect(self.add_tracks)
 
         self.rename_track_btn = QPushButton()
-        self.rename_track_btn.setIcon(get_svg_icon("edit", 16, "#edf2ee"))
+        self.rename_track_btn.setIcon(get_svg_icon("edit", 16, "#F0F2F5"))
         self.rename_track_btn.setIconSize(QSize(16, 16))
         self.rename_track_btn.setToolTip("Edit Title (F2) — Rename or adjust selected nasheed title")
         self.rename_track_btn.setAccessibleName("Edit Title")
@@ -572,7 +718,7 @@ class MainWindow(QMainWindow):
         self.rename_track_btn.clicked.connect(self._on_rename_track_clicked)
 
         self.remove_track_btn = QPushButton()
-        self.remove_track_btn.setIcon(get_svg_icon("remove", 16, "#edf2ee"))
+        self.remove_track_btn.setIcon(get_svg_icon("remove", 16, "#F0F2F5"))
         self.remove_track_btn.setIconSize(QSize(16, 16))
         self.remove_track_btn.setToolTip("Remove (Delete / Backspace) — Remove selected track(s) from playlist")
         self.remove_track_btn.setAccessibleName("Remove")
@@ -580,7 +726,7 @@ class MainWindow(QMainWindow):
         self.remove_track_btn.clicked.connect(self.remove_track)
 
         self.up_btn = QPushButton()
-        self.up_btn.setIcon(get_svg_icon("up", 16, "#edf2ee"))
+        self.up_btn.setIcon(get_svg_icon("up", 16, "#F0F2F5"))
         self.up_btn.setIconSize(QSize(16, 16))
         self.up_btn.setToolTip("Move selected track up (Alt+Up)")
         self.up_btn.setAccessibleName("Move Up")
@@ -588,7 +734,7 @@ class MainWindow(QMainWindow):
         self.up_btn.clicked.connect(lambda: self.move_track(-1))
 
         self.down_btn = QPushButton()
-        self.down_btn.setIcon(get_svg_icon("down", 16, "#edf2ee"))
+        self.down_btn.setIcon(get_svg_icon("down", 16, "#F0F2F5"))
         self.down_btn.setIconSize(QSize(16, 16))
         self.down_btn.setToolTip("Move selected track down (Alt+Down)")
         self.down_btn.setAccessibleName("Move Down")
@@ -630,13 +776,13 @@ class MainWindow(QMainWindow):
         pv_hdr.addWidget(self.preview_badge)
 
         self.preview_intro_btn = QPushButton("Preview Intro Card")
-        self.preview_intro_btn.setIcon(get_svg_icon("eye", 13, "#edf2ee"))
+        self.preview_intro_btn.setIcon(get_svg_icon("eye", 13, "#F0F2F5"))
         self.preview_intro_btn.setToolTip("Toggle between composition preview and intro card preview")
         self.preview_intro_btn.clicked.connect(self._toggle_intro_preview)
         pv_hdr.addWidget(self.preview_intro_btn)
 
         self.play_preview_btn = QPushButton("Play Preview")
-        self.play_preview_btn.setIcon(get_svg_icon("play", 13, "#edf2ee"))
+        self.play_preview_btn.setIcon(get_svg_icon("play", 13, "#F0F2F5"))
         self.play_preview_btn.setToolTip("Play interactive preview of project audio and composition (Space)")
         self.play_preview_btn.clicked.connect(self._toggle_preview_playback)
         self.play_preview_btn.setVisible(True)
@@ -663,14 +809,14 @@ class MainWindow(QMainWindow):
         scrubber_row.setSpacing(8)
 
         self.scrubber_play_btn = QPushButton()
-        self.scrubber_play_btn.setIcon(get_svg_icon("play", 13, "#edf2ee"))
+        self.scrubber_play_btn.setIcon(get_svg_icon("play", 13, "#F0F2F5"))
         self.scrubber_play_btn.setToolTip("Play / Pause interactive preview (Space)")
         self.scrubber_play_btn.setFixedWidth(32)
         self.scrubber_play_btn.clicked.connect(self._toggle_preview_playback)
         scrubber_row.addWidget(self.scrubber_play_btn)
 
         self.scrubber_stop_btn = QPushButton()
-        self.scrubber_stop_btn.setIcon(get_svg_icon("stop", 13, "#edf2ee"))
+        self.scrubber_stop_btn.setIcon(get_svg_icon("stop", 13, "#F0F2F5"))
         self.scrubber_stop_btn.setToolTip("Stop preview and return to start")
         self.scrubber_stop_btn.setFixedWidth(32)
         self.scrubber_stop_btn.clicked.connect(self._stop_preview_playback)
@@ -697,7 +843,7 @@ class MainWindow(QMainWindow):
 
         # Independent Preview Audio Volume Controls
         self.preview_volume_btn = QPushButton()
-        self.preview_volume_btn.setIcon(get_svg_icon("volume_high", 13, "#edf2ee"))
+        self.preview_volume_btn.setIcon(get_svg_icon("volume_high", 13, "#F0F2F5"))
         self.preview_volume_btn.setToolTip("Mute / Unmute preview audio")
         self.preview_volume_btn.setFixedWidth(28)
         self.preview_volume_btn.clicked.connect(self._toggle_preview_mute)
@@ -742,25 +888,25 @@ class MainWindow(QMainWindow):
         # Tab 1: Layout & Assets
         t1_scroll, t1_layout = self._create_tab_scroll()
         self._build_tab_layout_assets(t1_layout)
-        self.inspector_tabs.addTab(t1_scroll, get_svg_icon("tab_layout", 14, "#95a399"), "Layout")
+        self.inspector_tabs.addTab(t1_scroll, get_svg_icon("tab_layout", 14, "#9CA3AF"), "Layout")
         self.inspector_tabs.setTabToolTip(0, "Layout & Project Assets")
 
         # Tab 2: Text
         t2_scroll, t2_layout = self._create_tab_scroll()
         self._build_tab_text(t2_layout)
-        self.inspector_tabs.addTab(t2_scroll, get_svg_icon("tab_text", 14, "#95a399"), "Text")
+        self.inspector_tabs.addTab(t2_scroll, get_svg_icon("tab_text", 14, "#9CA3AF"), "Text")
         self.inspector_tabs.setTabToolTip(1, "Typography & Fonts")
 
         # Tab 3: Indicator & Watermark
         t3_scroll, t3_layout = self._create_tab_scroll()
         self._build_tab_indicator_watermark(t3_layout)
-        self.inspector_tabs.addTab(t3_scroll, get_svg_icon("tab_indicator", 14, "#95a399"), "Indicator")
+        self.inspector_tabs.addTab(t3_scroll, get_svg_icon("tab_indicator", 14, "#9CA3AF"), "Indicator")
         self.inspector_tabs.setTabToolTip(2, "Track Indicator & Website Watermark")
 
         # Tab 4: Intro & Sound
         t4_scroll, t4_layout = self._create_tab_scroll()
         self._build_tab_intro_sound(t4_layout)
-        self.inspector_tabs.addTab(t4_scroll, get_svg_icon("tab_intro", 14, "#95a399"), "Sound")
+        self.inspector_tabs.addTab(t4_scroll, get_svg_icon("tab_intro", 14, "#9CA3AF"), "Sound")
         self.inspector_tabs.setTabToolTip(3, "Intro Card & Sound Effects")
 
         insp_layout.addWidget(self.inspector_tabs, 1)
@@ -780,8 +926,8 @@ class MainWindow(QMainWindow):
         export_bar = QFrame()
         export_bar.setObjectName("export_bar")
         eb_layout = QHBoxLayout(export_bar)
-        eb_layout.setContentsMargins(12, 6, 12, 6)
-        eb_layout.setSpacing(10)
+        eb_layout.setContentsMargins(10, 5, 10, 5)
+        eb_layout.setSpacing(8)
 
         # Output destination
         out_col = QHBoxLayout()
@@ -792,11 +938,12 @@ class MainWindow(QMainWindow):
 
         self.output_edit = QLineEdit(str(get_exports_dir() / "nasheed_collection.mp4"))
         self.output_edit.setPlaceholderText("Target MP4 destination path")
+        self.output_edit.setMinimumWidth(140)
         self.output_edit.textChanged.connect(self._mark_dirty)
         out_col.addWidget(self.output_edit, 1)
 
         self.choose_output_btn = QPushButton("Browse…")
-        self.choose_output_btn.setIcon(get_svg_icon("folder", 13, "#edf2ee"))
+        self.choose_output_btn.setIcon(get_svg_icon("folder", 13, "#F0F2F5"))
         self.choose_output_btn.clicked.connect(self.choose_output)
         out_col.addWidget(self.choose_output_btn)
         eb_layout.addLayout(out_col, 2)
@@ -810,6 +957,7 @@ class MainWindow(QMainWindow):
 
         self.resolution_combo = QComboBox()
         self.resolution_combo.addItems(list(RESOLUTIONS.keys()))
+        self.resolution_combo.setMinimumWidth(100)
         self.resolution_combo.currentTextChanged.connect(self._on_resolution_changed)
         res_col.addWidget(self.resolution_combo)
 
@@ -827,6 +975,7 @@ class MainWindow(QMainWindow):
 
         self.resource_profile_combo = QComboBox()
         self.resource_profile_combo.addItems(["Balanced", "Background-friendly", "Maximum-speed"])
+        self.resource_profile_combo.setMinimumWidth(110)
         self.resource_profile_combo.setToolTip("Encoder resource profile (Stage 4)")
         prof_col.addWidget(self.resource_profile_combo)
         eb_layout.addLayout(prof_col)
@@ -843,6 +992,7 @@ class MainWindow(QMainWindow):
             "High Quality · Balanced",
             "Compact · Web Sharing",
         ])
+        self.export_quality_combo.setMinimumWidth(140)
         self.export_quality_combo.setToolTip("Export video quality & bitrate tuning (Ultra Detail gives unconstrained visual fidelity)")
         qual_col.addWidget(self.export_quality_combo)
         eb_layout.addLayout(qual_col)
@@ -862,10 +1012,10 @@ class MainWindow(QMainWindow):
         self.cancel_btn.clicked.connect(self._cancel_export)
         eb_layout.addWidget(self.cancel_btn)
 
-        # Render button (Filled green primary button)
+        # Render button (Filled blue primary button)
         self.render_btn = QPushButton("Render MP4 →")
         self.render_btn.setObjectName("primary")
-        self.render_btn.setIcon(get_svg_icon("render", 13, "#ffffff"))
+        self.render_btn.setIcon(get_svg_icon("render", 13, "#0E141E"))
         self.render_btn.clicked.connect(self.render_video)
         eb_layout.addWidget(self.render_btn)
 
@@ -1087,19 +1237,19 @@ class MainWindow(QMainWindow):
 
         self.background_label = self._make_asset_label("No background selected")
         self.background_clear_btn = QPushButton()
-        self.background_clear_btn.setIcon(get_svg_icon("clear", 12, "#95a399"))
+        self.background_clear_btn.setIcon(get_svg_icon("clear", 12, "#9CA3AF"))
         self.background_clear_btn.setToolTip("Clear background")
         self.background_clear_btn.clicked.connect(self.clear_background)
 
         self.background_btn = QPushButton("Choose Background…")
         self.background_btn.setToolTip("Select background image (PNG, JPG) or video (MP4, MOV)")
-        self.background_btn.setIcon(get_svg_icon("image", 13, "#edf2ee"))
+        self.background_btn.setIcon(get_svg_icon("image", 13, "#F0F2F5"))
         self.background_btn.clicked.connect(self.choose_background)
 
         bg_row = QHBoxLayout()
         bg_row.setSpacing(6)
         bg_icon = QLabel()
-        bg_icon.setPixmap(get_svg_pixmap("image", 14, "#95a399"))
+        bg_icon.setPixmap(get_svg_pixmap("image", 14, "#9CA3AF"))
         bg_row.addWidget(bg_icon)
         bg_row.addWidget(self.background_label, 1)
         bg_row.addWidget(self.background_clear_btn)
@@ -1167,18 +1317,18 @@ class MainWindow(QMainWindow):
 
         self.logo_label = self._make_asset_label("No logo selected")
         self.logo_clear_btn = QPushButton()
-        self.logo_clear_btn.setIcon(get_svg_icon("clear", 12, "#95a399"))
+        self.logo_clear_btn.setIcon(get_svg_icon("clear", 12, "#9CA3AF"))
         self.logo_clear_btn.setToolTip("Clear logo image")
         self.logo_clear_btn.clicked.connect(self.clear_logo)
 
         self.logo_btn = QPushButton("Choose logo…")
-        self.logo_btn.setIcon(get_svg_icon("image", 13, "#edf2ee"))
+        self.logo_btn.setIcon(get_svg_icon("image", 13, "#F0F2F5"))
         self.logo_btn.clicked.connect(self.choose_logo)
 
         logo_row = QHBoxLayout()
         logo_row.setSpacing(6)
         logo_icon = QLabel()
-        logo_icon.setPixmap(get_svg_pixmap("image", 14, "#95a399"))
+        logo_icon.setPixmap(get_svg_pixmap("image", 14, "#9CA3AF"))
         logo_row.addWidget(logo_icon)
         logo_row.addWidget(self.logo_label, 1)
         logo_row.addWidget(self.logo_clear_btn)
@@ -1609,7 +1759,7 @@ class MainWindow(QMainWindow):
 
         self.refresh_fonts_btn = QPushButton("Refresh system fonts")
         self.refresh_fonts_btn.setObjectName("quiet")
-        self.refresh_fonts_btn.setIcon(get_svg_icon("refresh", 13, "#95a399"))
+        self.refresh_fonts_btn.setIcon(get_svg_icon("refresh", 13, "#9CA3AF"))
         self.refresh_fonts_btn.clicked.connect(lambda: self._refresh_system_fonts(initial=False))
         layout.addWidget(self.refresh_fonts_btn)
 
@@ -1636,7 +1786,7 @@ class MainWindow(QMainWindow):
         cur_row = QHBoxLayout()
         cur_row.setSpacing(6)
         cur_icon = QLabel()
-        cur_icon.setPixmap(get_svg_pixmap("tab_indicator", 14, "#95a399"))
+        cur_icon.setPixmap(get_svg_pixmap("tab_indicator", 14, "#9CA3AF"))
         self.cursor_btn = QPushButton("Choose cursor…")
         self.cursor_btn.clicked.connect(self.choose_cursor)
         self.cursor_reset_btn = QPushButton("Reset")
@@ -2110,7 +2260,7 @@ class MainWindow(QMainWindow):
         intro_audio_row = QHBoxLayout()
         intro_audio_row.setSpacing(6)
         intro_audio_icon = QLabel()
-        intro_audio_icon.setPixmap(get_svg_pixmap("tab_intro", 14, "#95a399"))
+        intro_audio_icon.setPixmap(get_svg_pixmap("tab_intro", 14, "#9CA3AF"))
         self.intro_audio_play_btn = QPushButton("Play")
         self.intro_audio_play_btn.clicked.connect(self.toggle_intro_audio_preview)
         self.intro_audio_clear_btn = QPushButton("Clear")
@@ -2173,7 +2323,7 @@ class MainWindow(QMainWindow):
         sfx_row = QHBoxLayout()
         sfx_row.setSpacing(6)
         sfx_icon = QLabel()
-        sfx_icon.setPixmap(get_svg_pixmap("tab_intro", 14, "#95a399"))
+        sfx_icon.setPixmap(get_svg_pixmap("tab_intro", 14, "#9CA3AF"))
         self.sfx_reset_btn = QPushButton("Reset")
         self.sfx_reset_btn.clicked.connect(self.reset_sfx)
         self.sfx_btn = QPushButton("Choose SFX…")
@@ -3853,9 +4003,9 @@ class MainWindow(QMainWindow):
         self._is_preview_playing = True
         if hasattr(self, "play_preview_btn"):
             self.play_preview_btn.setText("Pause Preview")
-            self.play_preview_btn.setIcon(get_svg_icon("pause", 13, "#edf2ee"))
+            self.play_preview_btn.setIcon(get_svg_icon("pause", 13, "#F0F2F5"))
         if hasattr(self, "scrubber_play_btn"):
-            self.scrubber_play_btn.setIcon(get_svg_icon("pause", 13, "#edf2ee"))
+            self.scrubber_play_btn.setIcon(get_svg_icon("pause", 13, "#F0F2F5"))
         if hasattr(self, "preview_badge"):
             self.preview_badge.setText("PREVIEW · Interactive (Approximate)")
 
@@ -3894,9 +4044,9 @@ class MainWindow(QMainWindow):
 
         if hasattr(self, "play_preview_btn"):
             self.play_preview_btn.setText("Play Preview")
-            self.play_preview_btn.setIcon(get_svg_icon("play", 13, "#edf2ee"))
+            self.play_preview_btn.setIcon(get_svg_icon("play", 13, "#F0F2F5"))
         if hasattr(self, "scrubber_play_btn"):
-            self.scrubber_play_btn.setIcon(get_svg_icon("play", 13, "#edf2ee"))
+            self.scrubber_play_btn.setIcon(get_svg_icon("play", 13, "#F0F2F5"))
         self._update_resolution_badge()
 
         if hasattr(self, "_preview_audio_player") and self._preview_audio_player:
@@ -4079,12 +4229,12 @@ class MainWindow(QMainWindow):
         if value <= 0:
             self._preview_is_muted = True
             if hasattr(self, "preview_volume_btn"):
-                self.preview_volume_btn.setIcon(get_svg_icon("volume_mute", 13, "#edf2ee"))
+                self.preview_volume_btn.setIcon(get_svg_icon("volume_mute", 13, "#F0F2F5"))
                 self.preview_volume_btn.setToolTip("Unmute preview audio")
         else:
             self._preview_is_muted = False
             if hasattr(self, "preview_volume_btn"):
-                self.preview_volume_btn.setIcon(get_svg_icon("volume_high", 13, "#edf2ee"))
+                self.preview_volume_btn.setIcon(get_svg_icon("volume_high", 13, "#F0F2F5"))
                 self.preview_volume_btn.setToolTip("Mute preview audio")
         if hasattr(self, "preview_volume_label"):
             self.preview_volume_label.setText(f"{value}%")
