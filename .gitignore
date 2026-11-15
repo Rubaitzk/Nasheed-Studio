@@ -30,6 +30,9 @@ assets/
 user_templates/
 Documentation/
 
+# Allow deterministic test fixtures
+!tests/fixtures/**
+
 # Build artifacts & packages
 build/
 dist/
@@ -54,6 +57,7 @@ pictur e_of_video_playlist_display/
 picture_for_improving_layout/
 last_improvements/
 reference/
+final_delivery_proof/
 
 # Render work directories & logs
 *_render_work/
