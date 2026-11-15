@@ -407,9 +407,9 @@ QTabBar::tab {
     border-bottom: none;
     border-top-left-radius: 4px;
     border-top-right-radius: 4px;
-    padding: 6px 12px;
+    padding: 5px 7px;
     margin-right: 2px;
-    font-size: 8.5pt;
+    font-size: 8pt;
     font-weight: 500;
 }
 QTabBar::tab:hover {
@@ -421,6 +421,44 @@ QTabBar::tab:selected {
     color: #F0F2F5;
     border-color: #2E3440;
     border-bottom: 2px solid #6C9FE8;
+}
+
+/* ---- Inspector Collapsible Section Headers (CapCut / Premiere style) ---- */
+QPushButton#twirl_header {
+    background: #181B21;
+    color: #F0F2F5;
+    border: 1px solid #282E3A;
+    border-radius: 4px;
+    text-align: left;
+    padding: 5px 8px;
+    font-size: 8.5pt;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+}
+QPushButton#twirl_header:hover {
+    background: #20252E;
+    border-color: #384252;
+    color: #FFFFFF;
+}
+QPushButton#twirl_header:checked {
+    background: #1C2028;
+    border-color: #2E3440;
+    color: #F0F2F5;
+}
+
+QLabel#prop_label {
+    color: #9CA3AF;
+    font-size: 8.5pt;
+    font-weight: 500;
+}
+
+QLabel#asset_path {
+    background: #181B21;
+    border: 1px solid #2E3440;
+    border-radius: 4px;
+    padding: 3px 6px;
+    color: #9CA3AF;
+    font-size: 8pt;
 }
 
 /* ---- Preview Frame ---- */

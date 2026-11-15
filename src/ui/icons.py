@@ -55,6 +55,11 @@ SVG_ICONS = {
         <polygon points="3 3 10.07 19.97 12.58 12.58 19.97 10.07 3 3"></polygon>
     </svg>""",
     "tab_intro": """<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="3" width="20" height="14" rx="2"></rect>
+        <polygon points="10 7 15 10 10 13 10 7" fill="currentColor"></polygon>
+        <line x1="2" y1="20" x2="22" y2="20"></line>
+    </svg>""",
+    "tab_audio": """<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
         <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
         <path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>
         <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
