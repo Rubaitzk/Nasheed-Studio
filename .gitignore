@@ -62,6 +62,7 @@ final_delivery_proof/
 # Render work directories & logs
 *_render_work/
 *.log
+dev_test_samples/
 
 # Executables & archives
 tools/*.exe

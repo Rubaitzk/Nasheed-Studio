@@ -9,6 +9,7 @@ from .media_probe import find_tool, is_video_file, get_video_info
 from .timeline import build_timeline
 from .compositor import create_composition, create_intro_card, INDICATOR_MODES
 from .process_manager import run_tracked_subprocess
+from .visualizer_service import generate_visualizer_video
 
 RESOLUTIONS = {
     "1080p · Full HD": (1920, 1080),
@@ -397,6 +398,25 @@ def build_render_command(
         sfx_input_idx = current_input_idx
         current_input_idx += 1
 
+    # Audio Visualizer Overlay (Feature E)
+    vis_enabled = bool(project.get("visualizer_enabled", False))
+    vis_input_idx = None
+    if vis_enabled:
+        vis_file = work_dir / "visualizer_overlay.mov"
+        total_dur = timeline[-1].end if timeline else (sum(float(t.get("duration", 0) or 0) for t in tracks) + intro_dur)
+        generate_visualizer_video(
+            project=project,
+            total_duration=total_dur,
+            canvas_w=width,
+            canvas_h=height,
+            output_path=vis_file,
+            fps=30,
+            progress_callback=progress_callback,
+        )
+        command += ["-i", str(vis_file)]
+        vis_input_idx = current_input_idx
+        current_input_idx += 1
+
     filters: list[str] = []
 
     # ------------------------------------------------------------------
@@ -485,18 +505,27 @@ def build_render_command(
             )
             current_v = next_label
 
+    # Audio Visualizer Layer (Feature E)
+    if vis_enabled and vis_input_idx is not None:
+        filters.append(f"[{current_v}][{vis_input_idx}:v]overlay=0:0[v_vis]")
+        current_v = "v_vis"
+
     video_out = f"[{current_v}]" if current_v != "0:v" else "0:v"
 
     # ------------------------------------------------------------------
     # 2. Audio Filter Graph Construction
     # ------------------------------------------------------------------
     # Normalize each track to 44.1kHz stereo with exact presentation timestamps and boundary padding/trimming
+    # Feature A: Sound Normalization via loudnorm (EBU R128: -16 LUFS, -1.5 dBTP)
+    audio_norm_enabled = bool(project.get("audio_normalize_enabled", False))
+    norm_clause = ",loudnorm=I=-16.0:TP=-1.5:LRA=11.0" if audio_norm_enabled else ""
+
     for i, in_idx in enumerate(track_input_indices):
         track_dur = float(tracks[i].get("duration", 0) or 0.0)
         dur_clause = f",apad=whole_dur={track_dur:.3f},atrim=0:{track_dur:.3f}" if track_dur > 0 else ""
         filters.append(
             f"[{in_idx}:a:0]asetpts=PTS-STARTPTS{dur_clause},"
-            f"aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a_norm_{i}]"
+            f"aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo{norm_clause}[a_norm_{i}]"
         )
 
     concat_inputs = []

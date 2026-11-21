@@ -147,6 +147,26 @@ TEMPLATE_DESIGN_KEYS = [
     "transition_sfx_enabled",
     "transition_sfx_volume",
     "transition_sfx_path",
+
+    # Sound normalization (Feature A)
+    "audio_normalize_enabled",
+
+    # Audio visualizer (Feature E)
+    "visualizer_enabled",
+    "visualizer_style",
+    "visualizer_direction",
+    "visualizer_color",
+    "visualizer_element_count",
+    "visualizer_element_size",
+    "visualizer_width",
+    "visualizer_x",
+    "visualizer_y",
+    "visualizer_amplitude",
+
+    # Interface ambient particles (Feature D)
+    "particles_enabled",
+    "particles_color",
+    "particles_speed",
 ]
 
 PROTECTED_PROJECT_CONTENT_KEYS = {
