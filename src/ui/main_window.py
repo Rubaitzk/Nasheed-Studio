@@ -70,7 +70,20 @@ from src.ui.icons import get_svg_icon, get_svg_pixmap
 from src.ui.branding import application_icon
 from src.ui.style import STYLE, TOKENS
 from src.ui.widgets import SearchableFontComboBox, ParticleOverlayWidget
-from src.services.visualizer_service import render_visualizer_preview_image, _hex_or_tuple_to_rgb
+
+
+def _hex_or_tuple_to_rgb(val: Any, default: tuple[int, int, int] = (56, 189, 248)) -> tuple[int, int, int]:
+    """Parse color into (R, G, B) tuple."""
+    if isinstance(val, (tuple, list)) and len(val) >= 3:
+        return (int(val[0]), int(val[1]), int(val[2]))
+    if isinstance(val, str):
+        s = val.strip().lstrip("#")
+        if len(s) == 6:
+            try:
+                return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
+            except ValueError:
+                pass
+    return default
 
 
 def _set_combo_case_insensitive(combo: Any, text: Any) -> bool:
@@ -407,12 +420,23 @@ class InspectorFocusWheelFilter(QObject):
     """
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         if event.type() == QEvent.Type.Wheel and isinstance(obj, QWidget):
+            # Never intercept wheel events on popup windows, dropdown lists, or viewports
+            win = obj.window()
+            if win and (win.windowType() == Qt.WindowType.Popup or win.inherits("QComboBoxPrivateContainer")):
+                return False
+            if isinstance(obj, QAbstractItemView) or isinstance(obj.parent(), QAbstractItemView):
+                return False
+
             is_focused = obj.hasFocus()
             if not is_focused and hasattr(obj, "findChildren"):
                 is_focused = any(c.hasFocus() for c in obj.findChildren(QWidget))
             if not is_focused:
                 scroll_area = self._find_scroll_area(obj)
                 if scroll_area:
+                    # Dismiss any open combobox popups so they do not detach when scrolling
+                    for cb in scroll_area.findChildren(QComboBox):
+                        if cb.view() and cb.view().isVisible():
+                            cb.hidePopup()
                     vsb = scroll_area.verticalScrollBar()
                     delta = event.angleDelta().y()
                     step = vsb.singleStep() * 3 if vsb.singleStep() > 0 else 60
@@ -490,7 +514,6 @@ class MainWindow(QMainWindow):
         self.website_color = None
         self.intro_title_color = (255, 255, 255)
         self.intro_website_color = (204, 204, 204)
-        self.visualizer_color = (56, 189, 248)
         self.particles_color = (56, 189, 248)
         self._last_video_frame_time = 0.0
         self._previewing_intro = False
@@ -816,6 +839,7 @@ class MainWindow(QMainWindow):
         self.preview_image.setWordWrap(True)
         self.preview_image.setObjectName("muted")
         pf_layout.addWidget(self.preview_image)
+        self.particle_overlay.raise_()
 
         self.preview_container = AspectRatioContainer(self.preview_frame)
         pv_layout.addWidget(self.preview_container, 1)
@@ -1218,7 +1242,19 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(6, 8, 6, 8)
         layout.setSpacing(10)
         scroll.setWidget(content)
+        scroll.verticalScrollBar().valueChanged.connect(self._dismiss_active_popups)
         return scroll, layout
+
+    def _dismiss_active_popups(self) -> None:
+        """Dismiss open combobox dropdowns when user scrolls the inspector."""
+        if not hasattr(self, "inspector_panel"):
+            return
+        from PySide6.QtWidgets import QComboBox
+        for cb in self.inspector_panel.findChildren(QComboBox):
+            if cb.view() and cb.view().isVisible():
+                cb.hidePopup()
+            if hasattr(cb, "_completer") and cb._completer and cb._completer.popup() and cb._completer.popup().isVisible():
+                cb._completer.popup().hide()
 
     def _install_inspector_wheel_filters(self) -> None:
         if not hasattr(self, "_inspector_wheel_filter"):
@@ -1232,6 +1268,8 @@ class MainWindow(QMainWindow):
             widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             widget.installEventFilter(self._inspector_wheel_filter)
             for child in widget.findChildren(QWidget):
+                if isinstance(child, QAbstractItemView) or isinstance(child.parent(), QAbstractItemView):
+                    continue
                 child.installEventFilter(self._inspector_wheel_filter)
 
     def _create_prop_row(self, label_text: str, widget: QWidget, stretch_w: int = 1, lbl_min_w: int = 90) -> QHBoxLayout:
@@ -2063,7 +2101,7 @@ class MainWindow(QMainWindow):
     _build_tab_intro_sound = _build_tab_intro_presentation  # Backward-compatibility alias
 
     def _build_tab_audio(self, layout: QVBoxLayout) -> None:
-        """Category E: Audio (Track transition sound effects, audio normalizer & audio visualizer)."""
+        """Category E: Audio (Track transition sound effects & audio normalizer)."""
         # 1. Audio Normalization (Feature A)
         sec_norm = CollapsibleSection("Audio Normalization", collapsed=False)
         self.audio_normalize_check = QCheckBox("Enable Audio Normalization (EBU R128)")
@@ -2075,94 +2113,7 @@ class MainWindow(QMainWindow):
         sec_norm.addWidget(norm_info)
         layout.addWidget(sec_norm)
 
-        # 2. Audio Visualizer (Feature E)
-        sec_vis = CollapsibleSection("Audio Visualizer", collapsed=False)
-        self.visualizer_check = QCheckBox("Enable Audio Visualizer")
-        self.visualizer_check.setToolTip("Enable audio-reactive visualizer on the video canvas")
-        self.visualizer_check.stateChanged.connect(self._on_visualizer_param_changed)
-        sec_vis.addWidget(self.visualizer_check)
-
-        self.visualizer_style_combo = QComboBox()
-        self.visualizer_style_combo.addItems(["Standard (Horizontal Bars)", "Heartbeat"])
-        self.visualizer_style_combo.setToolTip("Select audio visualizer style")
-        self.visualizer_style_combo.currentTextChanged.connect(lambda _: self._on_visualizer_param_changed())
-        sec_vis.addLayout(self._create_prop_row("Style:", self.visualizer_style_combo))
-
-        self.visualizer_direction_combo = QComboBox()
-        self.visualizer_direction_combo.addItems(["Bidirectional", "Upward", "Downward"])
-        self.visualizer_direction_combo.setToolTip("Visualizer wave/bar expansion direction")
-        self.visualizer_direction_combo.currentTextChanged.connect(lambda _: self._on_visualizer_param_changed())
-        sec_vis.addLayout(self._create_prop_row("Direction:", self.visualizer_direction_combo))
-
-        self.visualizer_color_btn = QPushButton()
-        self.visualizer_color_btn.setFixedHeight(24)
-        self.visualizer_color_btn.setToolTip("Choose visualizer color")
-        self.visualizer_color_btn.clicked.connect(self._choose_visualizer_color)
-        self._update_visualizer_color_btn()
-        sec_vis.addLayout(self._create_prop_row("Color:", self.visualizer_color_btn))
-
-        self.visualizer_count_spin = QSpinBox()
-        self.visualizer_count_spin.setRange(8, 128)
-        self.visualizer_count_spin.setValue(32)
-        self.visualizer_count_spin.setSingleStep(1)
-        self.visualizer_count_spin.setKeyboardTracking(False)
-        self.visualizer_count_spin.setSuffix(" bars/pts")
-        self.visualizer_count_spin.setToolTip("Number of frequency bars or waveform sample points")
-        self.visualizer_count_spin.valueChanged.connect(lambda _: self._on_visualizer_param_changed())
-        sec_vis.addLayout(self._create_prop_row("Element Count:", self.visualizer_count_spin))
-
-        self.visualizer_size_spin = QSpinBox()
-        self.visualizer_size_spin.setRange(1, 40)
-        self.visualizer_size_spin.setValue(8)
-        self.visualizer_size_spin.setSingleStep(1)
-        self.visualizer_size_spin.setKeyboardTracking(False)
-        self.visualizer_size_spin.setSuffix(" px")
-        self.visualizer_size_spin.setToolTip("Thickness of bars or waveform stroke width")
-        self.visualizer_size_spin.valueChanged.connect(lambda _: self._on_visualizer_param_changed())
-        sec_vis.addLayout(self._create_prop_row("Element Size:", self.visualizer_size_spin))
-
-        self.visualizer_width_spin = QSpinBox()
-        self.visualizer_width_spin.setRange(100, 1920)
-        self.visualizer_width_spin.setValue(800)
-        self.visualizer_width_spin.setSingleStep(10)
-        self.visualizer_width_spin.setKeyboardTracking(False)
-        self.visualizer_width_spin.setSuffix(" px")
-        self.visualizer_width_spin.setToolTip("Total horizontal width occupied by the visualizer")
-        self.visualizer_width_spin.valueChanged.connect(lambda _: self._on_visualizer_param_changed())
-        sec_vis.addLayout(self._create_prop_row("Width:", self.visualizer_width_spin))
-
-        self.visualizer_x_spin = QSpinBox()
-        self.visualizer_x_spin.setRange(-960, 960)
-        self.visualizer_x_spin.setValue(0)
-        self.visualizer_x_spin.setSingleStep(5)
-        self.visualizer_x_spin.setKeyboardTracking(False)
-        self.visualizer_x_spin.setSuffix(" px")
-        self.visualizer_x_spin.setToolTip("Horizontal offset relative to canvas center (0 = Centered)")
-        self.visualizer_x_spin.valueChanged.connect(lambda _: self._on_visualizer_param_changed())
-        sec_vis.addLayout(self._create_prop_row("X-Offset:", self.visualizer_x_spin))
-
-        self.visualizer_y_spin = QSpinBox()
-        self.visualizer_y_spin.setRange(0, 2160)
-        self.visualizer_y_spin.setValue(850)
-        self.visualizer_y_spin.setSingleStep(5)
-        self.visualizer_y_spin.setKeyboardTracking(False)
-        self.visualizer_y_spin.setSuffix(" px")
-        self.visualizer_y_spin.setToolTip("Vertical position (distance from top edge of canvas in pixels)")
-        self.visualizer_y_spin.valueChanged.connect(lambda _: self._on_visualizer_param_changed())
-        sec_vis.addLayout(self._create_prop_row("Y-Position:", self.visualizer_y_spin))
-
-        self.visualizer_amp_spin = QDoubleSpinBox()
-        self.visualizer_amp_spin.setRange(0.1, 5.0)
-        self.visualizer_amp_spin.setValue(1.0)
-        self.visualizer_amp_spin.setSingleStep(0.1)
-        self.visualizer_amp_spin.setKeyboardTracking(False)
-        self.visualizer_amp_spin.setSuffix("x")
-        self.visualizer_amp_spin.setToolTip("Amplitude gain multiplier for audio responsiveness")
-        self.visualizer_amp_spin.valueChanged.connect(lambda _: self._on_visualizer_param_changed())
-        sec_vis.addLayout(self._create_prop_row("Amplitude:", self.visualizer_amp_spin))
-        layout.addWidget(sec_vis)
-
-        # 3. Track Transition Sound Effects
+        # 2. Track Transition Sound Effects
         sec_sfx = CollapsibleSection("Track Transition Sound Effects", collapsed=False)
         self.sfx_check = QCheckBox("Enable track transition SFX")
         self.sfx_check.toggled.connect(self._on_sfx_toggled)
@@ -2491,16 +2442,6 @@ class MainWindow(QMainWindow):
             "cursor_y_offset": self.cursor_y_offset_spin.value() if hasattr(self, "cursor_y_offset_spin") else 0,
             "highlight_y_offset": self.highlight_y_offset_spin.value() if hasattr(self, "highlight_y_offset_spin") else 0,
             "audio_normalize_enabled": self.audio_normalize_check.isChecked() if hasattr(self, "audio_normalize_check") else False,
-            "visualizer_enabled": self.visualizer_check.isChecked() if hasattr(self, "visualizer_check") else False,
-            "visualizer_style": self.visualizer_style_combo.currentText() if hasattr(self, "visualizer_style_combo") else "Standard (Horizontal Bars)",
-            "visualizer_direction": self.visualizer_direction_combo.currentText() if hasattr(self, "visualizer_direction_combo") else "Bidirectional",
-            "visualizer_color": getattr(self, "visualizer_color", (56, 189, 248)),
-            "visualizer_element_count": self.visualizer_count_spin.value() if hasattr(self, "visualizer_count_spin") else 32,
-            "visualizer_element_size": self.visualizer_size_spin.value() if hasattr(self, "visualizer_size_spin") else 8,
-            "visualizer_width": self.visualizer_width_spin.value() if hasattr(self, "visualizer_width_spin") else 800,
-            "visualizer_x": self.visualizer_x_spin.value() if hasattr(self, "visualizer_x_spin") else 0,
-            "visualizer_y": self.visualizer_y_spin.value() if hasattr(self, "visualizer_y_spin") else 850,
-            "visualizer_amplitude": round(self.visualizer_amp_spin.value(), 2) if hasattr(self, "visualizer_amp_spin") else 1.0,
             "particles_enabled": self.particles_check.isChecked() if hasattr(self, "particles_check") else False,
             "particles_color": getattr(self, "particles_color", (56, 189, 248)),
             "particles_speed": self.particles_speed_spin.value() if hasattr(self, "particles_speed_spin") else 2,
@@ -3658,16 +3599,6 @@ class MainWindow(QMainWindow):
             getattr(self, "title_color", (255, 255, 255)),
             getattr(self, "track_color", (255, 255, 255)),
             getattr(self, "active_track_color", None),
-            (hasattr(self, "visualizer_check") and self.visualizer_check.isChecked()),
-            self.visualizer_style_combo.currentText() if hasattr(self, "visualizer_style_combo") else "",
-            self.visualizer_direction_combo.currentText() if hasattr(self, "visualizer_direction_combo") else "",
-            getattr(self, "visualizer_color", (56, 189, 248)),
-            self.visualizer_count_spin.value() if hasattr(self, "visualizer_count_spin") else 32,
-            self.visualizer_size_spin.value() if hasattr(self, "visualizer_size_spin") else 8,
-            self.visualizer_width_spin.value() if hasattr(self, "visualizer_width_spin") else 800,
-            self.visualizer_x_spin.value() if hasattr(self, "visualizer_x_spin") else 0,
-            self.visualizer_y_spin.value() if hasattr(self, "visualizer_y_spin") else 850,
-            self.visualizer_amp_spin.value() if hasattr(self, "visualizer_amp_spin") else 1.0,
         )
 
         if getattr(self, "_cached_preview_key", None) == cache_key and self._cached_preview_pixmap:
@@ -3788,15 +3719,6 @@ class MainWindow(QMainWindow):
                 fg_path = Path(tmp) / "composition_fg.png"
                 fg_img = Image.open(fg_path).convert("RGBA") if fg_path.is_file() else None
                 base_img = Image.open(base).convert("RGBA")
-
-                # Visualizer preview overlay (Feature E)
-                if hasattr(self, "visualizer_check") and self.visualizer_check.isChecked():
-                    try:
-                        vis_overlay = render_visualizer_preview_image(1280, 720, self._project(), preview_time=0.0)
-                        if vis_overlay:
-                            base_img = Image.alpha_composite(base_img, vis_overlay)
-                    except Exception:
-                        pass
 
                 self._cached_composition_pixmaps = []
                 self._cached_video_overlays = []
@@ -4392,6 +4314,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "preview_frame") and obj == self.preview_frame and event.type() == QEvent.Type.Resize:
             if hasattr(self, "particle_overlay"):
                 self.particle_overlay.setGeometry(self.preview_frame.rect())
+                self.particle_overlay.raise_()
         return super().eventFilter(obj, event)
 
     # ------------------------------------------------------------------
@@ -4468,11 +4391,16 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Cannot start export", str(exc))
             return
 
+        total_duration = sum(float(t.get("duration", 0) or 0.0) for t in project.get("tracks", []))
+        if project.get("intro_enabled"):
+            total_duration += float(project.get("intro_duration", 3.0) or 3.0)
+
         self._job = ExportJob(
             command, work_dir, out_path,
             staging_path=staging_path,
             overwrite=overwrite,
             job_id=job_id,
+            total_duration=total_duration,
             on_progress=self._bridge.progress.emit,
             on_done=self._bridge.done.emit,
             on_failed=self._bridge.failed.emit,
@@ -4498,6 +4426,8 @@ class MainWindow(QMainWindow):
             else:
                 self.particle_overlay.resume()
         if running:
+            self.progress.setRange(0, 100)
+            self.progress.setValue(0)
             self.status_label.setText("Preparing render…")
 
     # -- Export callbacks (received on main thread via Qt signals) --
@@ -4508,9 +4438,12 @@ class MainWindow(QMainWindow):
             import re
             m = re.search(r"(\d+)%", message)
             if m:
+                self.progress.setRange(0, 100)
                 self.progress.setValue(int(m.group(1)))
 
     def _render_complete(self, path: str) -> None:
+        if hasattr(self, "progress"):
+            self.progress.setValue(100)
         self._set_ui_running(False)
         p = Path(path)
         sz_mb = p.stat().st_size / (1024 * 1024) if p.exists() else 0.0
@@ -5185,28 +5118,6 @@ class MainWindow(QMainWindow):
 
         if "audio_normalize_enabled" in tmpl and hasattr(self, "audio_normalize_check"):
             self.audio_normalize_check.setChecked(bool(tmpl["audio_normalize_enabled"]))
-        if "visualizer_enabled" in tmpl and hasattr(self, "visualizer_check"):
-            self.visualizer_check.setChecked(bool(tmpl["visualizer_enabled"]))
-        if "visualizer_style" in tmpl and hasattr(self, "visualizer_style_combo"):
-            _set_combo_case_insensitive(self.visualizer_style_combo, tmpl["visualizer_style"])
-        if "visualizer_direction" in tmpl and hasattr(self, "visualizer_direction_combo"):
-            _set_combo_case_insensitive(self.visualizer_direction_combo, tmpl["visualizer_direction"])
-        if "visualizer_color" in tmpl:
-            raw_vc = tmpl["visualizer_color"]
-            self.visualizer_color = tuple(raw_vc) if isinstance(raw_vc, (list, tuple)) else raw_vc
-            self._update_visualizer_color_btn()
-        if "visualizer_element_count" in tmpl and hasattr(self, "visualizer_count_spin"):
-            self.visualizer_count_spin.setValue(int(tmpl["visualizer_element_count"]))
-        if "visualizer_element_size" in tmpl and hasattr(self, "visualizer_size_spin"):
-            self.visualizer_size_spin.setValue(int(tmpl["visualizer_element_size"]))
-        if "visualizer_width" in tmpl and hasattr(self, "visualizer_width_spin"):
-            self.visualizer_width_spin.setValue(int(tmpl["visualizer_width"]))
-        if "visualizer_x" in tmpl and hasattr(self, "visualizer_x_spin"):
-            self.visualizer_x_spin.setValue(int(tmpl["visualizer_x"]))
-        if "visualizer_y" in tmpl and hasattr(self, "visualizer_y_spin"):
-            self.visualizer_y_spin.setValue(int(tmpl["visualizer_y"]))
-        if "visualizer_amplitude" in tmpl and hasattr(self, "visualizer_amp_spin"):
-            self.visualizer_amp_spin.setValue(float(tmpl["visualizer_amplitude"]))
 
         if "particles_enabled" in tmpl and hasattr(self, "particles_check"):
             self.particles_check.setChecked(bool(tmpl["particles_enabled"]))
@@ -5704,30 +5615,6 @@ class MainWindow(QMainWindow):
             if hasattr(self, "audio_normalize_check"):
                 self.audio_normalize_check.setChecked(bool(data.get("audio_normalize_enabled", False)))
 
-            # Audio visualizer (Feature E)
-            if hasattr(self, "visualizer_check"):
-                self.visualizer_check.setChecked(bool(data.get("visualizer_enabled", False)))
-            if hasattr(self, "visualizer_style_combo") and "visualizer_style" in data:
-                _set_combo_case_insensitive(self.visualizer_style_combo, data["visualizer_style"])
-            if hasattr(self, "visualizer_direction_combo") and "visualizer_direction" in data:
-                _set_combo_case_insensitive(self.visualizer_direction_combo, data["visualizer_direction"])
-            if "visualizer_color" in data:
-                raw_vc = data["visualizer_color"]
-                self.visualizer_color = tuple(raw_vc) if isinstance(raw_vc, (list, tuple)) else raw_vc
-                self._update_visualizer_color_btn()
-            if hasattr(self, "visualizer_count_spin") and "visualizer_element_count" in data:
-                self.visualizer_count_spin.setValue(int(data["visualizer_element_count"]))
-            if hasattr(self, "visualizer_size_spin") and "visualizer_element_size" in data:
-                self.visualizer_size_spin.setValue(int(data["visualizer_element_size"]))
-            if hasattr(self, "visualizer_width_spin") and "visualizer_width" in data:
-                self.visualizer_width_spin.setValue(int(data["visualizer_width"]))
-            if hasattr(self, "visualizer_x_spin") and "visualizer_x" in data:
-                self.visualizer_x_spin.setValue(int(data["visualizer_x"]))
-            if hasattr(self, "visualizer_y_spin") and "visualizer_y" in data:
-                self.visualizer_y_spin.setValue(int(data["visualizer_y"]))
-            if hasattr(self, "visualizer_amp_spin") and "visualizer_amplitude" in data:
-                self.visualizer_amp_spin.setValue(float(data["visualizer_amplitude"]))
-
             # Interface ambient particles (Feature D)
             if hasattr(self, "particles_check"):
                 self.particles_check.setChecked(bool(data.get("particles_enabled", False)))
@@ -5899,11 +5786,6 @@ class MainWindow(QMainWindow):
         state_str = "enabled" if self.audio_normalize_check.isChecked() else "disabled"
         self.status_label.setText(f"Audio normalization {state_str}")
 
-    def _on_visualizer_param_changed(self) -> None:
-        self._mark_dirty()
-        self._push_undo_snapshot()
-        self._refresh_preview()
-
     def _on_particles_param_changed(self) -> None:
         if hasattr(self, "particle_overlay"):
             enabled = self.particles_check.isChecked()
@@ -5912,23 +5794,6 @@ class MainWindow(QMainWindow):
             self.particle_overlay.set_enabled(enabled)
         self._mark_dirty()
         self._push_undo_snapshot()
-
-    def _choose_visualizer_color(self) -> None:
-        cur_rgb = _hex_or_tuple_to_rgb(getattr(self, "visualizer_color", (56, 189, 248)))
-        init_col = QColor(cur_rgb[0], cur_rgb[1], cur_rgb[2])
-        col = QColorDialog.getColor(init_col, self, "Select Visualizer Color")
-        if col.isValid():
-            self.visualizer_color = (col.red(), col.green(), col.blue())
-            self._update_visualizer_color_btn()
-            self._on_visualizer_param_changed()
-
-    def _update_visualizer_color_btn(self) -> None:
-        if hasattr(self, "visualizer_color_btn"):
-            cur_rgb = _hex_or_tuple_to_rgb(getattr(self, "visualizer_color", (56, 189, 248)))
-            hex_c = f"#{cur_rgb[0]:02x}{cur_rgb[1]:02x}{cur_rgb[2]:02x}"
-            self.visualizer_color_btn.setStyleSheet(
-                f"background-color: {hex_c}; border: 1px solid #334155; border-radius: 4px;"
-            )
 
     def _choose_particles_color(self) -> None:
         cur_rgb = _hex_or_tuple_to_rgb(getattr(self, "particles_color", (56, 189, 248)))

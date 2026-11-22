@@ -65,11 +65,11 @@ def test_double_spinbox_stepping(win):
     assert abs(dspin.value() - (initial + dspin.singleStep())) < 1e-4
 
 
-def test_visualizer_spinboxes_arrows(win):
-    v_spin = win.visualizer_count_spin
-    assert not v_spin.keyboardTracking()
-    v_spin.setValue(32)
-    v_spin.stepUp()
-    assert v_spin.value() == 33
-    v_spin.stepDown()
-    assert v_spin.value() == 32
+def test_particle_speed_spinbox_arrows(win):
+    p_spin = win.particles_speed_spin
+    assert not p_spin.keyboardTracking()
+    p_spin.setValue(2)
+    p_spin.stepUp()
+    assert p_spin.value() == 3
+    p_spin.stepDown()
+    assert p_spin.value() == 2

@@ -38,6 +38,23 @@ class SearchableFontComboBox(QComboBox):
         self._last_valid_text = "Segoe UI"
         self.currentIndexChanged.connect(self._on_index_changed)
 
+    def showPopup(self) -> None:
+        """Show dropdown list, ensuring completer popup is closed and current item is centered."""
+        if hasattr(self, "_completer") and self._completer and self._completer.popup():
+            self._completer.popup().hide()
+        super().showPopup()
+        idx = self.currentIndex()
+        if idx >= 0 and self.view() is not None:
+            model_idx = self.model().index(idx, 0)
+            self.view().setCurrentIndex(model_idx)
+            self.view().scrollTo(model_idx)
+
+    def hidePopup(self) -> None:
+        """Hide dropdown and ensure any floating completer popup is also dismissed."""
+        super().hidePopup()
+        if hasattr(self, "_completer") and self._completer and self._completer.popup():
+            self._completer.popup().hide()
+
     def addItems(self, texts) -> None:
         super().addItems(texts)
         if hasattr(self, "_completer"):

@@ -10,31 +10,33 @@ Features:
 
 from __future__ import annotations
 
+import math
 import random
 from typing import List, Tuple, Union
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QPointF
 from PySide6.QtGui import QColor, QPainter, QPaintEvent
 from PySide6.QtWidgets import QWidget
 
+math_sin = math.sin
+
 
 class Particle:
-    __slots__ = ("x", "y", "vx", "vy", "radius", "base_alpha")
+    __slots__ = (
+        "x", "y", "speed_y", "sway_phase", "sway_speed",
+        "sway_amp", "radius", "base_alpha", "depth"
+    )
 
     def __init__(self, w: int, h: int, speed_factor: float = 1.0):
+        self.depth = random.uniform(0.3, 1.0)
         self.x = random.uniform(0, max(10, w))
         self.y = random.uniform(0, max(10, h))
-        angle = random.uniform(0, 6.28318)
-        speed = random.uniform(0.3, 1.2) * speed_factor
-        self.vx = math_cos(angle) * speed
-        self.vy = math_sin(angle) * speed - 0.2  # subtle upward drift
-        self.radius = random.uniform(2.0, 5.0)
-        self.base_alpha = random.uniform(0.3, 0.8)
-
-
-import math
-
-math_cos = math.cos
-math_sin = math.sin
+        # Atmospheric depth: closer particles (depth -> 1) fall faster and are larger/brighter
+        self.speed_y = (0.4 + self.depth * 0.9) * speed_factor
+        self.sway_phase = random.uniform(0, 6.28318)
+        self.sway_speed = random.uniform(0.015, 0.045)
+        self.sway_amp = (0.3 + self.depth * 0.8)
+        self.radius = 1.2 + self.depth * 2.5
+        self.base_alpha = 0.2 + self.depth * 0.55
 
 
 class ParticleOverlayWidget(QWidget):
@@ -55,7 +57,7 @@ class ParticleOverlayWidget(QWidget):
         self._color: QColor = QColor(56, 189, 248)  # Default cyan accent
 
         self._particles: List[Particle] = []
-        self._num_particles: int = 40
+        self._num_particles: int = 55
 
         self._timer = QTimer(self)
         self._timer.setInterval(33)  # ~30 FPS
@@ -69,6 +71,7 @@ class ParticleOverlayWidget(QWidget):
         if self._enabled:
             self._ensure_particles()
             self.show()
+            self.raise_()
             if not self._is_paused:
                 self._timer.start()
         else:
@@ -126,10 +129,7 @@ class ParticleOverlayWidget(QWidget):
     def _reseed_velocities(self) -> None:
         sm = self._speed_multiplier()
         for p in self._particles:
-            angle = random.uniform(0, 6.28318)
-            spd = random.uniform(0.3, 1.2) * sm
-            p.vx = math_cos(angle) * spd
-            p.vy = math_sin(angle) * spd - (0.2 * sm)
+            p.speed_y = (0.4 + p.depth * 0.9) * sm
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -144,20 +144,25 @@ class ParticleOverlayWidget(QWidget):
         if w <= 10 or h <= 10:
             return
 
+        sm = self._speed_multiplier()
         for p in self._particles:
-            p.x += p.vx
-            p.y += p.vy
+            p.sway_phase += p.sway_speed * sm
+            dx = math_sin(p.sway_phase) * p.sway_amp * sm
+            dy = p.speed_y * sm
+            p.x += dx
+            p.y += dy
 
-            # Boundary wrap
-            if p.x < -10:
-                p.x = w + 5
-            elif p.x > w + 10:
-                p.x = -5
+            # Seamless boundary wrapping
+            if p.y > h + 15:
+                p.y = -10
+                p.x = random.uniform(0, w)
+            elif p.y < -20:
+                p.y = h + 10
 
-            if p.y < -10:
-                p.y = h + 5
-            elif p.y > h + 10:
-                p.y = -5
+            if p.x < -20:
+                p.x = w + 10
+            elif p.x > w + 20:
+                p.x = -10
 
         self.update()
 
@@ -173,9 +178,9 @@ class ParticleOverlayWidget(QWidget):
         b = self._color.blue()
 
         for p in self._particles:
-            alpha = int(p.base_alpha * 220)
+            alpha = int(p.base_alpha * 230)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor(r, g, b, alpha))
-            painter.drawEllipse(int(p.x), int(p.y), int(p.radius * 2), int(p.radius * 2))
+            painter.drawEllipse(QPointF(p.x, p.y), p.radius, p.radius)
 
         painter.end()
