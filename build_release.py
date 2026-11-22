@@ -244,6 +244,7 @@ def verify_bundle(bundle: Path) -> None:
         data_root / "tools" / "ffprobe.exe",
         data_root / "assets",
         data_root / "user_templates",
+    ]
     missing = [str(p) for p in critical if not p.exists()]
     if missing:
         die(f"Critical bundle contents missing:\n  " + "\n  ".join(missing))
@@ -304,7 +305,8 @@ def assemble_release(bundle: Path) -> Path:
     # 5b. Source code (exclude .venv, build, dist, __pycache__, release_build)
     step("Copying source code…")
     EXCLUDE_DIRS = {".venv", "build", "dist", "__pycache__", "release_build", "final_deliverable",
-                   ".pytest_cache", ".git", "scratch", "mp4_proof",
+                   ".pytest_cache", ".git", "scratch", "mp4_proof", "final_delivery_proof",
+                   "design_concepts", "dev_test_samples",
                    "video_proof_of_template_not_working",
                    "video_proof_of_template_not_loading",
                    "picture_for_improving_layout",
@@ -461,11 +463,13 @@ def write_manifest(bundle: Path, release_dir: Path) -> None:
 
 Generated: {ts}
 
-## Executable
+## Executables & Deliverables
 
-| File | SHA-256 |
-|------|---------|
-| `Application/NCN Studio/NCN Studio.exe` | `{exe_hash}` |
+| File | SHA-256 | Size |
+|------|---------|------|
+| `Application/NCN Studio/NCN Studio.exe` | `{exe_hash}` | {exe.stat().st_size:,} bytes |
+| `Application/NCN Studio/_internal/tools/ffmpeg.exe` | bundled static FFmpeg 8.1 64-bit | {(bundle / '_internal' / 'tools' / 'ffmpeg.exe').stat().st_size:,} bytes |
+| `Application/NCN Studio/_internal/tools/ffprobe.exe` | bundled static FFprobe 8.1 64-bit | {(bundle / '_internal' / 'tools' / 'ffprobe.exe').stat().st_size:,} bytes |
 
 ## Delivery Package Structure
 
@@ -474,41 +478,58 @@ The client receives the entire project archive containing:
 ```
 final_deliverable/
   Application/
-    NCN Studio/         ← Run "NCN Studio.exe" to launch
-  Source_Code/              ← Complete clean Python source for maintenance
-  Scripts/
-    build_release.py        ← Reproduces this build
-    build_exe.py            ← Legacy packaging helper
-    tests/                  ← Automated test suite (346 tests)
-  Templates/                ← Seed design templates (JSON)
+    NCN Studio/               ← Standalone runnable application (zero external dependencies)
+      NCN Studio.exe          ← Run to launch
+      _internal/              ← Embedded Python 3.10, PySide6 Qt 6 runtime, tools/assets/templates
+      Create Desktop Shortcut.bat ← Desktop shortcut installer
+      create_desktop_shortcut.ps1 ← Desktop shortcut helper
+      README_HOW_TO_RUN.txt   ← Quick-start guide
+  Source_Code/                ← Complete clean Python source for maintenance & transparency
+  Scripts/                    ← Release automation & automated test suite (368 tests)
+  Templates/                  ← Seed design templates (JSON)
   Installation/
-    INSTALLATION.md         ← Installation and first-run instructions
+    INSTALLATION.md           ← Installation and first-run instructions
   Documentation/
-    USER_GUIDE.md           ← End-user operational guide
-    DEVELOPER_GUIDE.md      ← Developer / build guide
-    TROUBLESHOOTING.md      ← Diagnostics & process lifecycle guide
-    ACCEPTANCE_TEST_GUIDE.md← 30-step QA checklist
-  Evidence/                 ← Clean-environment test screenshots and master exports
-  MANIFEST.md               ← This file
+    USER_GUIDE.md             ← End-user operational guide detailing all controls
+    DEVELOPER_GUIDE.md        ← Architecture and build guide
+    TROUBLESHOOTING.md        ← Diagnostics & process lifecycle guide
+    ACCEPTANCE_TEST_GUIDE.md  ← 30-step QA checklist
+  Evidence/                   ← Verified test evidence & video captures
+  README.md                   ← Comprehensive product overview & control guide
+  MANIFEST.md                 ← This file
 ```
 
 ## What the client receives
 
-The client unzips the master project archive to any directory on a Windows 10/11 machine,
-navigates to `Application/NCN Studio/`, and double-clicks `NCN Studio.exe`.
-No Python installation is required. No additional codecs or software installations are needed.
-FFmpeg is bundled inside the `tools/` sub-directory.
-The complete source code, templates, tests, and documentation are included for full transparency.
-
-## Source-code notes
-
-The `Source_Code/` directory contains the complete Python source tree.
-It excludes virtual environments, build artifacts, and temporary caches.
-To run from source or execute the test suite, follow `Documentation/DEVELOPER_GUIDE.md`.
+1. The client opens or extracts the deliverable archive to any directory on a Windows 10/11 machine.
+2. Navigates to `Application/NCN Studio/` and double-clicks `NCN Studio.exe`.
+3. No Python installation is required. No external codecs or software installations are needed.
+4. Static FFmpeg and FFprobe binaries are bundled inside `_internal/tools/`.
+5. Complete source code, test suite (368 automated tests), and documentation are included for full ownership.
 """
     manifest_path = release_dir / "MANIFEST.md"
     manifest_path.write_text(manifest, encoding="utf-8")
     ok(f"MANIFEST.md written")
+
+
+def create_final_delivery_zip(release_dir: Path) -> Path:
+    header("Phase 7 — Creating Master Client Delivery ZIP: NCN_Studio_Final.zip")
+    final_zip = release_dir / "NCN_Studio_Final.zip"
+    step(f"Archiving master deliverable tree to {final_zip.name}…")
+
+    with zipfile.ZipFile(final_zip, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        for root, dirs, files in os.walk(release_dir):
+            dirs[:] = [d for d in dirs if d != "__pycache__"]
+            for file in files:
+                # Exclude any existing or intermediate zip archives to avoid nesting
+                if file.endswith(".zip"):
+                    continue
+                full = Path(root) / file
+                rel = full.relative_to(release_dir)
+                zf.write(full, rel)
+
+    ok(f"Master Delivery ZIP created: {final_zip} ({final_zip.stat().st_size // 1_000_000} MB)")
+    return final_zip
 
 
 # ---------------------------------------------------------------------------
@@ -946,20 +967,20 @@ def main() -> None:
     else:
         warn("Tests skipped (--skip-tests). Document this in Evidence/.")
 
-    bundle = run_pyinstaller(clean=args.clean)
+    bundle = DIST_DIR / BUNDLE_NAME
+    if args.clean or not (bundle / f"{BUNDLE_NAME}.exe").is_file():
+        bundle = run_pyinstaller(clean=args.clean)
     verify_bundle(bundle)
     release_dir = assemble_release(bundle)
     write_manifest(bundle, release_dir)
+    final_zip = create_final_delivery_zip(release_dir)
 
     header("Build Complete")
     print(f"\n  Release package: {release_dir}")
     print(f"  Executable:      {release_dir / 'Application' / BUNDLE_NAME / (BUNDLE_NAME + '.exe')}")
-    print(f"  ZIP archive:     {release_dir / ZIP_NAME}")
-    print(f"\n  Next steps:")
-    print(f"  1. Test the executable in a clean Windows environment (no Python).")
-    print(f"  2. Add test evidence (screenshots, logs, sample export) to:")
-    print(f"     {str(release_dir / 'Evidence')}")
-    print(f"  3. Deliver {ZIP_NAME} to the client.\n")
+    print(f"  Application ZIP: {release_dir / ZIP_NAME}")
+    print(f"  Master Final ZIP:{final_zip}")
+    print(f"\n  Deliver {final_zip.name} to the client.\n")
 
 
 if __name__ == "__main__":
