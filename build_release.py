@@ -375,6 +375,9 @@ def assemble_release(bundle: Path) -> Path:
         shutil.copy2(shortcut_ps1, dest_bundle / "create_desktop_shortcut.ps1")
     if readme_run.is_file():
         shutil.copy2(readme_run, dest_bundle / "README_HOW_TO_RUN.txt")
+    app_ico = ROOT / "assets" / "app_icon.ico"
+    if app_ico.is_file():
+        shutil.copy2(app_ico, dest_bundle / "app_icon.ico")
 
     # Older deliveries duplicated launch helpers in the package root and Installation/.
     # Keep the runnable shortcut helper only beside the EXE to make the end-user path clear.

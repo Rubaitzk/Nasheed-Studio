@@ -61,6 +61,7 @@ if (-not $targetExe) {
 
 $shortcutPath = Join-Path $desktopPath "NCN Studio.lnk"
 $iconCandidates = @(
+    (Join-Path $targetDir "app_icon.ico"),
     (Join-Path $targetDir "assets\app_icon.ico"),
     (Join-Path $targetDir "_internal\assets\app_icon.ico")
 )
