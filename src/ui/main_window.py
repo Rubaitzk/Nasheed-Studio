@@ -3214,6 +3214,7 @@ class MainWindow(QMainWindow):
         self._mark_dirty()
 
     def _on_intro_param_changed(self, *args) -> None:
+        self._cached_intro_pixmap = None
         self._mark_dirty()
         self._schedule_preview(150)
 
@@ -3354,6 +3355,8 @@ class MainWindow(QMainWindow):
 
     def _toggle_intro_preview(self) -> None:
         self._previewing_intro = not getattr(self, "_previewing_intro", False)
+        if hasattr(self, "particle_overlay"):
+            self.particle_overlay.set_text_pixmap(None)
         if hasattr(self, "preview_intro_btn"):
             if self._previewing_intro:
                 self.preview_intro_btn.setText("Preview Playlist")
@@ -3627,22 +3630,18 @@ class MainWindow(QMainWindow):
 
         if getattr(self, "_cached_preview_key", None) == cache_key and self._cached_preview_pixmap:
             if not getattr(self, "_is_preview_playing", False):
-                scaled_pix = self._cached_preview_pixmap.scaled(
-                    target_size,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-                self.preview_image.setPixmap(scaled_pix)
-                self.preview_image.setText("")
+                self._refresh_particles_preview_state()
             return
 
-        # Pre-render intro card if intro enabled or user is previewing intro
+        # Pre-render intro card if user is previewing intro or cached intro pixmap doesn't exist yet
         intro_enabled = (hasattr(self, "intro_enabled_check") and self.intro_enabled_check.isChecked())
-        if intro_enabled or getattr(self, "_previewing_intro", False):
+        if getattr(self, "_previewing_intro", False) or (intro_enabled and getattr(self, "_cached_intro_pixmap", None) is None):
             self._render_intro_card_pixmap(valid_bg)
 
         # If user explicitly toggled "Preview Intro Card", display intro card and return
         if getattr(self, "_previewing_intro", False):
+            if hasattr(self, "particle_overlay"):
+                self.particle_overlay.set_text_pixmap(None)
             if self._cached_intro_pixmap and not self._cached_intro_pixmap.isNull():
                 scaled_pix = self._cached_intro_pixmap.scaled(
                     target_size,
@@ -4188,6 +4187,8 @@ class MainWindow(QMainWindow):
             target_size = QSize(640, 360)
 
         if time_sec < intro_dur:
+            if hasattr(self, "particle_overlay"):
+                self.particle_overlay.set_text_pixmap(None)
             if getattr(self, "_cached_intro_pixmap", None) and not self._cached_intro_pixmap.isNull():
                 scaled_pix = self._cached_intro_pixmap.scaled(
                     target_size,
@@ -5877,11 +5878,27 @@ class MainWindow(QMainWindow):
         if target_size.width() <= 10 or target_size.height() <= 10:
             target_size = QSize(640, 360)
 
+        # If user explicitly toggled "Preview Intro Card", show intro card and ensure no text overlay lingers
+        if getattr(self, "_previewing_intro", False):
+            if hasattr(self, "particle_overlay"):
+                self.particle_overlay.set_text_pixmap(None)
+            intro_pix = getattr(self, "_cached_intro_pixmap", None)
+            if intro_pix and not intro_pix.isNull():
+                scaled_intro = intro_pix.scaled(
+                    target_size,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                self.preview_image.setPixmap(scaled_intro)
+                self.preview_image.setText("")
+            return
+
         part_enabled = hasattr(self, "particles_check") and self.particles_check.isChecked()
         part_layer = self.particles_layer_combo.currentText() if hasattr(self, "particles_layer_combo") else "Below Text"
 
         if part_enabled and part_layer == "Below Text":
-            bg_pix = getattr(self, "_cached_bg_pixmap", None) or getattr(self, "_cached_preview_pixmap", None)
+            # In Below Text mode, background ONLY goes to preview_image, and text/overlay goes to particle_overlay
+            bg_pix = getattr(self, "_cached_bg_pixmap", None)
             if bg_pix and not bg_pix.isNull():
                 scaled_bg = bg_pix.scaled(
                     target_size,
@@ -5890,6 +5907,8 @@ class MainWindow(QMainWindow):
                 )
                 self.preview_image.setPixmap(scaled_bg)
                 self.preview_image.setText("")
+            else:
+                self.preview_image.setPixmap(QPixmap())
 
             ov_pix = getattr(self, "_current_overlay_pixmap", None)
             if ov_pix and not ov_pix.isNull():

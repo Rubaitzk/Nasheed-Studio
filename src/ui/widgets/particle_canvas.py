@@ -101,6 +101,7 @@ class ParticleOverlayWidget(QWidget):
                 self._timer.start()
         else:
             self._timer.stop()
+            self._text_pixmap = None
             self.hide()
         self.update()
 
@@ -259,7 +260,10 @@ class ParticleOverlayWidget(QWidget):
                 painter.drawEllipse(QPointF(p.x, p.y), p.radius, p.radius)
 
         # 2. If 'Below Text' layer is active and text pixmap is present, draw text on top of particles
+        # Centered exactly to align with QLabel preview_image (AlignCenter)
         if self._layer == LAYER_BELOW_TEXT and self._text_pixmap and not self._text_pixmap.isNull():
-            painter.drawPixmap(0, 0, self._text_pixmap)
+            ox = max(0, (self.width() - self._text_pixmap.width()) // 2)
+            oy = max(0, (self.height() - self._text_pixmap.height()) // 2)
+            painter.drawPixmap(ox, oy, self._text_pixmap)
 
         painter.end()
