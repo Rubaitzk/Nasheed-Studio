@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -151,8 +152,11 @@ TEMPLATE_DESIGN_KEYS = [
     # Sound normalization (Feature A)
     "audio_normalize_enabled",
 
-    # Interface ambient particles (Feature D)
+    # Ambient particles (Feature D)
     "particles_enabled",
+    "particles_style",
+    "particles_layer",
+    "particles_quantity",
     "particles_color",
     "particles_speed",
 ]
@@ -462,6 +466,14 @@ def discover_user_templates(project_root: Optional[Path] = None) -> List[Dict[st
     """
     root = project_root or Path(__file__).resolve().parent.parent.parent
     search_dirs = [root / "user_templates", root / "templates"]
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            search_dirs.insert(0, Path(meipass) / "user_templates")
+            search_dirs.insert(1, Path(meipass) / "templates")
+        exe_dir = Path(sys.executable).parent
+        search_dirs.insert(2, exe_dir / "_internal" / "user_templates")
+        search_dirs.insert(3, exe_dir / "user_templates")
     discovered: List[Dict[str, Any]] = []
     seen_paths = set()
 

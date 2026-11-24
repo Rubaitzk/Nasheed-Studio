@@ -274,6 +274,37 @@ def build_render_command(
     command = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
                "-progress", "pipe:1", "-nostats"]
 
+    # Feature D: Ambient Particle Effects Video Sequence (Export rendering)
+    particles_enabled = bool(project.get("particles_enabled", False))
+    particles_style = project.get("particles_style", "Drifting Flecks")
+    particles_layer = project.get("particles_layer", "Below Text")
+    particles_quantity = int(project.get("particles_quantity", 80) or 80)
+    particles_color = project.get("particles_color", (56, 189, 248))
+    particles_speed = int(project.get("particles_speed", 2) or 2)
+    particle_input_idx = None
+
+    if particles_enabled:
+        from src.services.particle_service import generate_particle_loop_video
+        particle_mov = Path(work_dir) / "particles_loop.mov"
+        try:
+            if progress_callback:
+                progress_callback("Generating ambient particle sequence…")
+            generate_particle_loop_video(
+                output_path=particle_mov,
+                width=width,
+                height=height,
+                fps=30,
+                duration=6.0,
+                style=particles_style,
+                quantity=particles_quantity,
+                color=particles_color,
+                speed=particles_speed,
+                ffmpeg_bin=ffmpeg,
+            )
+        except Exception as p_err:
+            # Fallback gracefully if particle generation fails so export does not abort
+            particle_mov = None
+
     fg_input_idx = None
     if bg_is_video:
         if video_loop:
@@ -289,8 +320,23 @@ def build_render_command(
             fg_input_idx = current_input_idx
             current_input_idx += 1
     else:
-        command += ["-loop", "1", "-framerate", "30", "-i", base]
-        current_input_idx = 1
+        bg_clean_file = Path(work_dir) / "composition_bg.png"
+        fg_file = Path(work_dir) / "composition_fg.png"
+        if particles_enabled and particles_layer == "Below Text" and bg_clean_file.is_file() and fg_file.is_file():
+            command += ["-loop", "1", "-framerate", "30", "-i", str(bg_clean_file)]
+            current_input_idx = 1
+            command += ["-loop", "1", "-framerate", "1", "-i", str(fg_file)]
+            fg_input_idx = current_input_idx
+            current_input_idx += 1
+        else:
+            command += ["-loop", "1", "-framerate", "30", "-i", base]
+            current_input_idx = 1
+
+    # Ambient particles input
+    if particles_enabled and particle_mov and particle_mov.is_file():
+        command += ["-stream_loop", "-1", "-i", str(particle_mov)]
+        particle_input_idx = current_input_idx
+        current_input_idx += 1
 
     # Overlays
     overlay_input_indices = []
@@ -415,14 +461,19 @@ def build_render_command(
         if not video_loop:
             filters.append(f"[{v_bg_stream}]tpad=stop_mode=clone:stop=-1[v_bg_held]")
             v_bg_stream = "v_bg_held"
-
-        if fg_input_idx is not None:
-            filters.append(f"[{v_bg_stream}][{fg_input_idx}:v]overlay=0:0[v_base]")
-            current_v = "v_base"
-        else:
-            current_v = v_bg_stream
     else:
-        current_v = "0:v"
+        v_bg_stream = "0:v"
+
+    # Feature D: Ambient particles (Layer: Below Text - beneath typography & tracklist)
+    if particle_input_idx is not None and particles_layer == "Below Text":
+        filters.append(f"[{v_bg_stream}][{particle_input_idx}:v]overlay=0:0:shortest=1[v_bg_part]")
+        v_bg_stream = "v_bg_part"
+
+    if fg_input_idx is not None:
+        filters.append(f"[{v_bg_stream}][{fg_input_idx}:v]overlay=0:0[v_base]")
+        current_v = "v_base"
+    else:
+        current_v = v_bg_stream
 
     # Intro presentation overlay
     if intro_enabled and intro_input_idx is not None:
@@ -485,6 +536,11 @@ def build_render_command(
             )
             current_v = next_label
 
+    # Feature D: Ambient particles (Layer: Above Text - floats over all visual layers)
+    if particle_input_idx is not None and particles_layer != "Below Text":
+        filters.append(f"[{current_v}][{particle_input_idx}:v]overlay=0:0:shortest=1[v_final_part]")
+        current_v = "v_final_part"
+
     video_out = f"[{current_v}]" if current_v != "0:v" else "0:v"
 
     # ------------------------------------------------------------------
@@ -528,7 +584,7 @@ def build_render_command(
                 intro_filter_chain.append(f"afade=t=in:st=0:d={fade_in:.3f}")
             if fade_out > 0:
                 intro_filter_chain.append(f"afade=t=out:st={fade_out_st:.3f}:d={fade_out:.3f}")
-            intro_filter_chain.append("aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a_intro_prep]")
+            intro_filter_chain.append(f"aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo{norm_clause}[a_intro_prep]")
 
             filters.append(",".join(intro_filter_chain))
             concat_inputs.append("[a_intro_prep]")

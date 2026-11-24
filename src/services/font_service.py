@@ -124,6 +124,13 @@ def _build_font_cache() -> Dict[str, Dict[str, str]]:
         Path(__file__).resolve().parent.parent.parent / "assets" / "fonts",
         Path("assets/fonts").resolve(),
     ]
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            local_font_dirs.insert(0, Path(meipass) / "assets" / "fonts")
+        exe_dir = Path(sys.executable).parent
+        local_font_dirs.insert(1, exe_dir / "_internal" / "assets" / "fonts")
+        local_font_dirs.insert(2, exe_dir / "assets" / "fonts")
     for lfd in local_font_dirs:
         if lfd.is_dir():
             for ext in ("*.ttf", "*.otf"):

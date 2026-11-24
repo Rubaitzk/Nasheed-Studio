@@ -1514,12 +1514,33 @@ class MainWindow(QMainWindow):
         sec_pl.addLayout(self._create_slider_prop_row("Panel Opacity:", self.playlist_bg_slider, self.playlist_bg_val_lbl))
         layout.addWidget(sec_pl)
 
-        # 4. Interface Ambient Particles (Feature D)
-        sec_particles = CollapsibleSection("Interface Ambient Particles", collapsed=False)
+        # 4. Ambient Particles Effect (Feature D)
+        sec_particles = CollapsibleSection("Ambient Particles Effect", collapsed=False)
         self.particles_check = QCheckBox("Enable Ambient Particles")
-        self.particles_check.setToolTip("Toggle animated ambient particles floating in the preview canvas")
+        self.particles_check.setToolTip("Toggle animated ambient particles floating in the canvas and exported video")
         self.particles_check.stateChanged.connect(self._on_particles_param_changed)
         sec_particles.addWidget(self.particles_check)
+
+        self.particles_style_combo = QComboBox()
+        self.particles_style_combo.addItems(["Drifting Flecks", "Floating Orbs"])
+        self.particles_style_combo.setToolTip("Animation style: Drifting Flecks (horizontal floating particles) or Floating Orbs (vertical float)")
+        self.particles_style_combo.currentTextChanged.connect(self._on_particles_param_changed)
+        sec_particles.addLayout(self._create_prop_row("Style:", self.particles_style_combo))
+
+        self.particles_layer_combo = QComboBox()
+        self.particles_layer_combo.addItems(["Below Text", "Above Text"])
+        self.particles_layer_combo.setToolTip("Particle layering: 'Below Text' keeps playlist typography crisp and visible; 'Above Text' floats over all layers")
+        self.particles_layer_combo.currentTextChanged.connect(self._on_particles_param_changed)
+        sec_particles.addLayout(self._create_prop_row("Layer:", self.particles_layer_combo))
+
+        self.particles_count_spin = QSpinBox()
+        self.particles_count_spin.setRange(10, 300)
+        self.particles_count_spin.setValue(80)
+        self.particles_count_spin.setSingleStep(10)
+        self.particles_count_spin.setKeyboardTracking(False)
+        self.particles_count_spin.setToolTip("Adjust particle quantity / density across the frame")
+        self.particles_count_spin.valueChanged.connect(self._on_particles_param_changed)
+        sec_particles.addLayout(self._create_prop_row("Quantity:", self.particles_count_spin))
 
         self.particles_color_btn = QPushButton()
         self.particles_color_btn.setFixedHeight(24)
@@ -2443,6 +2464,9 @@ class MainWindow(QMainWindow):
             "highlight_y_offset": self.highlight_y_offset_spin.value() if hasattr(self, "highlight_y_offset_spin") else 0,
             "audio_normalize_enabled": self.audio_normalize_check.isChecked() if hasattr(self, "audio_normalize_check") else False,
             "particles_enabled": self.particles_check.isChecked() if hasattr(self, "particles_check") else False,
+            "particles_style": self.particles_style_combo.currentText() if hasattr(self, "particles_style_combo") else "Drifting Flecks",
+            "particles_layer": self.particles_layer_combo.currentText() if hasattr(self, "particles_layer_combo") else "Below Text",
+            "particles_quantity": self.particles_count_spin.value() if hasattr(self, "particles_count_spin") else 80,
             "particles_color": getattr(self, "particles_color", (56, 189, 248)),
             "particles_speed": self.particles_speed_spin.value() if hasattr(self, "particles_speed_spin") else 2,
             "output_path": self.output_edit.text().strip(),
@@ -3718,6 +3742,8 @@ class MainWindow(QMainWindow):
 
                 fg_path = Path(tmp) / "composition_fg.png"
                 fg_img = Image.open(fg_path).convert("RGBA") if fg_path.is_file() else None
+                clean_bg_path = Path(tmp) / "composition_bg.png"
+                clean_bg_img = Image.open(clean_bg_path).convert("RGBA") if clean_bg_path.is_file() else None
                 base_img = Image.open(base).convert("RGBA")
 
                 self._cached_composition_pixmaps = []
@@ -3729,6 +3755,8 @@ class MainWindow(QMainWindow):
                     data = im.tobytes("raw", "RGBA")
                     qimg = QImage(data, im.width, im.height, QImage.Format.Format_RGBA8888).copy()
                     return QPixmap.fromImage(qimg)
+
+                self._cached_bg_pixmap = _pil_to_pixmap(clean_bg_img or base_img)
 
                 if overlays:
                     for ov_p in overlays:
@@ -3766,16 +3794,7 @@ class MainWindow(QMainWindow):
                     tm, ts = divmod(int(tot_d), 60)
                     self.scrubber_total_label.setText(f"{tm:02d}:{ts:02d}")
 
-                if not getattr(self, "_is_preview_playing", False):
-                    pix = self._cached_preview_pixmap
-                    if pix and not pix.isNull():
-                        scaled_pix = pix.scaled(
-                            target_size,
-                            Qt.AspectRatioMode.KeepAspectRatio,
-                            Qt.TransformationMode.SmoothTransformation,
-                        )
-                        self.preview_image.setPixmap(scaled_pix)
-                        self.preview_image.setText("")
+                self._refresh_particles_preview_state()
         except Exception as exc:
             self.preview_image.setPixmap(QPixmap())
             self.preview_image.setText(f"Preview unavailable: {exc}")
@@ -4199,16 +4218,38 @@ class MainWindow(QMainWindow):
                     sel_idx = min(active_idx, len(self._cached_video_overlays) - 1)
                     self._current_overlay_pixmap = self._cached_video_overlays[sel_idx]
             else:
+                part_enabled = hasattr(self, "particles_check") and self.particles_check.isChecked()
+                part_layer = self.particles_layer_combo.currentText() if hasattr(self, "particles_layer_combo") else "Below Text"
+
                 if getattr(self, "_cached_composition_pixmaps", None) and self._cached_composition_pixmaps:
                     sel_idx = min(active_idx, len(self._cached_composition_pixmaps) - 1)
                     pix = self._cached_composition_pixmaps[sel_idx]
-                    scaled_pix = pix.scaled(
-                        target_size,
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation,
-                    )
-                    self.preview_image.setPixmap(scaled_pix)
-                    self.preview_image.setText("")
+                    if part_enabled and part_layer == "Below Text":
+                        bg_pix = getattr(self, "_cached_bg_pixmap", None) or pix
+                        scaled_bg = bg_pix.scaled(
+                            target_size,
+                            Qt.AspectRatioMode.KeepAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation,
+                        )
+                        self.preview_image.setPixmap(scaled_bg)
+                        self.preview_image.setText("")
+                        if getattr(self, "_cached_video_overlays", None):
+                            sel_ov = self._cached_video_overlays[min(active_idx, len(self._cached_video_overlays) - 1)]
+                            scaled_ov = sel_ov.scaled(
+                                target_size,
+                                Qt.AspectRatioMode.KeepAspectRatio,
+                                Qt.TransformationMode.SmoothTransformation,
+                            )
+                            self.particle_overlay.set_text_pixmap(scaled_ov)
+                    else:
+                        self.particle_overlay.set_text_pixmap(None)
+                        scaled_pix = pix.scaled(
+                            target_size,
+                            Qt.AspectRatioMode.KeepAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation,
+                        )
+                        self.preview_image.setPixmap(scaled_pix)
+                        self.preview_image.setText("")
                 elif getattr(self, "_cached_preview_pixmap", None) and not self._cached_preview_pixmap.isNull():
                     scaled_pix = self._cached_preview_pixmap.scaled(
                         target_size,
@@ -4287,6 +4328,9 @@ class MainWindow(QMainWindow):
         elif getattr(self, "_current_overlay_pixmap", None) and not self._current_overlay_pixmap.isNull():
             ov_pix = self._current_overlay_pixmap
 
+        part_enabled = hasattr(self, "particles_check") and self.particles_check.isChecked()
+        part_layer = self.particles_layer_combo.currentText() if hasattr(self, "particles_layer_combo") else "Below Text"
+
         if ov_pix and not ov_pix.isNull():
             ov_cache_key = (id(ov_pix), w, h)
             if getattr(self, "_scaled_overlay_cache_key", None) != ov_cache_key or not hasattr(self, "_scaled_overlay_pixmap"):
@@ -4296,11 +4340,17 @@ class MainWindow(QMainWindow):
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation,
                 )
-            p.drawPixmap(0, 0, self._scaled_overlay_pixmap)
+            if not (part_enabled and part_layer == "Below Text"):
+                p.drawPixmap(0, 0, self._scaled_overlay_pixmap)
         p.end()
 
         self.preview_image.setPixmap(QPixmap.fromImage(canvas))
         self.preview_image.setText("")
+
+        if part_enabled and part_layer == "Below Text":
+            self.particle_overlay.set_text_pixmap(getattr(self, "_scaled_overlay_pixmap", None))
+        else:
+            self.particle_overlay.set_text_pixmap(None)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -5121,6 +5171,12 @@ class MainWindow(QMainWindow):
 
         if "particles_enabled" in tmpl and hasattr(self, "particles_check"):
             self.particles_check.setChecked(bool(tmpl["particles_enabled"]))
+        if "particles_style" in tmpl and hasattr(self, "particles_style_combo"):
+            self.particles_style_combo.setCurrentText(str(tmpl["particles_style"]))
+        if "particles_layer" in tmpl and hasattr(self, "particles_layer_combo"):
+            self.particles_layer_combo.setCurrentText(str(tmpl["particles_layer"]))
+        if "particles_quantity" in tmpl and hasattr(self, "particles_count_spin"):
+            self.particles_count_spin.setValue(int(tmpl["particles_quantity"]))
         if "particles_color" in tmpl:
             raw_pc = tmpl["particles_color"]
             self.particles_color = tuple(raw_pc) if isinstance(raw_pc, (list, tuple)) else raw_pc
@@ -5128,9 +5184,12 @@ class MainWindow(QMainWindow):
         if "particles_speed" in tmpl and hasattr(self, "particles_speed_spin"):
             self.particles_speed_spin.setValue(int(tmpl["particles_speed"]))
         if hasattr(self, "particle_overlay"):
-            self.particle_overlay.set_enabled(self.particles_check.isChecked() if hasattr(self, "particles_check") else False)
+            self.particle_overlay.set_particle_style(self.particles_style_combo.currentText() if hasattr(self, "particles_style_combo") else "Drifting Flecks")
+            self.particle_overlay.set_particle_layer(self.particles_layer_combo.currentText() if hasattr(self, "particles_layer_combo") else "Below Text")
+            self.particle_overlay.set_particle_count(self.particles_count_spin.value() if hasattr(self, "particles_count_spin") else 80)
             self.particle_overlay.set_particle_speed(self.particles_speed_spin.value() if hasattr(self, "particles_speed_spin") else 2)
             self.particle_overlay.set_particle_color(self.particles_color)
+            self.particle_overlay.set_enabled(self.particles_check.isChecked() if hasattr(self, "particles_check") else False)
         if "intro_audio_path" in tmpl and hasattr(self, "intro_audio_label"):
             iap = tmpl["intro_audio_path"]
             if iap and Path(iap).is_file():
@@ -5615,9 +5674,15 @@ class MainWindow(QMainWindow):
             if hasattr(self, "audio_normalize_check"):
                 self.audio_normalize_check.setChecked(bool(data.get("audio_normalize_enabled", False)))
 
-            # Interface ambient particles (Feature D)
+            # Ambient particles (Feature D)
             if hasattr(self, "particles_check"):
                 self.particles_check.setChecked(bool(data.get("particles_enabled", False)))
+            if hasattr(self, "particles_style_combo") and "particles_style" in data:
+                self.particles_style_combo.setCurrentText(str(data["particles_style"]))
+            if hasattr(self, "particles_layer_combo") and "particles_layer" in data:
+                self.particles_layer_combo.setCurrentText(str(data["particles_layer"]))
+            if hasattr(self, "particles_count_spin") and "particles_quantity" in data:
+                self.particles_count_spin.setValue(int(data["particles_quantity"]))
             if "particles_color" in data:
                 raw_pc = data["particles_color"]
                 self.particles_color = tuple(raw_pc) if isinstance(raw_pc, (list, tuple)) else raw_pc
@@ -5625,9 +5690,12 @@ class MainWindow(QMainWindow):
             if hasattr(self, "particles_speed_spin") and "particles_speed" in data:
                 self.particles_speed_spin.setValue(int(data["particles_speed"]))
             if hasattr(self, "particle_overlay"):
-                self.particle_overlay.set_enabled(self.particles_check.isChecked() if hasattr(self, "particles_check") else False)
+                self.particle_overlay.set_particle_style(self.particles_style_combo.currentText() if hasattr(self, "particles_style_combo") else "Drifting Flecks")
+                self.particle_overlay.set_particle_layer(self.particles_layer_combo.currentText() if hasattr(self, "particles_layer_combo") else "Below Text")
+                self.particle_overlay.set_particle_count(self.particles_count_spin.value() if hasattr(self, "particles_count_spin") else 80)
                 self.particle_overlay.set_particle_speed(self.particles_speed_spin.value() if hasattr(self, "particles_speed_spin") else 2)
                 self.particle_overlay.set_particle_color(self.particles_color)
+                self.particle_overlay.set_enabled(self.particles_check.isChecked() if hasattr(self, "particles_check") else False)
 
             self._check_logo_website_overlap()
             self._refresh_tracks()
@@ -5789,11 +5857,61 @@ class MainWindow(QMainWindow):
     def _on_particles_param_changed(self) -> None:
         if hasattr(self, "particle_overlay"):
             enabled = self.particles_check.isChecked()
-            spd = self.particles_speed_spin.value()
+            spd = self.particles_speed_spin.value() if hasattr(self, "particles_speed_spin") else 2
+            style = self.particles_style_combo.currentText() if hasattr(self, "particles_style_combo") else "Drifting Flecks"
+            layer = self.particles_layer_combo.currentText() if hasattr(self, "particles_layer_combo") else "Below Text"
+            count = self.particles_count_spin.value() if hasattr(self, "particles_count_spin") else 80
+            self.particle_overlay.set_particle_style(style)
+            self.particle_overlay.set_particle_layer(layer)
+            self.particle_overlay.set_particle_count(count)
             self.particle_overlay.set_particle_speed(spd)
             self.particle_overlay.set_enabled(enabled)
+            self._refresh_particles_preview_state()
         self._mark_dirty()
         self._push_undo_snapshot()
+
+    def _refresh_particles_preview_state(self) -> None:
+        if getattr(self, "_is_preview_playing", False):
+            return
+        target_size = self.preview_frame.size() if hasattr(self, "preview_frame") else QSize(640, 360)
+        if target_size.width() <= 10 or target_size.height() <= 10:
+            target_size = QSize(640, 360)
+
+        part_enabled = hasattr(self, "particles_check") and self.particles_check.isChecked()
+        part_layer = self.particles_layer_combo.currentText() if hasattr(self, "particles_layer_combo") else "Below Text"
+
+        if part_enabled and part_layer == "Below Text":
+            bg_pix = getattr(self, "_cached_bg_pixmap", None) or getattr(self, "_cached_preview_pixmap", None)
+            if bg_pix and not bg_pix.isNull():
+                scaled_bg = bg_pix.scaled(
+                    target_size,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                self.preview_image.setPixmap(scaled_bg)
+                self.preview_image.setText("")
+
+            ov_pix = getattr(self, "_current_overlay_pixmap", None)
+            if ov_pix and not ov_pix.isNull():
+                scaled_ov = ov_pix.scaled(
+                    target_size,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                self.particle_overlay.set_text_pixmap(scaled_ov)
+            else:
+                self.particle_overlay.set_text_pixmap(None)
+        else:
+            self.particle_overlay.set_text_pixmap(None)
+            pix = getattr(self, "_cached_preview_pixmap", None)
+            if pix and not pix.isNull():
+                scaled_pix = pix.scaled(
+                    target_size,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                self.preview_image.setPixmap(scaled_pix)
+                self.preview_image.setText("")
 
     def _choose_particles_color(self) -> None:
         cur_rgb = _hex_or_tuple_to_rgb(getattr(self, "particles_color", (56, 189, 248)))

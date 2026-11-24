@@ -130,9 +130,11 @@ def check_prerequisites() -> None:
         SRC_DIR / "services" / "export_job.py",
         SRC_DIR / "services" / "timeline.py",
         SRC_DIR / "services" / "project_service.py",
+        SRC_DIR / "services" / "particle_service.py",
         SRC_DIR / "ui" / "main_window.py",
         SRC_DIR / "ui" / "icons.py",
         SRC_DIR / "ui" / "style.py",
+        SRC_DIR / "ui" / "widgets" / "particle_canvas.py",
     ]
     for p in required:
         if not p.is_file():
@@ -379,19 +381,31 @@ def assemble_release(bundle: Path) -> Path:
     if app_ico.is_file():
         shutil.copy2(app_ico, dest_bundle / "app_icon.ico")
 
-    # Older deliveries duplicated launch helpers in the package root and Installation/.
-    # Keep the runnable shortcut helper only beside the EXE to make the end-user path clear.
-    duplicate_helpers = (
+    # Clean up any obsolete root-level batch files or archives in final_deliverable
+    for stray in [
+        RELEASE_DIR / "Launch NCN Studio.bat",
         RELEASE_DIR / "Create Desktop Shortcut.bat",
-        RELEASE_DIR / "create_desktop_shortcut.ps1",
         RELEASE_DIR / "README_HOW_TO_RUN.txt",
+        RELEASE_DIR / ZIP_NAME,
+        RELEASE_DIR / "Nasheed_Studio_Windows_x64.zip",
+        RELEASE_DIR / "NCN_Studio_Final.zip",
+        RELEASE_DIR / "NCN_Studio_Final_Fixed.zip",
+    ]:
+        if stray.exists():
+            try:
+                stray.unlink()
+            except Exception:
+                pass
+
+    # Clean up obsolete duplicate locations in Installation/
+    duplicate_helpers = (
         INSTALL_OUT / "create_desktop_shortcut.bat",
         INSTALL_OUT / "create_desktop_shortcut.ps1",
     )
     for duplicate in duplicate_helpers:
         if duplicate.exists():
             duplicate.unlink()
-    ok("Shortcut helper and quick-start guide copied into the application folder")
+    ok("Application shortcut helpers and quick-start guides configured inside Application/NCN Studio")
 
     # 5f. Documentation
     if DOCS_DIR.is_dir():
@@ -422,28 +436,11 @@ def assemble_release(bundle: Path) -> Path:
     else:
         ok("Evidence directory preserved")
 
-    # 5h. ZIP of Application
-    zip_path = RELEASE_DIR / ZIP_NAME
-    step(f"Creating ZIP archive: {zip_path.name}")
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-        for root, dirs, files in os.walk(dest_bundle):
-            # Skip __pycache__ inside the bundle
-            dirs[:] = [d for d in dirs if d != "__pycache__"]
-            for file in files:
-                full = Path(root) / file
-                rel = full.relative_to(APP_OUT)
-                zf.write(full, rel)
-    ok(f"ZIP created: {zip_path} ({zip_path.stat().st_size // 1_000_000} MB)")
-
-    # Remove previous product-named outputs only after the replacement ZIP exists.
+    # Clean up legacy bundle names if present
     legacy_bundle = APP_OUT / "Nasheed Studio"
     if legacy_bundle != dest_bundle and legacy_bundle.exists():
         shutil.rmtree(legacy_bundle)
         ok("Removed previous Nasheed Studio application bundle")
-    legacy_zip = RELEASE_DIR / "Nasheed_Studio_Windows_x64.zip"
-    if legacy_zip != zip_path and legacy_zip.exists():
-        legacy_zip.unlink()
-        ok("Removed previous Nasheed Studio application archive")
 
     return RELEASE_DIR
 
@@ -471,6 +468,7 @@ Generated: {ts}
 | File | SHA-256 | Size |
 |------|---------|------|
 | `Application/NCN Studio/NCN Studio.exe` | `{exe_hash}` | {exe.stat().st_size:,} bytes |
+| `Application/NCN Studio/_internal/base_library.zip` | embedded Python standard library | {(bundle / '_internal' / 'base_library.zip').stat().st_size:,} bytes |
 | `Application/NCN Studio/_internal/tools/ffmpeg.exe` | bundled static FFmpeg 8.1 64-bit | {(bundle / '_internal' / 'tools' / 'ffmpeg.exe').stat().st_size:,} bytes |
 | `Application/NCN Studio/_internal/tools/ffprobe.exe` | bundled static FFprobe 8.1 64-bit | {(bundle / '_internal' / 'tools' / 'ffprobe.exe').stat().st_size:,} bytes |
 
@@ -482,7 +480,7 @@ The client receives the entire project archive containing:
 final_deliverable/
   Application/
     NCN Studio/               ← Standalone runnable application (zero external dependencies)
-      NCN Studio.exe          ← Run to launch
+      NCN Studio.exe          ← Direct executable
       _internal/              ← Embedded Python 3.10, PySide6 Qt 6 runtime, tools/assets/templates
       Create Desktop Shortcut.bat ← Desktop shortcut installer
       create_desktop_shortcut.ps1 ← Desktop shortcut helper
@@ -504,11 +502,11 @@ final_deliverable/
 
 ## What the client receives
 
-1. The client opens or extracts the deliverable archive to any directory on a Windows 10/11 machine.
-2. Navigates to `Application/NCN Studio/` and double-clicks `NCN Studio.exe`.
+1. The client extracts `NCN_Studio_Final_Fixed.zip` to any directory on a Windows 10/11 machine.
+2. Navigates to `Application/NCN Studio/` and double-clicks `NCN Studio.exe` (or double-clicks `Create Desktop Shortcut.bat` to place a shortcut on Desktop).
 3. No Python installation is required. No external codecs or software installations are needed.
-4. Static FFmpeg and FFprobe binaries are bundled inside `_internal/tools/`.
-5. Complete source code, test suite (368 automated tests), and documentation are included for full ownership.
+4. Embedded Python runtime, standard library (`base_library.zip`), PySide6 Qt 6 engine, and static FFmpeg/FFprobe binaries are bundled inside `Application/NCN Studio/_internal/`.
+5. Complete source code, test suite (371 automated tests), and documentation are included for full ownership.
 """
     manifest_path = release_dir / "MANIFEST.md"
     manifest_path.write_text(manifest, encoding="utf-8")
@@ -516,22 +514,41 @@ final_deliverable/
 
 
 def create_final_delivery_zip(release_dir: Path) -> Path:
-    header("Phase 7 — Creating Master Client Delivery ZIP: NCN_Studio_Final.zip")
-    final_zip = release_dir / "NCN_Studio_Final.zip"
+    header("Phase 7 — Creating Master Client Delivery ZIP: NCN_Studio_Final_Fixed.zip")
+    final_zip = ROOT / "NCN_Studio_Final_Fixed.zip"
     step(f"Archiving master deliverable tree to {final_zip.name}…")
 
     with zipfile.ZipFile(final_zip, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
         for root, dirs, files in os.walk(release_dir):
             dirs[:] = [d for d in dirs if d != "__pycache__"]
             for file in files:
-                # Exclude any existing or intermediate zip archives to avoid nesting
-                if file.endswith(".zip"):
-                    continue
                 full = Path(root) / file
+                # Exclude any stray zip archives in release_dir root to avoid nested zips,
+                # but NEVER exclude embedded runtime archives like base_library.zip inside Application/!
+                if Path(root).resolve() == release_dir.resolve() and file.endswith(".zip"):
+                    continue
+                if full.resolve() == final_zip.resolve():
+                    continue
                 rel = full.relative_to(release_dir)
                 zf.write(full, rel)
 
+    # Verification: Ensure base_library.zip is inside the master archive
+    with zipfile.ZipFile(final_zip, "r") as zf:
+        names = set(zf.namelist())
+        expected_lib = "Application/NCN Studio/_internal/base_library.zip"
+        alt_lib = "Application\\NCN Studio\\_internal\\base_library.zip"
+        if expected_lib not in names and alt_lib not in names:
+            die(f"CRITICAL ERROR: {expected_lib} was omitted from the delivery ZIP!")
+        ok("Verified: embedded Python base_library.zip is present inside delivery ZIP")
+
     ok(f"Master Delivery ZIP created: {final_zip} ({final_zip.stat().st_size // 1_000_000} MB)")
+
+    # Also synchronize NCN_Studio_Final.zip with the fixed contents for seamless compatibility
+    compat_zip = ROOT / "NCN_Studio_Final.zip"
+    step(f"Syncing compatibility archive: {compat_zip.name}…")
+    shutil.copy2(final_zip, compat_zip)
+    ok(f"Compatibility ZIP synchronized: {compat_zip}")
+
     return final_zip
 
 
@@ -552,12 +569,17 @@ INSTALLATION_GUIDE = """\
 
 ## Installation Steps
 
-1. Extract `NCN_Studio_Windows_x64.zip` to a folder of your choice.
+1. Extract `NCN_Studio_Final_Fixed.zip` (or `NCN_Studio_Windows_x64.zip`) to a folder of your choice.
    For example: `C:\\Programs\\NCN Studio\\`
 
-2. No installer is required. The application is fully portable.
+2. No Python installation is required. The application is completely self-contained.
 
-3. Double-click **NCN Studio.exe** to launch.
+3. To launch:
+   - Double-click **Launch NCN Studio.bat** in the extracted root directory, OR
+   - Open **Application/NCN Studio/** and double-click **NCN Studio.exe**.
+
+4. To create a desktop shortcut:
+   - Double-click **Create Desktop Shortcut.bat**.
 
 ## First Run
 
@@ -979,10 +1001,9 @@ def main() -> None:
     final_zip = create_final_delivery_zip(release_dir)
 
     header("Build Complete")
-    print(f"\n  Release package: {release_dir}")
-    print(f"  Executable:      {release_dir / 'Application' / BUNDLE_NAME / (BUNDLE_NAME + '.exe')}")
-    print(f"  Application ZIP: {release_dir / ZIP_NAME}")
-    print(f"  Master Final ZIP:{final_zip}")
+    print(f"\n  Release directory:  {release_dir}")
+    print(f"  Executable:         {release_dir / 'Application' / BUNDLE_NAME / (BUNDLE_NAME + '.exe')}")
+    print(f"  Master Final ZIP:   {final_zip}")
     print(f"\n  Deliver {final_zip.name} to the client.\n")
 
 

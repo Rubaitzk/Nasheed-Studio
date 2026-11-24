@@ -98,6 +98,8 @@ hidden_imports = [
     "PySide6.QtWidgets",
     "PySide6.QtGui",
     "PySide6.QtCore",
+    # Particle effects service
+    "src.services.particle_service",
     # Pillow sub-modules (PIL's import system is dynamic)
     "PIL",
     "PIL.Image",

@@ -1336,6 +1336,7 @@ def create_composition(
         wash_alpha=wash_alpha,
         bg_is_video=bg_is_video,
     )
+    clean_bg = bg.copy()
     draw = ImageDraw.Draw(bg, "RGBA")
 
     # Dynamic Typography Scaling
@@ -1627,6 +1628,7 @@ def create_composition(
         fg = Image.alpha_composite(fg, tracks_layer)
         fg_path = str(out / "composition_fg.png")
         fg.save(fg_path)
+        clean_bg.save(str(out / "composition_bg.png"))
         base_path = str(out / "composition.png")
         base.save(base_path)
         return base_path, []
@@ -1634,6 +1636,7 @@ def create_composition(
     # When overlays are enabled, save base without playlist text to avoid duplicate/ghosted rendering
     fg_path = str(out / "composition_fg.png")
     fg.save(fg_path)
+    clean_bg.save(str(out / "composition_bg.png"))
     base_path = str(out / "composition.png")
     base.save(base_path)
 
