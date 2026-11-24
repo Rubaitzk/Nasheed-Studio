@@ -486,6 +486,7 @@ class MainWindow(QMainWindow):
         self._preview_timeline_timer.timeout.connect(self._on_preview_timeline_tick)
         self._preview_audio_player: Optional[QMediaPlayer] = None
         self._preview_audio_output: Optional[QAudioOutput] = None
+        self._preview_audio_pending_seek: Optional[int] = None
         self._preview_volume: int = 70
         self._preview_pre_mute_volume: int = 70
         self._preview_is_muted: bool = False
@@ -3884,6 +3885,7 @@ class MainWindow(QMainWindow):
         """Stop preview playback, reset timeline to beginning, and update view."""
         self._pause_preview_playback()
         self._seek_preview(0.0)
+        self._preview_audio_pending_seek = None
         if hasattr(self, "_preview_audio_player") and self._preview_audio_player:
             try:
                 self._preview_audio_player.stop()
@@ -3916,6 +3918,7 @@ class MainWindow(QMainWindow):
             self._preview_audio_player = None
             self._preview_audio_output = None
         self._is_preview_playing = False
+        self._preview_audio_pending_seek = None
         self._preview_audio_current_src = ""
         self._preview_audio_current_track_idx = None
 
@@ -3985,29 +3988,38 @@ class MainWindow(QMainWindow):
             trk_idx = getattr(self, "_preview_audio_current_track_idx", None)
 
             if player_state == QMediaPlayer.PlaybackState.PlayingState or media_status == QMediaPlayer.MediaStatus.LoadingMedia:
-                if trk_idx == -1:
-                    if cur_pos_ms > 0:
-                        calc_t = cur_pos_ms / 1000.0
-                        self._preview_current_time = max(self._preview_current_time, calc_t)
+                if self._preview_audio_pending_seek is not None:
+                    if abs(cur_pos_ms - self._preview_audio_pending_seek) < 250:
+                        self._preview_audio_pending_seek = None
+                    elif now - getattr(self, "_preview_audio_buffer_start", now) < 1.5:
                         audio_synced = True
-                    elif cur_pos_ms == 0:
-                        audio_buffering_age = now - getattr(self, "_preview_audio_buffer_start", now)
-                        if audio_buffering_age < 1.5:
+                    else:
+                        self._preview_audio_pending_seek = None
+
+                if not audio_synced:
+                    if trk_idx == -1:
+                        if cur_pos_ms > 0:
+                            calc_t = cur_pos_ms / 1000.0
+                            self._preview_current_time = max(self._preview_current_time, calc_t)
                             audio_synced = True
-                elif trk_idx is not None and 0 <= trk_idx < len(self.tracks):
-                    accum = sum(float(self.tracks[i].get("duration", 0.0)) for i in range(trk_idx))
-                    trk_dur = float(self.tracks[trk_idx].get("duration", 0.0))
-                    if media_status == QMediaPlayer.MediaStatus.EndOfMedia or (trk_dur > 0 and cur_pos_ms / 1000.0 >= trk_dur - 0.05):
-                        self._preview_current_time = intro_dur + accum + trk_dur + 0.02
-                        audio_synced = True
-                    elif cur_pos_ms > 0:
-                        calc_t = intro_dur + accum + (cur_pos_ms / 1000.0)
-                        self._preview_current_time = max(self._preview_current_time, calc_t)
-                        audio_synced = True
-                    elif cur_pos_ms == 0:
-                        audio_buffering_age = now - getattr(self, "_preview_audio_buffer_start", now)
-                        if audio_buffering_age < 1.5:
+                        elif cur_pos_ms == 0:
+                            audio_buffering_age = now - getattr(self, "_preview_audio_buffer_start", now)
+                            if audio_buffering_age < 1.5:
+                                audio_synced = True
+                    elif trk_idx is not None and 0 <= trk_idx < len(self.tracks):
+                        accum = sum(float(self.tracks[i].get("duration", 0.0)) for i in range(trk_idx))
+                        trk_dur = float(self.tracks[trk_idx].get("duration", 0.0))
+                        if media_status == QMediaPlayer.MediaStatus.EndOfMedia or (trk_dur > 0 and cur_pos_ms / 1000.0 >= trk_dur - 0.05):
+                            self._preview_current_time = intro_dur + accum + trk_dur + 0.02
                             audio_synced = True
+                        elif cur_pos_ms > 0:
+                            calc_t = intro_dur + accum + (cur_pos_ms / 1000.0)
+                            self._preview_current_time = max(self._preview_current_time, calc_t)
+                            audio_synced = True
+                        elif cur_pos_ms == 0:
+                            audio_buffering_age = now - getattr(self, "_preview_audio_buffer_start", now)
+                            if audio_buffering_age < 1.5:
+                                audio_synced = True
 
         if not audio_synced:
             self._preview_current_time += dt
@@ -4070,6 +4082,16 @@ class MainWindow(QMainWindow):
             self._preview_is_muted = True
             self.preview_volume_slider.setValue(0)
 
+    def _on_preview_audio_media_status_changed(self, status: QMediaPlayer.MediaStatus) -> None:
+        if status in (QMediaPlayer.MediaStatus.LoadedMedia, QMediaPlayer.MediaStatus.BufferedMedia):
+            if self._preview_audio_pending_seek is not None and self._preview_audio_player:
+                seek_ms = self._preview_audio_pending_seek
+                self._preview_audio_pending_seek = None
+                self._preview_audio_player.setPosition(seek_ms)
+            if getattr(self, "_is_preview_playing", False) and self._preview_audio_player:
+                if self._preview_audio_player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
+                    self._preview_audio_player.play()
+
     def _sync_playback_state(self, time_sec: float, is_playing: bool, is_seek: bool = False) -> None:
         intro_enabled = (hasattr(self, "intro_enabled_check") and self.intro_enabled_check.isChecked())
         intro_dur = float(self.intro_dur_spin.value()) if (intro_enabled and hasattr(self, "intro_dur_spin")) else 0.0
@@ -4078,6 +4100,7 @@ class MainWindow(QMainWindow):
             self._preview_audio_player = QMediaPlayer(self)
             self._preview_audio_output = QAudioOutput(self)
             self._preview_audio_player.setAudioOutput(self._preview_audio_output)
+            self._preview_audio_player.mediaStatusChanged.connect(self._on_preview_audio_media_status_changed)
             self._preview_audio_output.setVolume(self._get_effective_preview_volume())
 
         if time_sec < intro_dur:
@@ -4091,13 +4114,17 @@ class MainWindow(QMainWindow):
                     self._preview_audio_current_track_idx = -1
                     self._preview_audio_buffer_start = time.monotonic()
                     if time_sec > 0.05:
+                        self._preview_audio_pending_seek = int(time_sec * 1000)
                         self._preview_audio_player.setPosition(int(time_sec * 1000))
+                    else:
+                        self._preview_audio_pending_seek = None
                     if self._preview_audio_output:
                         self._preview_audio_output.setVolume(self._get_effective_preview_volume())
                     if is_playing:
                         self._preview_audio_player.play()
                 elif is_seek:
                     self._preview_audio_buffer_start = time.monotonic()
+                    self._preview_audio_pending_seek = int(time_sec * 1000)
                     self._preview_audio_player.setPosition(int(time_sec * 1000))
                     if self._preview_audio_output:
                         self._preview_audio_output.setVolume(self._get_effective_preview_volume())
@@ -4124,6 +4151,9 @@ class MainWindow(QMainWindow):
             else:
                 if self._preview_audio_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
                     self._preview_audio_player.pause()
+                self._preview_audio_current_track_idx = -1
+                self._preview_audio_current_src = ""
+                self._preview_audio_pending_seek = None
         else:
             playlist_t = max(0.0, time_sec - intro_dur)
             active_idx = 0
@@ -4152,13 +4182,17 @@ class MainWindow(QMainWindow):
                         self._preview_audio_current_track_idx = active_idx
                         self._preview_audio_buffer_start = time.monotonic()
                         if track_offset > 0.05:
+                            self._preview_audio_pending_seek = int(track_offset * 1000)
                             self._preview_audio_player.setPosition(int(track_offset * 1000))
+                        else:
+                            self._preview_audio_pending_seek = None
                         if self._preview_audio_output:
                             self._preview_audio_output.setVolume(self._get_effective_preview_volume())
                         if is_playing:
                             self._preview_audio_player.play()
                     elif is_seek:
                         self._preview_audio_buffer_start = time.monotonic()
+                        self._preview_audio_pending_seek = int(track_offset * 1000)
                         self._preview_audio_player.setPosition(int(track_offset * 1000))
                         if self._preview_audio_output:
                             self._preview_audio_output.setVolume(self._get_effective_preview_volume())
@@ -5378,6 +5412,7 @@ class MainWindow(QMainWindow):
 
     def _load_project_file(self, path: str) -> None:
         try:
+            self._stop_preview_playback()
             data = json.loads(Path(path).read_text(encoding="utf-8"))
             if data.get("type") == "template":
                 self._apply_template_data(data)

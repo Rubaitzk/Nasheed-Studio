@@ -549,14 +549,15 @@ def build_render_command(
     # Normalize each track to 44.1kHz stereo with exact presentation timestamps and boundary padding/trimming
     # Feature A: Sound Normalization via loudnorm (EBU R128: -16 LUFS, -1.5 dBTP)
     audio_norm_enabled = bool(project.get("audio_normalize_enabled", False))
-    norm_clause = ",loudnorm=I=-16.0:TP=-1.5:LRA=11.0" if audio_norm_enabled else ""
+    norm_clause = "loudnorm=I=-16.0:TP=-1.5:LRA=11.0," if audio_norm_enabled else ""
 
     for i, in_idx in enumerate(track_input_indices):
         track_dur = float(tracks[i].get("duration", 0) or 0.0)
         dur_clause = f",apad=whole_dur={track_dur:.3f},atrim=0:{track_dur:.3f}" if track_dur > 0 else ""
         filters.append(
             f"[{in_idx}:a:0]asetpts=PTS-STARTPTS{dur_clause},"
-            f"aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo{norm_clause}[a_norm_{i}]"
+            f"{norm_clause}"
+            f"aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a_norm_{i}]"
         )
 
     concat_inputs = []
@@ -584,7 +585,9 @@ def build_render_command(
                 intro_filter_chain.append(f"afade=t=in:st=0:d={fade_in:.3f}")
             if fade_out > 0:
                 intro_filter_chain.append(f"afade=t=out:st={fade_out_st:.3f}:d={fade_out:.3f}")
-            intro_filter_chain.append(f"aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo{norm_clause}[a_intro_prep]")
+            if audio_norm_enabled:
+                intro_filter_chain.append("loudnorm=I=-16.0:TP=-1.5:LRA=11.0")
+            intro_filter_chain.append("aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a_intro_prep]")
 
             filters.append(",".join(intro_filter_chain))
             concat_inputs.append("[a_intro_prep]")
@@ -604,7 +607,7 @@ def build_render_command(
 
     # Transition Sound Effects (SFX) Mixing
     final_audio = f"[{concat_label}]"
-    if sfx_enabled and sfx_input_idx is not None:
+    if sfx_enabled and sfx_input_idx is not None and len(tracks) > 1:
         num_transitions = len(tracks) - 1
         # Trim SFX to maximum 2.5s with a 0.5s fade-out so it never bleeds across subsequent track audio
         filters.append(
@@ -719,7 +722,7 @@ def build_render_command(
         "-c:v", "libx264", "-preset", profile_preset, "-threads", str(profile_threads),
         *command_video_rate,
         "-pix_fmt", "yuv420p", "-r", "30",
-        "-c:a", "aac", "-b:a", audio_bitrate,
+        "-c:a", "aac", "-b:a", audio_bitrate, "-ar", "44100",
         "-movflags", "+faststart", "-shortest",
         str(effective_out),
     ]
