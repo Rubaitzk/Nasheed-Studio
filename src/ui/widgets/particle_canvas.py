@@ -22,10 +22,12 @@ from src.services.particle_service import (
     STYLE_DRIFTING_FLECKS,
     STYLE_FLOATING_ORBS,
     STYLE_LIGHT_GLINTS,
+    STYLE_TWINKLE_STARS,
     LAYER_BELOW_TEXT,
     LAYER_ABOVE_TEXT,
     _speed_multiplier,
     lens_polygon,
+    star_4point_polygon,
     glint_state,
 )
 
@@ -97,6 +99,33 @@ class Particle:
             ]
             kx_choices = [1] if speed_factor <= 1.0 else ([1, 2] if speed_factor <= 3.0 else [2, 3])
             ky_choices = [-1] if speed_factor <= 1.0 else ([-2, -1] if speed_factor <= 3.0 else [-3, -2])
+            duration = 6.0
+            self.vx = r_gen.choice(kx_choices) * self.width / duration
+            self.vy = r_gen.choice(ky_choices) * self.height / duration
+            self.speed_x = self.vx
+            self.speed_y = self.vy
+            self.sway_phase = 0.0
+            self.sway_speed = 0.0
+            self.sway_amp = 0.0
+            self.base_alpha = 0.0
+            self.x = self.positions[0][0]
+            self.y = self.positions[0][1]
+        elif "twinkle" in s:
+            # Twinkle Stars: 4-point diamond star with long thin arms flashing in and out
+            res_scale = max(0.5, h / 1080.0)
+            self.radius = r_gen.uniform(8.0, 24.0) * res_scale
+            self.length = self.radius * 2.0
+            self.glint_width = self.radius * 0.36
+            self.angle_deg = r_gen.uniform(0.0, 45.0)
+            self.n = r_gen.choice([2, 3, 4])
+            self.phase = r_gen.uniform(0.0, 1.0)
+            self.peak_alpha = int(round(r_gen.uniform(150, 255) * (0.5 + 0.5 * self.depth)))
+            self.positions = [
+                (r_gen.uniform(0, self.width), r_gen.uniform(0, self.height))
+                for _ in range(self.n)
+            ]
+            kx_choices = [1] if speed_factor <= 1.0 else ([1, 2] if speed_factor <= 3.0 else [2, 3])
+            ky_choices = [-1, 0, 1]
             duration = 6.0
             self.vx = r_gen.choice(kx_choices) * self.width / duration
             self.vy = r_gen.choice(ky_choices) * self.height / duration
@@ -201,12 +230,14 @@ class ParticleOverlayWidget(QWidget):
         return self._speed_level
 
     def set_particle_style(self, style: str) -> None:
-        """Set particle style: 'Drifting Flecks', 'Floating Orbs', or 'Light Glints'."""
+        """Set particle style: 'Drifting Flecks', 'Floating Orbs', 'Light Glints', or 'Twinkle Stars'."""
         s = str(style).lower()
         if "fleck" in s:
             self._style = STYLE_DRIFTING_FLECKS
         elif "glint" in s:
             self._style = STYLE_LIGHT_GLINTS
+        elif "twinkle" in s:
+            self._style = STYLE_TWINKLE_STARS
         else:
             self._style = STYLE_FLOATING_ORBS
         self._particles.clear()
@@ -252,7 +283,7 @@ class ParticleOverlayWidget(QWidget):
                 Particle(w, h, self._style, sm, rng=rng)
                 for _ in range(self._num_particles)
             ]
-            if "glint" in self._style.lower():
+            if "glint" in self._style.lower() or "twinkle" in self._style.lower():
                 for p in self._particles:
                     p.width = w
                     p.height = h
@@ -268,7 +299,7 @@ class ParticleOverlayWidget(QWidget):
             for p in self._particles:
                 p.speed_x = (1.5 + p.depth * 2.2) * sm
                 p.sway_speed = random.uniform(0.015, 0.04) * sm
-        elif "glint" in s:
+        elif "glint" in s or "twinkle" in s:
             kx_choices = [1] if sm <= 1.0 else ([1, 2] if sm <= 3.0 else [2, 3])
             ky_choices = [-1] if sm <= 1.0 else ([-2, -1] if sm <= 3.0 else [-3, -2])
             duration = getattr(self, "_duration", 6.0)
@@ -303,7 +334,7 @@ class ParticleOverlayWidget(QWidget):
         sm = self._speed_multiplier()
         s = self._style.lower()
 
-        if "glint" in s:
+        if "glint" in s or "twinkle" in s:
             dt = 1.0 / 30.0
             self._time_counter = (self._time_counter + dt) % self._duration
             for p in self._particles:
@@ -379,6 +410,23 @@ class ParticleOverlayWidget(QWidget):
                     core_alpha = min(255, int(eff_alpha * 1.15))
                     painter.setBrush(QColor(255, 255, 255, core_alpha))
                     core_pts = lens_polygon(p.x, p.y, p.length * 0.65, p.glint_width * 0.45, p.angle_deg)
+                    painter.drawPolygon(QPolygonF([QPointF(px, py) for px, py in core_pts]))
+            elif "twinkle" in self._style.lower():
+                r_out = int(round(r * 0.4 + 255 * 0.6))
+                g_out = int(round(g * 0.4 + 255 * 0.6))
+                b_out = int(round(b * 0.4 + 255 * 0.6))
+                for p in self._particles:
+                    eff_alpha = int(p.peak_alpha * p.base_alpha)
+                    if eff_alpha <= 5:
+                        continue
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.setBrush(QColor(r_out, g_out, b_out, eff_alpha))
+                    pts = star_4point_polygon(p.x, p.y, p.radius, p.radius * 0.18, p.angle_deg)
+                    painter.drawPolygon(QPolygonF([QPointF(px, py) for px, py in pts]))
+
+                    core_alpha = min(255, int(eff_alpha * 1.15))
+                    painter.setBrush(QColor(255, 255, 255, core_alpha))
+                    core_pts = star_4point_polygon(p.x, p.y, p.radius * 0.45, p.radius * 0.10, p.angle_deg)
                     painter.drawPolygon(QPolygonF([QPointF(px, py) for px, py in core_pts]))
             else:
                 for p in self._particles:

@@ -124,6 +124,9 @@ def test_particle_styles_and_layers(qapp):
     overlay.set_particle_style("Light Glints")
     assert overlay.get_particle_style() == "Light Glints"
 
+    overlay.set_particle_style("Twinkle Stars")
+    assert overlay.get_particle_style() == "Twinkle Stars"
+
     # Fallback for unknown style
     overlay.set_particle_style("Unknown Style")
     assert overlay.get_particle_style() == "Floating Orbs"
@@ -244,6 +247,37 @@ def test_generate_particle_loop_video_light_glints():
             fps=15,
             duration=1.0,
             style=STYLE_LIGHT_GLINTS,
+            quantity=30,
+            color=(255, 255, 255),
+            speed=2,
+        )
+        assert res.is_file()
+        assert res.stat().st_size > 0
+
+
+def test_generate_particle_loop_video_twinkle_stars():
+    import tempfile
+    from pathlib import Path
+    from src.services.particle_service import (
+        generate_particle_loop_video,
+        STYLE_TWINKLE_STARS,
+        PARTICLE_STYLES,
+        star_4point_polygon,
+    )
+
+    assert STYLE_TWINKLE_STARS in PARTICLE_STYLES
+    pts = star_4point_polygon(50, 50, 20)
+    assert len(pts) == 8
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_mov = Path(tmp) / "twinkle_loop.mov"
+        res = generate_particle_loop_video(
+            output_path=out_mov,
+            width=320,
+            height=240,
+            fps=15,
+            duration=1.0,
+            style=STYLE_TWINKLE_STARS,
             quantity=30,
             color=(255, 255, 255),
             speed=2,

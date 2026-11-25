@@ -22,11 +22,12 @@ from PIL import Image, ImageDraw
 STYLE_DRIFTING_FLECKS = "Drifting Flecks"
 STYLE_FLOATING_ORBS = "Floating Orbs"
 STYLE_LIGHT_GLINTS = "Light Glints"
+STYLE_TWINKLE_STARS = "Twinkle Stars"
 
 LAYER_BELOW_TEXT = "Below Text"
 LAYER_ABOVE_TEXT = "Above Text"
 
-PARTICLE_STYLES = [STYLE_DRIFTING_FLECKS, STYLE_FLOATING_ORBS, STYLE_LIGHT_GLINTS]
+PARTICLE_STYLES = [STYLE_DRIFTING_FLECKS, STYLE_FLOATING_ORBS, STYLE_LIGHT_GLINTS, STYLE_TWINKLE_STARS]
 PARTICLE_LAYERS = [LAYER_BELOW_TEXT, LAYER_ABOVE_TEXT]
 
 
@@ -70,6 +71,27 @@ def lens_polygon(
         py = cy + x_loc * sin_a + y_loc * cos_a
         pts.append((px, py))
 
+    return pts
+
+
+def star_4point_polygon(
+    cx: float,
+    cy: float,
+    r_outer: float,
+    r_inner: Optional[float] = None,
+    angle_deg: float = 0.0,
+) -> List[Tuple[float, float]]:
+    """
+    Generate points of a 4-point star with long thin arms.
+    """
+    if r_inner is None:
+        r_inner = r_outer * 0.18
+    pts: List[Tuple[float, float]] = []
+    base_rad = math.radians(angle_deg)
+    for i in range(8):
+        angle = base_rad + i * (math.pi / 4.0)
+        r = r_outer if (i % 2 == 0) else r_inner
+        pts.append((cx + r * math.cos(angle), cy + r * math.sin(angle)))
     return pts
 
 
@@ -149,6 +171,7 @@ def generate_particle_loop_video(
 
     particles = []
     is_glints = (style == STYLE_LIGHT_GLINTS or "glint" in str(style).lower())
+    is_stars = (style == STYLE_TWINKLE_STARS or "twinkle" in str(style).lower())
     is_flecks = (style == STYLE_DRIFTING_FLECKS or "fleck" in str(style).lower())
 
     base_sprites = {}
@@ -185,7 +208,7 @@ def generate_particle_loop_video(
             # Quantize length and angle into buckets to maximize sprite reuse
             len_b = int(round(length / 2.0)) * 2
             ang_b = int(round(angle / 2.0)) * 2
-            b_key = (len_b, ang_b)
+            b_key = ("glint", len_b, ang_b)
 
             if b_key not in base_sprites:
                 b_width = len_b / 9.0
@@ -214,6 +237,63 @@ def generate_particle_loop_video(
                 "b_key": b_key,
                 "length": length,
                 "glint_width": g_width,
+                "angle_deg": angle,
+            })
+    elif is_stars:
+        # Twinkle Stars: 4-point diamond star with long thin arms flashing in and out
+        r_out = int(round(r * 0.4 + 255 * 0.6))
+        g_out = int(round(g * 0.4 + 255 * 0.6))
+        b_out = int(round(b * 0.4 + 255 * 0.6))
+
+        kx_choices = [1] if sm <= 1.0 else ([1, 2] if sm <= 3.0 else [2, 3])
+        ky_choices = [-1, 0, 1]
+
+        for _ in range(count):
+            depth = rng.uniform(0.35, 1.0)
+            radius = rng.uniform(8.0, 24.0) * res_scale
+            angle = rng.uniform(0.0, 45.0)
+            n_val = rng.choice([2, 3, 4])
+            phase = rng.uniform(0.0, 1.0)
+            peak_alpha = int(round(rng.uniform(150, 255) * (0.5 + 0.5 * depth)))
+
+            positions = [
+                (rng.uniform(0, width), rng.uniform(0, height))
+                for _ in range(n_val)
+            ]
+            kx = rng.choice(kx_choices)
+            ky = rng.choice(ky_choices)
+            vx = kx * width / duration
+            vy = ky * height / duration
+
+            r_b = int(round(radius / 2.0)) * 2
+            ang_b = int(round(angle / 5.0)) * 5
+            b_key = ("star", r_b, ang_b)
+
+            if b_key not in base_sprites:
+                pad = r_b * 2 + 10
+                SS = 4
+                im_ss = Image.new("RGBA", (pad * SS, pad * SS), (0, 0, 0, 0))
+                d_ss = ImageDraw.Draw(im_ss)
+                cx_ss = pad * SS / 2.0
+                cy_ss = pad * SS / 2.0
+                p_out = star_4point_polygon(cx_ss, cy_ss, r_b * SS, r_b * SS * 0.18, ang_b)
+                d_ss.polygon(p_out, fill=(r_out, g_out, b_out, 255))
+                p_in = star_4point_polygon(cx_ss, cy_ss, r_b * SS * 0.45, r_b * SS * 0.10, ang_b)
+                d_ss.polygon(p_in, fill=(255, 255, 255, 255))
+                spr = im_ss.resize((pad, pad), Image.Resampling.LANCZOS)
+                base_sprites[b_key] = (spr, pad)
+
+            particles.append({
+                "n": n_val,
+                "phase": phase,
+                "positions": positions,
+                "vx": vx,
+                "vy": vy,
+                "width": width,
+                "height": height,
+                "peak_alpha": peak_alpha,
+                "b_key": b_key,
+                "radius": radius,
                 "angle_deg": angle,
             })
     elif is_flecks:
@@ -278,7 +358,7 @@ def generate_particle_loop_video(
         t = frame_idx / float(fps)
         img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
 
-        if is_glints:
+        if is_glints or is_stars:
             for p in particles:
                 cur_x, cur_y, alpha_factor = glint_state(p, t, duration)
                 eff_alpha = int(p["peak_alpha"] * alpha_factor)
