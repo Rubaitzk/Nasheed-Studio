@@ -225,6 +225,7 @@ def generate_particle_loop_video(
     quantity: int = 80,
     color: Union[Tuple[int, int, int], str] = (56, 189, 248),
     speed: int = 2,
+    size: int = 100,
     ffmpeg_bin: str = "ffmpeg",
 ) -> Path:
     """
@@ -252,6 +253,8 @@ def generate_particle_loop_video(
         duration = num_frames / float(fps)
 
     res_scale = height / 1080.0
+    size_val = max(50, min(300, int(size)))
+    geom_scale = res_scale * (size_val / 100.0)
     sm = _speed_multiplier(speed)
     count = max(10, min(300, int(quantity)))
 
@@ -280,7 +283,7 @@ def generate_particle_loop_video(
 
         for _ in range(count):
             depth = rng.uniform(0.35, 1.0)
-            length = rng.uniform(14.0, 48.0) * res_scale
+            length = rng.uniform(14.0, 48.0) * geom_scale
             w_ratio = rng.uniform(7.0, 11.0)
             g_width = length / w_ratio
             angle = -60.0 + rng.uniform(-14.0, 14.0)
@@ -342,7 +345,7 @@ def generate_particle_loop_video(
 
         for _ in range(count):
             depth = rng.uniform(0.35, 1.0)
-            radius = rng.uniform(8.0, 24.0) * res_scale
+            radius = rng.uniform(8.0, 24.0) * geom_scale
             angle = rng.uniform(0.0, 45.0)
             n_val = rng.choice([2, 3, 4])
             phase = rng.uniform(0.0, 1.0)
@@ -396,7 +399,7 @@ def generate_particle_loop_video(
 
         for _ in range(count):
             depth = rng.uniform(0.35, 1.0)
-            radius = rng.uniform(6.0, 22.0) * res_scale
+            radius = rng.uniform(6.0, 22.0) * geom_scale
             k_choices = [1] if sm <= 1.5 else [1, 2]
             k = rng.choice(k_choices)
             vy = k * height / duration
@@ -444,7 +447,7 @@ def generate_particle_loop_video(
         for i in range(cresc_count):
             depth = rng.uniform(0.35, 1.0)
             is_cresc = (i % 2 == 0)
-            radius = (rng.uniform(7.0, 15.0) if is_cresc else rng.uniform(4.0, 9.0)) * res_scale
+            radius = (rng.uniform(7.0, 15.0) if is_cresc else rng.uniform(4.0, 9.0)) * geom_scale
             angle = rng.uniform(-15.0, 35.0) if is_cresc else rng.uniform(0.0, 72.0)
             k_choices = [1] if sm <= 1.5 else [1, 2]
             k = rng.choice(k_choices)
@@ -488,7 +491,7 @@ def generate_particle_loop_video(
 
         for _ in range(count_8):
             depth = rng.uniform(0.35, 1.0)
-            radius = rng.uniform(5.0, 13.0) * res_scale
+            radius = rng.uniform(5.0, 13.0) * geom_scale
             angle = rng.uniform(0.0, 45.0)
             k_choices = [1] if sm <= 1.5 else [1, 2]
             k = rng.choice(k_choices)
@@ -523,7 +526,7 @@ def generate_particle_loop_video(
         # Drifting Flecks: Horizontal drift with subtle vertical undulating wave
         for _ in range(count):
             depth = rng.uniform(0.35, 1.0)
-            radius = max(1.0, (1.2 + depth * 1.8) * res_scale)
+            radius = max(0.5, (1.2 + depth * 1.8) * geom_scale)
             # Integer screen widths per loop (1, 2, or 3) scaled by speed factor
             k_choices = [1, 2] if sm <= 1.0 else ([1, 2, 3] if sm <= 2.0 else [2, 3, 4])
             k = rng.choice(k_choices)
@@ -541,7 +544,7 @@ def generate_particle_loop_video(
         # Floating Orbs: Vertical float with sinusoidal sway
         for _ in range(count):
             depth = rng.uniform(0.3, 1.0)
-            radius = max(1.5, (1.8 + depth * 3.2) * res_scale)
+            radius = max(0.8, (1.8 + depth * 3.2) * geom_scale)
             k_choices = [1, 2] if sm <= 1.0 else ([1, 2, 3] if sm <= 2.0 else [2, 3, 4])
             k = rng.choice(k_choices)
             vy = k * height / duration

@@ -45,7 +45,9 @@ class Particle:
         "x", "y", "base_y", "speed_x", "speed_y", "sway_phase",
         "sway_speed", "sway_amp", "radius", "base_alpha", "depth",
         "positions", "n", "phase", "vx", "vy", "width", "height",
-        "length", "glint_width", "angle_deg", "peak_alpha", "sub_type"
+        "length", "glint_width", "angle_deg", "peak_alpha", "sub_type",
+        "base_radius", "base_length", "base_glint_width", "base_sway_amp",
+        "base_speed_x", "base_speed_y", "style_name", "w_ratio"
     )
 
     def __getitem__(self, key: str) -> Any:
@@ -57,6 +59,7 @@ class Particle:
         h: int,
         style: str = STYLE_DRIFTING_FLECKS,
         speed_factor: float = 1.0,
+        size_factor: float = 1.0,
         rng: Optional[random.Random] = None,
     ):
         r_gen = rng if rng is not None else random
@@ -78,23 +81,39 @@ class Particle:
         self.angle_deg = 0.0
         self.peak_alpha = 255
         self.sub_type = "default"
+        self.base_radius = 0.0
+        self.base_length = 0.0
+        self.base_glint_width = 0.0
+        self.base_sway_amp = 0.0
+        self.base_speed_x = 0.0
+        self.base_speed_y = 0.0
+        self.w_ratio = 8.0
 
-        s = str(style).lower()
+        self.style_name = str(style).lower()
+        s = self.style_name
+
+        res_scale = max(10, h) / 1080.0
+        geom_scale = res_scale * size_factor
+
         if "fleck" in s:
             # Drifting Flecks: horizontal drift with gentle natural vertical float
-            self.radius = 1.0 + self.depth * 1.8
-            self.speed_x = (1.5 + self.depth * 2.2) * speed_factor
+            self.base_radius = 1.2 + self.depth * 1.8
+            self.radius = max(0.5, self.base_radius * geom_scale)
+            self.base_speed_x = (4.5 + self.depth * 6.6) * speed_factor
+            self.speed_x = self.base_speed_x * res_scale
             self.speed_y = 0.0
             self.sway_phase = r_gen.uniform(0, 6.28318)
             self.sway_speed = r_gen.uniform(0.015, 0.04) * speed_factor
-            self.sway_amp = 2.0 + self.depth * 5.0
+            self.base_sway_amp = 2.5 + self.depth * 5.0
+            self.sway_amp = self.base_sway_amp * res_scale
             self.base_alpha = 0.35 + self.depth * 0.55
         elif "glint" in s:
             # Light Glints: thin tapered white sliver / flick drifting slowly with flashing glint
-            res_scale = max(0.5, h / 1080.0)
-            self.length = r_gen.uniform(14.0, 48.0) * res_scale
-            w_ratio = r_gen.uniform(7.0, 11.0)
-            self.glint_width = self.length / w_ratio
+            self.base_length = r_gen.uniform(14.0, 48.0)
+            self.w_ratio = r_gen.uniform(7.0, 11.0)
+            self.base_glint_width = self.base_length / self.w_ratio
+            self.length = max(1.0, self.base_length * geom_scale)
+            self.glint_width = max(0.3, self.base_glint_width * geom_scale)
             self.radius = self.glint_width
             self.angle_deg = -60.0 + r_gen.uniform(-14.0, 14.0)
             self.n = r_gen.choice([2, 3, 4])
@@ -119,8 +138,8 @@ class Particle:
             self.y = self.positions[0][1]
         elif "twinkle" in s:
             # Twinkle Stars: 4-point diamond star with long thin arms flashing in and out
-            res_scale = max(0.5, h / 1080.0)
-            self.radius = r_gen.uniform(8.0, 24.0) * res_scale
+            self.base_radius = r_gen.uniform(8.0, 24.0)
+            self.radius = max(1.0, self.base_radius * geom_scale)
             self.length = self.radius * 2.0
             self.glint_width = self.radius * 0.36
             self.angle_deg = r_gen.uniform(0.0, 45.0)
@@ -146,46 +165,91 @@ class Particle:
             self.y = self.positions[0][1]
         elif "bokeh" in s:
             # Bokeh Rings: soft translucent circle with a brighter edge ring, larger and slower
-            res_scale = max(0.5, h / 1080.0)
-            self.radius = r_gen.uniform(6.0, 22.0) * res_scale
+            self.base_radius = r_gen.uniform(6.0, 22.0)
+            self.radius = max(1.0, self.base_radius * geom_scale)
+            self.base_speed_x = 0.0
             self.speed_x = 0.0
-            self.speed_y = (0.25 + self.depth * 0.6) * speed_factor
+            self.base_speed_y = (0.75 + self.depth * 1.8) * speed_factor
+            self.speed_y = self.base_speed_y * res_scale
             self.sway_phase = r_gen.uniform(0, 6.28318)
             self.sway_speed = r_gen.uniform(0.01, 0.03) * speed_factor
-            self.sway_amp = 0.5 + self.depth * 1.0
+            self.base_sway_amp = 1.5 + self.depth * 3.0
+            self.sway_amp = self.base_sway_amp * res_scale
             self.base_alpha = 0.25 + self.depth * 0.45
         elif "crescent" in s:
             # Crescents & Stars: small crescent moons and 5-point stars, sparse and slow
-            res_scale = max(0.5, h / 1080.0)
             self.sub_type = "crescent" if (r_gen.random() < 0.5) else "star"
-            self.radius = (r_gen.uniform(7.0, 15.0) if self.sub_type == "crescent" else r_gen.uniform(4.0, 9.0)) * res_scale
+            self.base_radius = (r_gen.uniform(7.0, 15.0) if self.sub_type == "crescent" else r_gen.uniform(4.0, 9.0))
+            self.radius = max(1.0, self.base_radius * geom_scale)
             self.angle_deg = r_gen.uniform(-15.0, 35.0) if self.sub_type == "crescent" else r_gen.uniform(0.0, 72.0)
+            self.base_speed_x = 0.0
             self.speed_x = 0.0
-            self.speed_y = (0.3 + self.depth * 0.6) * speed_factor
+            self.base_speed_y = (0.9 + self.depth * 1.8) * speed_factor
+            self.speed_y = self.base_speed_y * res_scale
             self.sway_phase = r_gen.uniform(0, 6.28318)
             self.sway_speed = r_gen.uniform(0.015, 0.035) * speed_factor
-            self.sway_amp = 1.0 + self.depth * 2.0
+            self.base_sway_amp = 3.0 + self.depth * 6.0
+            self.sway_amp = self.base_sway_amp * res_scale
             self.base_alpha = 0.35 + self.depth * 0.5
         elif "eight" in s:
             # Eight-Point Stars: small Islamic-style stars (Rub el Hizb)
-            res_scale = max(0.5, h / 1080.0)
-            self.radius = r_gen.uniform(5.0, 13.0) * res_scale
+            self.base_radius = r_gen.uniform(5.0, 13.0)
+            self.radius = max(1.0, self.base_radius * geom_scale)
             self.angle_deg = r_gen.uniform(0.0, 45.0)
+            self.base_speed_x = 0.0
             self.speed_x = 0.0
-            self.speed_y = (0.25 + self.depth * 0.5) * speed_factor
+            self.base_speed_y = (0.75 + self.depth * 1.5) * speed_factor
+            self.speed_y = self.base_speed_y * res_scale
             self.sway_phase = r_gen.uniform(0, 6.28318)
             self.sway_speed = r_gen.uniform(0.015, 0.035) * speed_factor
-            self.sway_amp = 0.8 + self.depth * 1.5
+            self.base_sway_amp = 2.4 + self.depth * 4.5
+            self.sway_amp = self.base_sway_amp * res_scale
             self.base_alpha = 0.35 + self.depth * 0.5
         else:
             # Floating Orbs: vertical atmospheric float with sinusoidal sway
-            self.radius = 1.5 + self.depth * 3.0
+            self.base_radius = 1.8 + self.depth * 3.2
+            self.radius = max(0.8, self.base_radius * geom_scale)
+            self.base_speed_x = 0.0
             self.speed_x = 0.0
-            self.speed_y = (0.5 + self.depth * 1.0) * speed_factor
+            self.base_speed_y = (1.5 + self.depth * 3.0) * speed_factor
+            self.speed_y = self.base_speed_y * res_scale
             self.sway_phase = r_gen.uniform(0, 6.28318)
             self.sway_speed = r_gen.uniform(0.015, 0.045) * speed_factor
-            self.sway_amp = 0.4 + self.depth * 0.9
+            self.base_sway_amp = 1.2 + self.depth * 2.7
+            self.sway_amp = self.base_sway_amp * res_scale
             self.base_alpha = 0.25 + self.depth * 0.55
+
+    def update_scale(self, res_scale: float, geom_scale: float) -> None:
+        """Rescale particle dimensions and velocities when window is resized or size is changed."""
+        s = self.style_name
+        if "fleck" in s:
+            self.radius = max(0.5, self.base_radius * geom_scale)
+            self.sway_amp = self.base_sway_amp * res_scale
+            self.speed_x = self.base_speed_x * res_scale
+        elif "glint" in s:
+            self.length = max(1.0, self.base_length * geom_scale)
+            self.glint_width = max(0.3, self.base_glint_width * geom_scale)
+            self.radius = self.glint_width
+        elif "twinkle" in s:
+            self.radius = max(1.0, self.base_radius * geom_scale)
+            self.length = self.radius * 2.0
+            self.glint_width = self.radius * 0.36
+        elif "bokeh" in s:
+            self.radius = max(1.0, self.base_radius * geom_scale)
+            self.sway_amp = self.base_sway_amp * res_scale
+            self.speed_y = self.base_speed_y * res_scale
+        elif "crescent" in s:
+            self.radius = max(1.0, self.base_radius * geom_scale)
+            self.sway_amp = self.base_sway_amp * res_scale
+            self.speed_y = self.base_speed_y * res_scale
+        elif "eight" in s:
+            self.radius = max(1.0, self.base_radius * geom_scale)
+            self.sway_amp = self.base_sway_amp * res_scale
+            self.speed_y = self.base_speed_y * res_scale
+        else:
+            self.radius = max(0.8, self.base_radius * geom_scale)
+            self.sway_amp = self.base_sway_amp * res_scale
+            self.speed_y = self.base_speed_y * res_scale
 
 
 class ParticleOverlayWidget(QWidget):
@@ -203,6 +267,7 @@ class ParticleOverlayWidget(QWidget):
         self._enabled: bool = False
         self._is_paused: bool = False
         self._speed_level: int = 2  # 1 to 5
+        self._size_percent: int = 100  # 50 to 300 %
         self._color: QColor = QColor(56, 189, 248)  # Default cyan accent
         self._style: str = STYLE_DRIFTING_FLECKS
         self._layer: str = LAYER_BELOW_TEXT
@@ -269,6 +334,22 @@ class ParticleOverlayWidget(QWidget):
     def get_particle_speed(self) -> int:
         return self._speed_level
 
+    def set_particle_size(self, size: int) -> None:
+        """Set particle size percentage (50 to 300)."""
+        self._size_percent = max(50, min(300, int(size)))
+        self._rescale_particles()
+        self.update()
+
+    def get_particle_size(self) -> int:
+        return self._size_percent
+
+    def _rescale_particles(self) -> None:
+        h = max(10, self.height())
+        res_scale = h / 1080.0
+        geom_scale = res_scale * (self._size_percent / 100.0)
+        for p in self._particles:
+            p.update_scale(res_scale, geom_scale)
+
     def set_particle_style(self, style: str) -> None:
         """Set particle style: 'Drifting Flecks', 'Floating Orbs', 'Light Glints', or 'Twinkle Stars'."""
         s = str(style).lower()
@@ -323,10 +404,11 @@ class ParticleOverlayWidget(QWidget):
         w = max(100, self.width())
         h = max(100, self.height())
         sm = self._speed_multiplier()
+        size_factor = self._size_percent / 100.0
         if len(self._particles) != self._num_particles:
             rng = random.Random(42 + self._num_particles + self._speed_level)
             self._particles = [
-                Particle(w, h, self._style, sm, rng=rng)
+                Particle(w, h, self._style, sm, size_factor=size_factor, rng=rng)
                 for _ in range(self._num_particles)
             ]
             if "glint" in self._style.lower() or "twinkle" in self._style.lower():
@@ -341,9 +423,11 @@ class ParticleOverlayWidget(QWidget):
     def _reseed_velocities(self) -> None:
         sm = self._speed_multiplier()
         s = self._style.lower()
+        res_scale = max(10, self.height()) / 1080.0
         if "fleck" in s:
             for p in self._particles:
-                p.speed_x = (1.5 + p.depth * 2.2) * sm
+                p.base_speed_x = (4.5 + p.depth * 6.6) * sm
+                p.speed_x = p.base_speed_x * res_scale
                 p.sway_speed = random.uniform(0.015, 0.04) * sm
         elif "glint" in s or "twinkle" in s:
             kx_choices = [1] if sm <= 1.0 else ([1, 2] if sm <= 3.0 else [2, 3])
@@ -354,9 +438,25 @@ class ParticleOverlayWidget(QWidget):
                 ky = random.choice(ky_choices)
                 p.vx = kx * p.width / duration
                 p.vy = ky * p.height / duration
+        elif "bokeh" in s:
+            for p in self._particles:
+                p.base_speed_y = (0.75 + p.depth * 1.8) * sm
+                p.speed_y = p.base_speed_y * res_scale
+                p.sway_speed = random.uniform(0.01, 0.03) * sm
+        elif "crescent" in s:
+            for p in self._particles:
+                p.base_speed_y = (0.9 + p.depth * 1.8) * sm
+                p.speed_y = p.base_speed_y * res_scale
+                p.sway_speed = random.uniform(0.015, 0.035) * sm
+        elif "eight" in s:
+            for p in self._particles:
+                p.base_speed_y = (0.75 + p.depth * 1.5) * sm
+                p.speed_y = p.base_speed_y * res_scale
+                p.sway_speed = random.uniform(0.015, 0.035) * sm
         else:
             for p in self._particles:
-                p.speed_y = (0.5 + p.depth * 1.0) * sm
+                p.base_speed_y = (1.5 + p.depth * 3.0) * sm
+                p.speed_y = p.base_speed_y * res_scale
                 p.sway_speed = random.uniform(0.015, 0.045) * sm
 
     def resizeEvent(self, event) -> None:
@@ -366,6 +466,7 @@ class ParticleOverlayWidget(QWidget):
         for p in self._particles:
             p.width = w
             p.height = h
+        self._rescale_particles()
         self._ensure_particles()
 
     def _update_particles(self) -> None:
@@ -478,7 +579,8 @@ class ParticleOverlayWidget(QWidget):
                 r_edge = int(round(r * 0.3 + 255 * 0.7))
                 g_edge = int(round(g * 0.3 + 255 * 0.7))
                 b_edge = int(round(b * 0.3 + 255 * 0.7))
-                pen = QPen(QColor(r_edge, g_edge, b_edge, 210), 1.6)
+                pen_w = max(0.5, 1.8 * (max(10, self.height()) / 1080.0) * (self._size_percent / 100.0))
+                pen = QPen(QColor(r_edge, g_edge, b_edge, 210), pen_w)
                 brush = QBrush(QColor(r, g, b, 50))
                 for p in self._particles:
                     painter.setPen(pen)
