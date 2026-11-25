@@ -127,6 +127,9 @@ def test_particle_styles_and_layers(qapp):
     overlay.set_particle_style("Twinkle Stars")
     assert overlay.get_particle_style() == "Twinkle Stars"
 
+    overlay.set_particle_style("Bokeh Rings")
+    assert overlay.get_particle_style() == "Bokeh Rings"
+
     # Fallback for unknown style
     overlay.set_particle_style("Unknown Style")
     assert overlay.get_particle_style() == "Floating Orbs"
@@ -280,6 +283,34 @@ def test_generate_particle_loop_video_twinkle_stars():
             style=STYLE_TWINKLE_STARS,
             quantity=30,
             color=(255, 255, 255),
+            speed=2,
+        )
+        assert res.is_file()
+        assert res.stat().st_size > 0
+
+
+def test_generate_particle_loop_video_bokeh_rings():
+    import tempfile
+    from pathlib import Path
+    from src.services.particle_service import (
+        generate_particle_loop_video,
+        STYLE_BOKEH_RINGS,
+        PARTICLE_STYLES,
+    )
+
+    assert STYLE_BOKEH_RINGS in PARTICLE_STYLES
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_mov = Path(tmp) / "bokeh_loop.mov"
+        res = generate_particle_loop_video(
+            output_path=out_mov,
+            width=320,
+            height=240,
+            fps=15,
+            duration=1.0,
+            style=STYLE_BOKEH_RINGS,
+            quantity=25,
+            color=(100, 200, 255),
             speed=2,
         )
         assert res.is_file()

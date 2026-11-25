@@ -15,7 +15,7 @@ import math
 import random
 from typing import Any, List, Optional, Tuple, Union
 from PySide6.QtCore import Qt, QTimer, QPointF
-from PySide6.QtGui import QColor, QPainter, QPaintEvent, QPixmap, QPolygonF
+from PySide6.QtGui import QColor, QPainter, QPaintEvent, QPixmap, QPolygonF, QPen, QBrush
 from PySide6.QtWidgets import QWidget
 
 from src.services.particle_service import (
@@ -23,6 +23,7 @@ from src.services.particle_service import (
     STYLE_FLOATING_ORBS,
     STYLE_LIGHT_GLINTS,
     STYLE_TWINKLE_STARS,
+    STYLE_BOKEH_RINGS,
     LAYER_BELOW_TEXT,
     LAYER_ABOVE_TEXT,
     _speed_multiplier,
@@ -137,6 +138,16 @@ class Particle:
             self.base_alpha = 0.0
             self.x = self.positions[0][0]
             self.y = self.positions[0][1]
+        elif "bokeh" in s:
+            # Bokeh Rings: soft translucent circle with a brighter edge ring, larger and slower
+            res_scale = max(0.5, h / 1080.0)
+            self.radius = r_gen.uniform(6.0, 22.0) * res_scale
+            self.speed_x = 0.0
+            self.speed_y = (0.25 + self.depth * 0.6) * speed_factor
+            self.sway_phase = r_gen.uniform(0, 6.28318)
+            self.sway_speed = r_gen.uniform(0.01, 0.03) * speed_factor
+            self.sway_amp = 0.5 + self.depth * 1.0
+            self.base_alpha = 0.25 + self.depth * 0.45
         else:
             # Floating Orbs: vertical atmospheric float with sinusoidal sway
             self.radius = 1.5 + self.depth * 3.0
@@ -238,6 +249,8 @@ class ParticleOverlayWidget(QWidget):
             self._style = STYLE_LIGHT_GLINTS
         elif "twinkle" in s:
             self._style = STYLE_TWINKLE_STARS
+        elif "bokeh" in s:
+            self._style = STYLE_BOKEH_RINGS
         else:
             self._style = STYLE_FLOATING_ORBS
         self._particles.clear()
@@ -428,6 +441,16 @@ class ParticleOverlayWidget(QWidget):
                     painter.setBrush(QColor(255, 255, 255, core_alpha))
                     core_pts = star_4point_polygon(p.x, p.y, p.radius * 0.45, p.radius * 0.10, p.angle_deg)
                     painter.drawPolygon(QPolygonF([QPointF(px, py) for px, py in core_pts]))
+            elif "bokeh" in self._style.lower():
+                r_edge = int(round(r * 0.3 + 255 * 0.7))
+                g_edge = int(round(g * 0.3 + 255 * 0.7))
+                b_edge = int(round(b * 0.3 + 255 * 0.7))
+                pen = QPen(QColor(r_edge, g_edge, b_edge, 210), 1.6)
+                brush = QBrush(QColor(r, g, b, 50))
+                for p in self._particles:
+                    painter.setPen(pen)
+                    painter.setBrush(brush)
+                    painter.drawEllipse(QPointF(p.x, p.y), p.radius, p.radius)
             else:
                 for p in self._particles:
                     alpha = int(p.base_alpha * 240)

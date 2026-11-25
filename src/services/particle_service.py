@@ -23,11 +23,18 @@ STYLE_DRIFTING_FLECKS = "Drifting Flecks"
 STYLE_FLOATING_ORBS = "Floating Orbs"
 STYLE_LIGHT_GLINTS = "Light Glints"
 STYLE_TWINKLE_STARS = "Twinkle Stars"
+STYLE_BOKEH_RINGS = "Bokeh Rings"
 
 LAYER_BELOW_TEXT = "Below Text"
 LAYER_ABOVE_TEXT = "Above Text"
 
-PARTICLE_STYLES = [STYLE_DRIFTING_FLECKS, STYLE_FLOATING_ORBS, STYLE_LIGHT_GLINTS, STYLE_TWINKLE_STARS]
+PARTICLE_STYLES = [
+    STYLE_DRIFTING_FLECKS,
+    STYLE_FLOATING_ORBS,
+    STYLE_LIGHT_GLINTS,
+    STYLE_TWINKLE_STARS,
+    STYLE_BOKEH_RINGS,
+]
 PARTICLE_LAYERS = [LAYER_BELOW_TEXT, LAYER_ABOVE_TEXT]
 
 
@@ -172,6 +179,7 @@ def generate_particle_loop_video(
     particles = []
     is_glints = (style == STYLE_LIGHT_GLINTS or "glint" in str(style).lower())
     is_stars = (style == STYLE_TWINKLE_STARS or "twinkle" in str(style).lower())
+    is_bokeh = (style == STYLE_BOKEH_RINGS or "bokeh" in str(style).lower())
     is_flecks = (style == STYLE_DRIFTING_FLECKS or "fleck" in str(style).lower())
 
     base_sprites = {}
@@ -296,6 +304,52 @@ def generate_particle_loop_video(
                 "radius": radius,
                 "angle_deg": angle,
             })
+    elif is_bokeh:
+        # Bokeh Rings: soft translucent circle with a brighter edge ring, larger and slower
+        r_edge = int(round(r * 0.3 + 255 * 0.7))
+        g_edge = int(round(g * 0.3 + 255 * 0.7))
+        b_edge = int(round(b * 0.3 + 255 * 0.7))
+
+        for _ in range(count):
+            depth = rng.uniform(0.35, 1.0)
+            radius = rng.uniform(6.0, 22.0) * res_scale
+            k_choices = [1] if sm <= 1.5 else [1, 2]
+            k = rng.choice(k_choices)
+            vy = k * height / duration
+            m = rng.choice([1, 2])
+            A = rng.uniform(5.0, 16.0) * res_scale
+            x0 = rng.uniform(0, width)
+            y0 = rng.uniform(0, height)
+
+            r_b = int(round(radius / 2.0)) * 2
+            b_key = ("bokeh", r_b)
+
+            if b_key not in base_sprites:
+                pad = r_b * 2 + 10
+                SS = 4
+                im_ss = Image.new("RGBA", (pad * SS, pad * SS), (0, 0, 0, 0))
+                d_ss = ImageDraw.Draw(im_ss)
+                cx_ss = pad * SS / 2.0
+                cy_ss = pad * SS / 2.0
+                rb_ss = r_b * SS
+                # Soft translucent fill
+                d_ss.ellipse(
+                    [cx_ss - rb_ss, cy_ss - rb_ss, cx_ss + rb_ss, cy_ss + rb_ss],
+                    fill=(r, g, b, 55),
+                )
+                # Brighter edge ring
+                d_ss.ellipse(
+                    [cx_ss - rb_ss, cy_ss - rb_ss, cx_ss + rb_ss, cy_ss + rb_ss],
+                    outline=(r_edge, g_edge, b_edge, 215),
+                    width=max(1, int(1.8 * SS)),
+                )
+                spr = im_ss.resize((pad, pad), Image.Resampling.LANCZOS)
+                base_sprites[b_key] = (spr, pad)
+
+            particles.append({
+                "x0": x0, "y0": y0, "vy": vy, "m": m, "A": A,
+                "radius": radius, "b_key": b_key,
+            })
     elif is_flecks:
         # Drifting Flecks: Horizontal drift with subtle vertical undulating wave
         for _ in range(count):
@@ -385,6 +439,17 @@ def generate_particle_loop_video(
                 if dest_x + pad <= 0 or dest_y + pad <= 0 or dest_x >= width or dest_y >= height:
                     continue
 
+                img.alpha_composite(spr, dest=(dest_x, dest_y))
+        elif is_bokeh:
+            for p in particles:
+                cur_y = (p["y0"] + p["vy"] * t) % height
+                cur_x = (p["x0"] + p["A"] * math.sin(two_pi * p["m"] * t / duration)) % width
+                b_key = p["b_key"]
+                spr, pad = base_sprites[b_key]
+                dest_x = int(round(cur_x - pad / 2.0))
+                dest_y = int(round(cur_y - pad / 2.0))
+                if dest_x + pad <= 0 or dest_y + pad <= 0 or dest_x >= width or dest_y >= height:
+                    continue
                 img.alpha_composite(spr, dest=(dest_x, dest_y))
         elif is_flecks:
             draw = ImageDraw.Draw(img)
