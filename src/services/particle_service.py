@@ -25,6 +25,7 @@ STYLE_LIGHT_GLINTS = "Light Glints"
 STYLE_TWINKLE_STARS = "Twinkle Stars"
 STYLE_BOKEH_RINGS = "Bokeh Rings"
 STYLE_CRESCENTS_AND_STARS = "Crescents & Stars"
+STYLE_EIGHT_POINT_STARS = "Eight-Point Stars"
 
 LAYER_BELOW_TEXT = "Below Text"
 LAYER_ABOVE_TEXT = "Above Text"
@@ -36,6 +37,7 @@ PARTICLE_STYLES = [
     STYLE_TWINKLE_STARS,
     STYLE_BOKEH_RINGS,
     STYLE_CRESCENTS_AND_STARS,
+    STYLE_EIGHT_POINT_STARS,
 ]
 PARTICLE_LAYERS = [LAYER_BELOW_TEXT, LAYER_ABOVE_TEXT]
 
@@ -161,6 +163,27 @@ def star_5point_polygon(
     return pts
 
 
+def star_8point_polygon(
+    cx: float,
+    cy: float,
+    r_outer: float,
+    r_inner: Optional[float] = None,
+    angle_deg: float = 0.0,
+) -> List[Tuple[float, float]]:
+    """
+    Generate points of an 8-point Islamic star (Rub el Hizb: two overlaid rotated squares).
+    """
+    if r_inner is None:
+        r_inner = r_outer * 0.76536686
+    pts: List[Tuple[float, float]] = []
+    base_rad = math.radians(angle_deg)
+    for i in range(16):
+        angle = base_rad + i * (math.pi / 8.0)
+        r = r_outer if (i % 2 == 0) else r_inner
+        pts.append((cx + r * math.cos(angle), cy + r * math.sin(angle)))
+    return pts
+
+
 def glint_state(p: Union[dict, Any], t: float, duration: float) -> Tuple[float, float, float]:
     """
     Compute position (x, y) and alpha_factor for a glint particle at time t.
@@ -240,6 +263,7 @@ def generate_particle_loop_video(
     is_stars = (style == STYLE_TWINKLE_STARS or "twinkle" in str(style).lower())
     is_bokeh = (style == STYLE_BOKEH_RINGS or "bokeh" in str(style).lower())
     is_crescents = (style == STYLE_CRESCENTS_AND_STARS or "crescent" in str(style).lower())
+    is_eight_stars = (style == STYLE_EIGHT_POINT_STARS or "eight" in str(style).lower())
     is_flecks = (style == STYLE_DRIFTING_FLECKS or "fleck" in str(style).lower())
 
     base_sprites = {}
@@ -455,6 +479,46 @@ def generate_particle_loop_video(
                 "x0": x0, "y0": y0, "vy": vy, "m": m, "A": A,
                 "radius": radius, "b_key": b_key,
             })
+    elif is_eight_stars:
+        # Eight-Point Stars: small Islamic-style stars (two overlaid squares), sparse and slow
+        r_out = int(round(r * 0.35 + 255 * 0.65))
+        g_out = int(round(g * 0.35 + 255 * 0.65))
+        b_out = int(round(b * 0.35 + 255 * 0.65))
+        count_8 = max(8, int(count * 0.65))
+
+        for _ in range(count_8):
+            depth = rng.uniform(0.35, 1.0)
+            radius = rng.uniform(5.0, 13.0) * res_scale
+            angle = rng.uniform(0.0, 45.0)
+            k_choices = [1] if sm <= 1.5 else [1, 2]
+            k = rng.choice(k_choices)
+            vy = k * height / duration
+            m = rng.choice([1, 2])
+            A = rng.uniform(4.0, 12.0) * res_scale
+            x0 = rng.uniform(0, width)
+            y0 = rng.uniform(0, height)
+            alpha = int(round(rng.uniform(160, 245) * (0.5 + 0.5 * depth)))
+
+            r_b = int(round(radius / 2.0)) * 2
+            ang_b = int(round(angle / 5.0)) * 5
+            b_key = ("star8", r_b, ang_b)
+
+            if b_key not in base_sprites:
+                pad = r_b * 2 + 10
+                SS = 4
+                im_ss = Image.new("RGBA", (pad * SS, pad * SS), (0, 0, 0, 0))
+                d_ss = ImageDraw.Draw(im_ss)
+                cx_ss = pad * SS / 2.0
+                cy_ss = pad * SS / 2.0
+                pts = star_8point_polygon(cx_ss, cy_ss, r_b * SS, angle_deg=ang_b)
+                d_ss.polygon(pts, fill=(r_out, g_out, b_out, alpha))
+                spr = im_ss.resize((pad, pad), Image.Resampling.LANCZOS)
+                base_sprites[b_key] = (spr, pad)
+
+            particles.append({
+                "x0": x0, "y0": y0, "vy": vy, "m": m, "A": A,
+                "radius": radius, "b_key": b_key,
+            })
     elif is_flecks:
         # Drifting Flecks: Horizontal drift with subtle vertical undulating wave
         for _ in range(count):
@@ -545,7 +609,7 @@ def generate_particle_loop_video(
                     continue
 
                 img.alpha_composite(spr, dest=(dest_x, dest_y))
-        elif is_bokeh or is_crescents:
+        elif is_bokeh or is_crescents or is_eight_stars:
             for p in particles:
                 cur_y = (p["y0"] + p["vy"] * t) % height
                 cur_x = (p["x0"] + p["A"] * math.sin(two_pi * p["m"] * t / duration)) % width

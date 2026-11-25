@@ -1523,8 +1523,8 @@ class MainWindow(QMainWindow):
         sec_particles.addWidget(self.particles_check)
 
         self.particles_style_combo = QComboBox()
-        self.particles_style_combo.addItems(["Drifting Flecks", "Floating Orbs", "Light Glints", "Twinkle Stars", "Bokeh Rings", "Crescents & Stars"])
-        self.particles_style_combo.setToolTip("Animation style: Drifting Flecks (horizontal float), Floating Orbs (vertical float), Light Glints (slanted slivers), Twinkle Stars (4-point stars), Bokeh Rings (soft circles), or Crescents & Stars")
+        self.particles_style_combo.addItems(["Drifting Flecks", "Floating Orbs", "Light Glints", "Twinkle Stars", "Bokeh Rings", "Crescents & Stars", "Eight-Point Stars"])
+        self.particles_style_combo.setToolTip("Animation style: Drifting Flecks (horizontal float), Floating Orbs (vertical float), Light Glints (slanted slivers), Twinkle Stars (4-point stars), Bokeh Rings (soft circles), Crescents & Stars, or Eight-Point Stars")
         self.particles_style_combo.currentTextChanged.connect(self._on_particles_param_changed)
         sec_particles.addLayout(self._create_prop_row("Style:", self.particles_style_combo))
 

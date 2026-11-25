@@ -25,6 +25,7 @@ from src.services.particle_service import (
     STYLE_TWINKLE_STARS,
     STYLE_BOKEH_RINGS,
     STYLE_CRESCENTS_AND_STARS,
+    STYLE_EIGHT_POINT_STARS,
     LAYER_BELOW_TEXT,
     LAYER_ABOVE_TEXT,
     _speed_multiplier,
@@ -32,6 +33,7 @@ from src.services.particle_service import (
     star_4point_polygon,
     crescent_polygon,
     star_5point_polygon,
+    star_8point_polygon,
     glint_state,
 )
 
@@ -164,6 +166,17 @@ class Particle:
             self.sway_speed = r_gen.uniform(0.015, 0.035) * speed_factor
             self.sway_amp = 1.0 + self.depth * 2.0
             self.base_alpha = 0.35 + self.depth * 0.5
+        elif "eight" in s:
+            # Eight-Point Stars: small Islamic-style stars (Rub el Hizb)
+            res_scale = max(0.5, h / 1080.0)
+            self.radius = r_gen.uniform(5.0, 13.0) * res_scale
+            self.angle_deg = r_gen.uniform(0.0, 45.0)
+            self.speed_x = 0.0
+            self.speed_y = (0.25 + self.depth * 0.5) * speed_factor
+            self.sway_phase = r_gen.uniform(0, 6.28318)
+            self.sway_speed = r_gen.uniform(0.015, 0.035) * speed_factor
+            self.sway_amp = 0.8 + self.depth * 1.5
+            self.base_alpha = 0.35 + self.depth * 0.5
         else:
             # Floating Orbs: vertical atmospheric float with sinusoidal sway
             self.radius = 1.5 + self.depth * 3.0
@@ -269,6 +282,8 @@ class ParticleOverlayWidget(QWidget):
             self._style = STYLE_BOKEH_RINGS
         elif "crescent" in s:
             self._style = STYLE_CRESCENTS_AND_STARS
+        elif "eight" in s:
+            self._style = STYLE_EIGHT_POINT_STARS
         else:
             self._style = STYLE_FLOATING_ORBS
         self._particles.clear()
@@ -480,6 +495,15 @@ class ParticleOverlayWidget(QWidget):
                         pts = crescent_polygon(p.x, p.y, p.radius, p.angle_deg)
                     else:
                         pts = star_5point_polygon(p.x, p.y, p.radius, angle_deg=p.angle_deg)
+                    painter.drawPolygon(QPolygonF([QPointF(px, py) for px, py in pts]))
+            elif "eight" in self._style.lower():
+                r_out = int(round(r * 0.35 + 255 * 0.65))
+                g_out = int(round(g * 0.35 + 255 * 0.65))
+                b_out = int(round(b * 0.35 + 255 * 0.65))
+                painter.setPen(Qt.PenStyle.NoPen)
+                for p in self._particles:
+                    painter.setBrush(QColor(r_out, g_out, b_out, int(p.base_alpha * 240)))
+                    pts = star_8point_polygon(p.x, p.y, p.radius, angle_deg=p.angle_deg)
                     painter.drawPolygon(QPolygonF([QPointF(px, py) for px, py in pts]))
             else:
                 for p in self._particles:
