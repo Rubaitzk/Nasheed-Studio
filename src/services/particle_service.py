@@ -24,6 +24,7 @@ STYLE_FLOATING_ORBS = "Floating Orbs"
 STYLE_LIGHT_GLINTS = "Light Glints"
 STYLE_TWINKLE_STARS = "Twinkle Stars"
 STYLE_BOKEH_RINGS = "Bokeh Rings"
+STYLE_CRESCENTS_AND_STARS = "Crescents & Stars"
 
 LAYER_BELOW_TEXT = "Below Text"
 LAYER_ABOVE_TEXT = "Above Text"
@@ -34,6 +35,7 @@ PARTICLE_STYLES = [
     STYLE_LIGHT_GLINTS,
     STYLE_TWINKLE_STARS,
     STYLE_BOKEH_RINGS,
+    STYLE_CRESCENTS_AND_STARS,
 ]
 PARTICLE_LAYERS = [LAYER_BELOW_TEXT, LAYER_ABOVE_TEXT]
 
@@ -97,6 +99,63 @@ def star_4point_polygon(
     base_rad = math.radians(angle_deg)
     for i in range(8):
         angle = base_rad + i * (math.pi / 4.0)
+        r = r_outer if (i % 2 == 0) else r_inner
+        pts.append((cx + r * math.cos(angle), cy + r * math.sin(angle)))
+    return pts
+
+
+def crescent_polygon(
+    cx: float,
+    cy: float,
+    r_outer: float,
+    angle_deg: float = 25.0,
+    n: int = 12,
+) -> List[Tuple[float, float]]:
+    """
+    Generate points of a crescent moon shape.
+    Outer arc with radius r_outer, inner arc offset to form a pointed crescent.
+    """
+    rad = math.radians(angle_deg)
+    cos_a = math.cos(rad)
+    sin_a = math.sin(rad)
+    pts: List[Tuple[float, float]] = []
+    # Outer arc
+    for i in range(n + 1):
+        theta = -math.pi / 2.0 + (math.pi * i / n)
+        x_loc = r_outer * math.cos(theta)
+        y_loc = r_outer * math.sin(theta)
+        px = cx + x_loc * cos_a - y_loc * sin_a
+        py = cy + x_loc * sin_a + y_loc * cos_a
+        pts.append((px, py))
+    # Inner arc (offset toward positive x_loc)
+    r_inner = r_outer * 0.85
+    ox = r_outer * 0.45
+    for i in range(1, n):
+        theta = math.pi / 2.0 - (math.pi * i / n)
+        x_loc = ox + r_inner * math.cos(theta)
+        y_loc = r_inner * math.sin(theta)
+        px = cx + x_loc * cos_a - y_loc * sin_a
+        py = cy + x_loc * sin_a + y_loc * cos_a
+        pts.append((px, py))
+    return pts
+
+
+def star_5point_polygon(
+    cx: float,
+    cy: float,
+    r_outer: float,
+    r_inner: Optional[float] = None,
+    angle_deg: float = 0.0,
+) -> List[Tuple[float, float]]:
+    """
+    Generate points of a 5-point star.
+    """
+    if r_inner is None:
+        r_inner = r_outer * 0.42
+    pts: List[Tuple[float, float]] = []
+    base_rad = math.radians(angle_deg - 90.0)
+    for i in range(10):
+        angle = base_rad + i * (math.pi / 5.0)
         r = r_outer if (i % 2 == 0) else r_inner
         pts.append((cx + r * math.cos(angle), cy + r * math.sin(angle)))
     return pts
@@ -180,6 +239,7 @@ def generate_particle_loop_video(
     is_glints = (style == STYLE_LIGHT_GLINTS or "glint" in str(style).lower())
     is_stars = (style == STYLE_TWINKLE_STARS or "twinkle" in str(style).lower())
     is_bokeh = (style == STYLE_BOKEH_RINGS or "bokeh" in str(style).lower())
+    is_crescents = (style == STYLE_CRESCENTS_AND_STARS or "crescent" in str(style).lower())
     is_flecks = (style == STYLE_DRIFTING_FLECKS or "fleck" in str(style).lower())
 
     base_sprites = {}
@@ -350,6 +410,51 @@ def generate_particle_loop_video(
                 "x0": x0, "y0": y0, "vy": vy, "m": m, "A": A,
                 "radius": radius, "b_key": b_key,
             })
+    elif is_crescents:
+        # Crescents & Stars: small crescent moons and 5-point stars, sparse and slow
+        r_out = int(round(r * 0.35 + 255 * 0.65))
+        g_out = int(round(g * 0.35 + 255 * 0.65))
+        b_out = int(round(b * 0.35 + 255 * 0.65))
+        cresc_count = max(8, int(count * 0.7))
+
+        for i in range(cresc_count):
+            depth = rng.uniform(0.35, 1.0)
+            is_cresc = (i % 2 == 0)
+            radius = (rng.uniform(7.0, 15.0) if is_cresc else rng.uniform(4.0, 9.0)) * res_scale
+            angle = rng.uniform(-15.0, 35.0) if is_cresc else rng.uniform(0.0, 72.0)
+            k_choices = [1] if sm <= 1.5 else [1, 2]
+            k = rng.choice(k_choices)
+            vy = k * height / duration
+            m = rng.choice([1, 2])
+            A = rng.uniform(4.0, 12.0) * res_scale
+            x0 = rng.uniform(0, width)
+            y0 = rng.uniform(0, height)
+            alpha = int(round(rng.uniform(160, 245) * (0.5 + 0.5 * depth)))
+
+            r_b = int(round(radius / 2.0)) * 2
+            ang_b = int(round(angle / 5.0)) * 5
+            shape_type = "cresc" if is_cresc else "star5"
+            b_key = (shape_type, r_b, ang_b)
+
+            if b_key not in base_sprites:
+                pad = r_b * 2 + 10
+                SS = 4
+                im_ss = Image.new("RGBA", (pad * SS, pad * SS), (0, 0, 0, 0))
+                d_ss = ImageDraw.Draw(im_ss)
+                cx_ss = pad * SS / 2.0
+                cy_ss = pad * SS / 2.0
+                if is_cresc:
+                    pts = crescent_polygon(cx_ss, cy_ss, r_b * SS, ang_b)
+                else:
+                    pts = star_5point_polygon(cx_ss, cy_ss, r_b * SS, angle_deg=ang_b)
+                d_ss.polygon(pts, fill=(r_out, g_out, b_out, alpha))
+                spr = im_ss.resize((pad, pad), Image.Resampling.LANCZOS)
+                base_sprites[b_key] = (spr, pad)
+
+            particles.append({
+                "x0": x0, "y0": y0, "vy": vy, "m": m, "A": A,
+                "radius": radius, "b_key": b_key,
+            })
     elif is_flecks:
         # Drifting Flecks: Horizontal drift with subtle vertical undulating wave
         for _ in range(count):
@@ -440,7 +545,7 @@ def generate_particle_loop_video(
                     continue
 
                 img.alpha_composite(spr, dest=(dest_x, dest_y))
-        elif is_bokeh:
+        elif is_bokeh or is_crescents:
             for p in particles:
                 cur_y = (p["y0"] + p["vy"] * t) % height
                 cur_x = (p["x0"] + p["A"] * math.sin(two_pi * p["m"] * t / duration)) % width

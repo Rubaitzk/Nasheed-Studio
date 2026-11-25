@@ -24,11 +24,14 @@ from src.services.particle_service import (
     STYLE_LIGHT_GLINTS,
     STYLE_TWINKLE_STARS,
     STYLE_BOKEH_RINGS,
+    STYLE_CRESCENTS_AND_STARS,
     LAYER_BELOW_TEXT,
     LAYER_ABOVE_TEXT,
     _speed_multiplier,
     lens_polygon,
     star_4point_polygon,
+    crescent_polygon,
+    star_5point_polygon,
     glint_state,
 )
 
@@ -40,7 +43,7 @@ class Particle:
         "x", "y", "base_y", "speed_x", "speed_y", "sway_phase",
         "sway_speed", "sway_amp", "radius", "base_alpha", "depth",
         "positions", "n", "phase", "vx", "vy", "width", "height",
-        "length", "glint_width", "angle_deg", "peak_alpha"
+        "length", "glint_width", "angle_deg", "peak_alpha", "sub_type"
     )
 
     def __getitem__(self, key: str) -> Any:
@@ -72,6 +75,7 @@ class Particle:
         self.glint_width = 0.0
         self.angle_deg = 0.0
         self.peak_alpha = 255
+        self.sub_type = "default"
 
         s = str(style).lower()
         if "fleck" in s:
@@ -148,6 +152,18 @@ class Particle:
             self.sway_speed = r_gen.uniform(0.01, 0.03) * speed_factor
             self.sway_amp = 0.5 + self.depth * 1.0
             self.base_alpha = 0.25 + self.depth * 0.45
+        elif "crescent" in s:
+            # Crescents & Stars: small crescent moons and 5-point stars, sparse and slow
+            res_scale = max(0.5, h / 1080.0)
+            self.sub_type = "crescent" if (r_gen.random() < 0.5) else "star"
+            self.radius = (r_gen.uniform(7.0, 15.0) if self.sub_type == "crescent" else r_gen.uniform(4.0, 9.0)) * res_scale
+            self.angle_deg = r_gen.uniform(-15.0, 35.0) if self.sub_type == "crescent" else r_gen.uniform(0.0, 72.0)
+            self.speed_x = 0.0
+            self.speed_y = (0.3 + self.depth * 0.6) * speed_factor
+            self.sway_phase = r_gen.uniform(0, 6.28318)
+            self.sway_speed = r_gen.uniform(0.015, 0.035) * speed_factor
+            self.sway_amp = 1.0 + self.depth * 2.0
+            self.base_alpha = 0.35 + self.depth * 0.5
         else:
             # Floating Orbs: vertical atmospheric float with sinusoidal sway
             self.radius = 1.5 + self.depth * 3.0
@@ -251,6 +267,8 @@ class ParticleOverlayWidget(QWidget):
             self._style = STYLE_TWINKLE_STARS
         elif "bokeh" in s:
             self._style = STYLE_BOKEH_RINGS
+        elif "crescent" in s:
+            self._style = STYLE_CRESCENTS_AND_STARS
         else:
             self._style = STYLE_FLOATING_ORBS
         self._particles.clear()
@@ -451,6 +469,18 @@ class ParticleOverlayWidget(QWidget):
                     painter.setPen(pen)
                     painter.setBrush(brush)
                     painter.drawEllipse(QPointF(p.x, p.y), p.radius, p.radius)
+            elif "crescent" in self._style.lower():
+                r_out = int(round(r * 0.35 + 255 * 0.65))
+                g_out = int(round(g * 0.35 + 255 * 0.65))
+                b_out = int(round(b * 0.35 + 255 * 0.65))
+                painter.setPen(Qt.PenStyle.NoPen)
+                for p in self._particles:
+                    painter.setBrush(QColor(r_out, g_out, b_out, int(p.base_alpha * 240)))
+                    if p.sub_type == "crescent":
+                        pts = crescent_polygon(p.x, p.y, p.radius, p.angle_deg)
+                    else:
+                        pts = star_5point_polygon(p.x, p.y, p.radius, angle_deg=p.angle_deg)
+                    painter.drawPolygon(QPolygonF([QPointF(px, py) for px, py in pts]))
             else:
                 for p in self._particles:
                     alpha = int(p.base_alpha * 240)

@@ -130,6 +130,9 @@ def test_particle_styles_and_layers(qapp):
     overlay.set_particle_style("Bokeh Rings")
     assert overlay.get_particle_style() == "Bokeh Rings"
 
+    overlay.set_particle_style("Crescents & Stars")
+    assert overlay.get_particle_style() == "Crescents & Stars"
+
     # Fallback for unknown style
     overlay.set_particle_style("Unknown Style")
     assert overlay.get_particle_style() == "Floating Orbs"
@@ -311,6 +314,40 @@ def test_generate_particle_loop_video_bokeh_rings():
             style=STYLE_BOKEH_RINGS,
             quantity=25,
             color=(100, 200, 255),
+            speed=2,
+        )
+        assert res.is_file()
+        assert res.stat().st_size > 0
+
+
+def test_generate_particle_loop_video_crescents_and_stars():
+    import tempfile
+    from pathlib import Path
+    from src.services.particle_service import (
+        generate_particle_loop_video,
+        STYLE_CRESCENTS_AND_STARS,
+        PARTICLE_STYLES,
+        crescent_polygon,
+        star_5point_polygon,
+    )
+
+    assert STYLE_CRESCENTS_AND_STARS in PARTICLE_STYLES
+    c_pts = crescent_polygon(50, 50, 20)
+    assert len(c_pts) > 10
+    s_pts = star_5point_polygon(50, 50, 15)
+    assert len(s_pts) == 10
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_mov = Path(tmp) / "crescent_loop.mov"
+        res = generate_particle_loop_video(
+            output_path=out_mov,
+            width=320,
+            height=240,
+            fps=15,
+            duration=1.0,
+            style=STYLE_CRESCENTS_AND_STARS,
+            quantity=20,
+            color=(255, 230, 150),
             speed=2,
         )
         assert res.is_file()
