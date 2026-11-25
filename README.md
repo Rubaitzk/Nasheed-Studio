@@ -4,7 +4,7 @@
 [![Qt 6 / PySide6](https://img.shields.io/badge/Qt-6.5+-green.svg)](https://www.qt.io/)
 [![FFmpeg](https://img.shields.io/badge/FFmpeg-6.0+-orange.svg)](https://ffmpeg.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows%20x64-lightgrey.svg)](https://microsoft.com/windows)
-[![Tests](https://img.shields.io/badge/tests-340+%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-390+%20passing-brightgreen.svg)](tests/)
 
 **NCN Studio** is a high-performance desktop workstation engineered to automate the production of publication-ready Nasheed playlist videos for YouTube and digital distribution. Combining an asynchronous, GPU-accelerated **PySide6 (Qt 6)** graphical interface with an industrial-grade **FFmpeg** multimedia rendering engine, NCN Studio enables content creators to build videos featuring synchronized active track indicators, dynamic multi-column layouts, customizable typography, brand logos, website watermarks, animated intro sequences, frosted glass cards, and transition sound effects.
 
@@ -164,7 +164,7 @@ NCN Studio follows a clean, decoupled architecture separating UI state managemen
 ## Developer Guide & Testing
 
 ### Running Automated Test Suite
-NCN Studio includes over 340 regression, unit, and integration tests covering the entire feature matrix:
+NCN Studio includes over 390 regression, unit, and integration tests covering the entire feature matrix:
 
 ```powershell
 # Run entire test suite

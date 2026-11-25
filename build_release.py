@@ -306,9 +306,13 @@ def assemble_release(bundle: Path) -> Path:
 
     # 5b. Source code (exclude .venv, build, dist, __pycache__, release_build)
     step("Copying source code…")
+    if SRC_OUT.exists():
+        shutil.rmtree(SRC_OUT)
+    ensure_dir(SRC_OUT)
     EXCLUDE_DIRS = {".venv", "build", "dist", "__pycache__", "release_build", "final_deliverable",
                    ".pytest_cache", ".git", "scratch", "mp4_proof", "final_delivery_proof",
                    "design_concepts", "dev_test_samples",
+                   "dist_backup", "dist_staging", "final_deliverable_backup",
                    "video_proof_of_template_not_working",
                    "video_proof_of_template_not_loading",
                    "picture_for_improving_layout",
@@ -336,6 +340,9 @@ def assemble_release(bundle: Path) -> Path:
 
     # 5c. Scripts
     step("Copying scripts…")
+    if SCRIPTS_OUT.exists():
+        shutil.rmtree(SCRIPTS_OUT)
+    ensure_dir(SCRIPTS_OUT)
     script_sources = [
         ROOT / "packaging" / "build_exe.py",
         ROOT / "build_release.py",
@@ -354,6 +361,9 @@ def assemble_release(bundle: Path) -> Path:
 
     # 5d. Templates
     step("Copying templates…")
+    if TEMPLATES_OUT.exists():
+        shutil.rmtree(TEMPLATES_OUT)
+    ensure_dir(TEMPLATES_OUT)
     if TEMPLATES_DIR.is_dir():
         for f in TEMPLATES_DIR.iterdir():
             if f.is_file():
@@ -381,15 +391,11 @@ def assemble_release(bundle: Path) -> Path:
     if app_ico.is_file():
         shutil.copy2(app_ico, dest_bundle / "app_icon.ico")
 
-    # Clean up any obsolete root-level batch files or archives in final_deliverable
+    # Clean up any obsolete root-level batch files in final_deliverable
     for stray in [
         RELEASE_DIR / "Launch NCN Studio.bat",
         RELEASE_DIR / "Create Desktop Shortcut.bat",
         RELEASE_DIR / "README_HOW_TO_RUN.txt",
-        RELEASE_DIR / ZIP_NAME,
-        RELEASE_DIR / "Nasheed_Studio_Windows_x64.zip",
-        RELEASE_DIR / "NCN_Studio_Final.zip",
-        RELEASE_DIR / "NCN_Studio_Final_Fixed.zip",
     ]:
         if stray.exists():
             try:
@@ -486,7 +492,7 @@ final_deliverable/
       create_desktop_shortcut.ps1 ← Desktop shortcut helper
       README_HOW_TO_RUN.txt   ← Quick-start guide
   Source_Code/                ← Complete clean Python source for maintenance & transparency
-  Scripts/                    ← Release automation & automated test suite (368 tests)
+  Scripts/                    ← Release automation & automated test suite (392 tests)
   Templates/                  ← Seed design templates (JSON)
   Installation/
     INSTALLATION.md           ← Installation and first-run instructions
@@ -506,7 +512,7 @@ final_deliverable/
 2. Navigates to `Application/NCN Studio/` and double-clicks `NCN Studio.exe` (or double-clicks `Create Desktop Shortcut.bat` to place a shortcut on Desktop).
 3. No Python installation is required. No external codecs or software installations are needed.
 4. Embedded Python runtime, standard library (`base_library.zip`), PySide6 Qt 6 engine, and static FFmpeg/FFprobe binaries are bundled inside `Application/NCN Studio/_internal/`.
-5. Complete source code, test suite (371 automated tests), and documentation are included for full ownership.
+5. Complete source code, test suite (392 automated tests), and documentation are included for full ownership.
 """
     manifest_path = release_dir / "MANIFEST.md"
     manifest_path.write_text(manifest, encoding="utf-8")
@@ -978,6 +984,8 @@ def main() -> None:
                         help="Remove previous dist/ and build/ directories before building")
     parser.add_argument("--skip-tests", action="store_true",
                         help="Skip the automated test suite")
+    parser.add_argument("--no-zip", action="store_true",
+                        help="Do not create final distribution ZIP archives")
     args = parser.parse_args()
 
     print("\n" + "="*70)
@@ -998,13 +1006,20 @@ def main() -> None:
     verify_bundle(bundle)
     release_dir = assemble_release(bundle)
     write_manifest(bundle, release_dir)
-    final_zip = create_final_delivery_zip(release_dir)
+    if not args.no_zip:
+        final_zip = create_final_delivery_zip(release_dir)
+    else:
+        final_zip = None
+        ok("Skipped creating final delivery ZIP (--no-zip)")
 
     header("Build Complete")
     print(f"\n  Release directory:  {release_dir}")
     print(f"  Executable:         {release_dir / 'Application' / BUNDLE_NAME / (BUNDLE_NAME + '.exe')}")
-    print(f"  Master Final ZIP:   {final_zip}")
-    print(f"\n  Deliver {final_zip.name} to the client.\n")
+    if final_zip:
+        print(f"  Master Final ZIP:   {final_zip}")
+        print(f"\n  Deliver {final_zip.name} to the client.\n")
+    else:
+        print(f"  Master Final ZIP:   [SKIPPED (--no-zip)]\n")
 
 
 if __name__ == "__main__":
