@@ -155,6 +155,7 @@ TEMPLATE_DESIGN_KEYS = [
     # Ambient particles (Feature D)
     "particles_enabled",
     "particles_style",
+    "particles_size",
     "particles_layer",
     "particles_quantity",
     "particles_color",

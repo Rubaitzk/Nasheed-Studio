@@ -1558,6 +1558,16 @@ class MainWindow(QMainWindow):
         self.particles_speed_spin.setToolTip("Adjust particle drift speed (1=Slow, 5=Fast)")
         self.particles_speed_spin.valueChanged.connect(self._on_particles_param_changed)
         sec_particles.addLayout(self._create_prop_row("Speed (1-5):", self.particles_speed_spin))
+
+        self.particles_size_slider = QSlider(Qt.Orientation.Horizontal)
+        self.particles_size_slider.setRange(50, 300)
+        self.particles_size_slider.setValue(100)
+        self.particles_size_slider.setSingleStep(5)
+        self.particles_size_slider.setPageStep(25)
+        self.particles_size_slider.setToolTip("Adjust particle visual size across all styles (50% to 300%)")
+        self.particles_size_val_lbl = QLabel("100%")
+        self.particles_size_slider.valueChanged.connect(self._on_particles_size_slider_changed)
+        sec_particles.addLayout(self._create_slider_prop_row("Size:", self.particles_size_slider, self.particles_size_val_lbl))
         layout.addWidget(sec_particles)
 
         layout.addStretch(1)
@@ -2470,6 +2480,7 @@ class MainWindow(QMainWindow):
             "particles_quantity": self.particles_count_spin.value() if hasattr(self, "particles_count_spin") else 80,
             "particles_color": getattr(self, "particles_color", (56, 189, 248)),
             "particles_speed": self.particles_speed_spin.value() if hasattr(self, "particles_speed_spin") else 2,
+            "particles_size": self.particles_size_slider.value() if hasattr(self, "particles_size_slider") else 100,
             "output_path": self.output_edit.text().strip(),
         }
 
@@ -5218,11 +5229,17 @@ class MainWindow(QMainWindow):
             self._update_particles_color_btn()
         if "particles_speed" in tmpl and hasattr(self, "particles_speed_spin"):
             self.particles_speed_spin.setValue(int(tmpl["particles_speed"]))
+        if hasattr(self, "particles_size_slider"):
+            sz = max(50, min(300, int(tmpl.get("particles_size", 100) if tmpl.get("particles_size") is not None else 100)))
+            self.particles_size_slider.setValue(sz)
+            if hasattr(self, "particles_size_val_lbl"):
+                self.particles_size_val_lbl.setText(f"{sz}%")
         if hasattr(self, "particle_overlay"):
             self.particle_overlay.set_particle_style(self.particles_style_combo.currentText() if hasattr(self, "particles_style_combo") else "Drifting Flecks")
             self.particle_overlay.set_particle_layer(self.particles_layer_combo.currentText() if hasattr(self, "particles_layer_combo") else "Below Text")
             self.particle_overlay.set_particle_count(self.particles_count_spin.value() if hasattr(self, "particles_count_spin") else 80)
             self.particle_overlay.set_particle_speed(self.particles_speed_spin.value() if hasattr(self, "particles_speed_spin") else 2)
+            self.particle_overlay.set_particle_size(self.particles_size_slider.value() if hasattr(self, "particles_size_slider") else 100)
             self.particle_overlay.set_particle_color(self.particles_color)
             self.particle_overlay.set_enabled(self.particles_check.isChecked() if hasattr(self, "particles_check") else False)
         if "intro_audio_path" in tmpl and hasattr(self, "intro_audio_label"):
@@ -5725,11 +5742,17 @@ class MainWindow(QMainWindow):
                 self._update_particles_color_btn()
             if hasattr(self, "particles_speed_spin") and "particles_speed" in data:
                 self.particles_speed_spin.setValue(int(data["particles_speed"]))
+            if hasattr(self, "particles_size_slider"):
+                sz = max(50, min(300, int(data.get("particles_size", 100) if data.get("particles_size") is not None else 100)))
+                self.particles_size_slider.setValue(sz)
+                if hasattr(self, "particles_size_val_lbl"):
+                    self.particles_size_val_lbl.setText(f"{sz}%")
             if hasattr(self, "particle_overlay"):
                 self.particle_overlay.set_particle_style(self.particles_style_combo.currentText() if hasattr(self, "particles_style_combo") else "Drifting Flecks")
                 self.particle_overlay.set_particle_layer(self.particles_layer_combo.currentText() if hasattr(self, "particles_layer_combo") else "Below Text")
                 self.particle_overlay.set_particle_count(self.particles_count_spin.value() if hasattr(self, "particles_count_spin") else 80)
                 self.particle_overlay.set_particle_speed(self.particles_speed_spin.value() if hasattr(self, "particles_speed_spin") else 2)
+                self.particle_overlay.set_particle_size(self.particles_size_slider.value() if hasattr(self, "particles_size_slider") else 100)
                 self.particle_overlay.set_particle_color(self.particles_color)
                 self.particle_overlay.set_enabled(self.particles_check.isChecked() if hasattr(self, "particles_check") else False)
 
@@ -5890,6 +5913,11 @@ class MainWindow(QMainWindow):
         state_str = "enabled" if self.audio_normalize_check.isChecked() else "disabled"
         self.status_label.setText(f"Audio normalization {state_str}")
 
+    def _on_particles_size_slider_changed(self, val: int) -> None:
+        if hasattr(self, "particles_size_val_lbl"):
+            self.particles_size_val_lbl.setText(f"{val}%")
+        self._on_particles_param_changed()
+
     def _on_particles_param_changed(self) -> None:
         if hasattr(self, "particle_overlay"):
             enabled = self.particles_check.isChecked()
@@ -5897,10 +5925,12 @@ class MainWindow(QMainWindow):
             style = self.particles_style_combo.currentText() if hasattr(self, "particles_style_combo") else "Drifting Flecks"
             layer = self.particles_layer_combo.currentText() if hasattr(self, "particles_layer_combo") else "Below Text"
             count = self.particles_count_spin.value() if hasattr(self, "particles_count_spin") else 80
+            sz = self.particles_size_slider.value() if hasattr(self, "particles_size_slider") else 100
             self.particle_overlay.set_particle_style(style)
             self.particle_overlay.set_particle_layer(layer)
             self.particle_overlay.set_particle_count(count)
             self.particle_overlay.set_particle_speed(spd)
+            self.particle_overlay.set_particle_size(sz)
             self.particle_overlay.set_enabled(enabled)
             self._refresh_particles_preview_state()
         self._mark_dirty()

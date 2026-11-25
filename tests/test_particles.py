@@ -386,3 +386,179 @@ def test_generate_particle_loop_video_eight_point_stars():
         )
         assert res.is_file()
         assert res.stat().st_size > 0
+
+
+def test_particles_size_control_ui_and_persistence(qapp):
+    win = MainWindow()
+    try:
+        assert hasattr(win, "particles_size_slider")
+        assert hasattr(win, "particles_size_val_lbl")
+        assert win.particles_size_slider.value() == 100
+        assert win.particle_overlay.get_particle_size() == 100
+
+        # Change size slider
+        win.particles_size_slider.setValue(175)
+        assert win.particles_size_val_lbl.text() == "175%"
+        assert win.particle_overlay.get_particle_size() == 175
+
+        # Check project dictionary contains particles_size
+        proj = win._project()
+        assert proj.get("particles_size") == 175
+
+        # Backward compatibility: restore project state without particles_size defaults to 100
+        old_data = {
+            "particles_enabled": True,
+            "particles_style": "Floating Orbs",
+        }
+        win._restore_project_state(old_data)
+        assert win.particles_size_slider.value() == 100
+        assert win.particle_overlay.get_particle_size() == 100
+
+        # Out-of-range clamping on restore
+        win._restore_project_state({"particles_size": 25})
+        assert win.particles_size_slider.value() == 50
+        assert win.particle_overlay.get_particle_size() == 50
+
+        win._restore_project_state({"particles_size": 600})
+        assert win.particles_size_slider.value() == 300
+        assert win.particle_overlay.get_particle_size() == 300
+    finally:
+        dispose_window(win)
+
+
+def test_particles_size_template_persistence():
+    from src.services.project_service import (
+        TEMPLATE_DESIGN_KEYS,
+        extract_template,
+        apply_template_to_project,
+    )
+    assert "particles_size" in TEMPLATE_DESIGN_KEYS
+
+    proj = {
+        "particles_enabled": True,
+        "particles_style": "Light Glints",
+        "particles_size": 150,
+    }
+    tmpl = extract_template(proj)
+    assert tmpl.get("particles_size") == 150
+
+    base_proj = {"collection_title": "Test Title"}
+    applied = apply_template_to_project(base_proj, tmpl)
+    assert applied.get("particles_size") == 150
+
+
+def test_generate_particle_loop_video_sizes():
+    import tempfile
+    from pathlib import Path
+    from src.services.particle_service import (
+        generate_particle_loop_video,
+        PARTICLE_STYLES,
+    )
+    for style in PARTICLE_STYLES:
+        for sz in [50, 100, 300]:
+            with tempfile.TemporaryDirectory() as tmp:
+                out_mov = Path(tmp) / f"loop_{sz}.mov"
+                res = generate_particle_loop_video(
+                    output_path=out_mov,
+                    width=320,
+                    height=240,
+                    fps=15,
+                    duration=1.0,
+                    style=style,
+                    quantity=15,
+                    size=sz,
+                )
+                assert res.is_file()
+                assert res.stat().st_size > 0
+
+
+def test_particle_size_scaling_extent():
+    """Verify that particle bounding dimensions scale proportionally with size (200% vs 100%)."""
+    import math
+    from src.services.particle_service import (
+        lens_polygon,
+        star_4point_polygon,
+        star_8point_polygon,
+    )
+
+    pts_100 = lens_polygon(100, 100, 30.0, 4.0, 0.0)
+    pts_200 = lens_polygon(100, 100, 60.0, 8.0, 0.0)
+    w100 = max(p[0] for p in pts_100) - min(p[0] for p in pts_100)
+    w200 = max(p[0] for p in pts_200) - min(p[0] for p in pts_200)
+    assert math.isclose(w200 / w100, 2.0, rel_tol=0.01)
+
+    pts_100 = star_4point_polygon(100, 100, 20.0)
+    pts_200 = star_4point_polygon(100, 100, 40.0)
+    w100 = max(p[0] for p in pts_100) - min(p[0] for p in pts_100)
+    w200 = max(p[0] for p in pts_200) - min(p[0] for p in pts_200)
+    assert math.isclose(w200 / w100, 2.0, rel_tol=0.01)
+
+    pts_100 = star_8point_polygon(100, 100, 15.0)
+    pts_200 = star_8point_polygon(100, 100, 30.0)
+    w100 = max(p[0] for p in pts_100) - min(p[0] for p in pts_100)
+    w200 = max(p[0] for p in pts_200) - min(p[0] for p in pts_200)
+    assert math.isclose(w200 / w100, 2.0, rel_tol=0.01)
+
+
+def test_particle_widget_size_rescaling(qapp):
+    """Test ParticleOverlayWidget.set_particle_size() rescales particle dimensions live."""
+    import math
+    overlay = ParticleOverlayWidget()
+    overlay.resize(640, 360)
+    overlay.set_particle_style("Drifting Flecks")
+    overlay.set_particle_count(20)
+    overlay.set_enabled(True)
+
+    overlay.set_particle_size(100)
+    radii_100 = [p.radius for p in overlay._particles]
+
+    overlay.set_particle_size(200)
+    radii_200 = [p.radius for p in overlay._particles]
+
+    assert len(radii_100) == len(radii_200)
+    for r1, r2 in zip(radii_100, radii_200):
+        assert math.isclose(r2 / r1, 2.0, rel_tol=0.15)
+
+
+def test_particle_seamless_loop_identity():
+    """Verify that particle states at t=0 and t=duration are identical at all sizes."""
+    import math
+    import random
+    from src.services.particle_service import glint_state
+
+    duration = 6.0
+    width = 1920
+    height = 1080
+    two_pi = 2.0 * math.pi
+
+    for sz in [50, 100, 200, 300]:
+        # Glint seamless check
+        p_glint = {
+            "n": 3,
+            "phase": 0.45,
+            "positions": [(200.0, 300.0), (600.0, 800.0), (1200.0, 500.0)],
+            "vx": 2 * width / duration,
+            "vy": -1 * height / duration,
+            "width": width,
+            "height": height,
+        }
+        s0 = glint_state(p_glint, 0.0, duration)
+        s_end = glint_state(p_glint, duration, duration)
+        assert math.isclose(s0[0], s_end[0], abs_tol=1e-5)
+        assert math.isclose(s0[1], s_end[1], abs_tol=1e-5)
+        assert math.isclose(s0[2], s_end[2], abs_tol=1e-5)
+
+        # Fleck / wave seamless check
+        vx = 2 * width / duration
+        m = 2
+        A = 5.0 * (height / 1080.0)
+        x0, y0 = 150.0, 450.0
+
+        x_t0 = (x0 + vx * 0.0) % width
+        y_t0 = y0 + A * math.sin(two_pi * m * 0.0 / duration)
+
+        x_tend = (x0 + vx * duration) % width
+        y_tend = y0 + A * math.sin(two_pi * m * duration / duration)
+
+        assert math.isclose(x_t0, x_tend, abs_tol=1e-5)
+        assert math.isclose(y_t0, y_tend, abs_tol=1e-5)
