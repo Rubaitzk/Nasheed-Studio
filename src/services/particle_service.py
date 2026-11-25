@@ -4,6 +4,7 @@ Particle simulation and video generation service for Nasheed Studio.
 Supports:
 - Style 1: "Drifting Flecks" (horizontal drifting flecks/specks with gentle natural float, inspired by client reference).
 - Style 2: "Floating Orbs" (vertical atmospheric float with sinusoidal sway).
+- Style 3: "Light Glints" (thin white glint/flick slivers drifting diagonally with pulsating flash).
 - Layering: "Below Text" (under typography/tracklist) vs "Above Text" (over all layers).
 - Seamless mathematical looping for zero-overhead FFmpeg export.
 """
@@ -15,17 +16,86 @@ import os
 import random
 import subprocess
 from pathlib import Path
-from typing import List, Tuple, Union
+from typing import Any, List, Tuple, Union
 from PIL import Image, ImageDraw
 
 STYLE_DRIFTING_FLECKS = "Drifting Flecks"
 STYLE_FLOATING_ORBS = "Floating Orbs"
+STYLE_LIGHT_GLINTS = "Light Glints"
 
 LAYER_BELOW_TEXT = "Below Text"
 LAYER_ABOVE_TEXT = "Above Text"
 
-PARTICLE_STYLES = [STYLE_DRIFTING_FLECKS, STYLE_FLOATING_ORBS]
+PARTICLE_STYLES = [STYLE_DRIFTING_FLECKS, STYLE_FLOATING_ORBS, STYLE_LIGHT_GLINTS]
 PARTICLE_LAYERS = [LAYER_BELOW_TEXT, LAYER_ABOVE_TEXT]
+
+
+def lens_polygon(
+    cx: float,
+    cy: float,
+    length: float,
+    width: float,
+    angle_deg: float,
+    n: int = 14,
+) -> List[Tuple[float, float]]:
+    """
+    Generate points of a pointed lens/sliver shape.
+    Two mirrored curves with half_width(u) = (width / 2) * (1 - |u|)**0.8 for u in [-1, 1],
+    rotated by angle_deg about (cx, cy). Both preview and export use the same helper so the shapes match.
+    """
+    rad = math.radians(angle_deg)
+    cos_a = math.cos(rad)
+    sin_a = math.sin(rad)
+    half_len = length / 2.0
+    half_w = width / 2.0
+
+    pts: List[Tuple[float, float]] = []
+    # Top curve: u from -1.0 to 1.0
+    for i in range(n + 1):
+        u = -1.0 + 2.0 * i / n
+        w = half_w * ((1.0 - abs(u)) ** 0.8)
+        x_loc = u * half_len
+        y_loc = w
+        px = cx + x_loc * cos_a - y_loc * sin_a
+        py = cy + x_loc * sin_a + y_loc * cos_a
+        pts.append((px, py))
+
+    # Bottom curve: u from 1.0 back down to -1.0 (skipping endpoints to prevent duplicate vertices)
+    for i in range(1, n):
+        u = 1.0 - 2.0 * i / n
+        w = -half_w * ((1.0 - abs(u)) ** 0.8)
+        x_loc = u * half_len
+        y_loc = w
+        px = cx + x_loc * cos_a - y_loc * sin_a
+        py = cy + x_loc * sin_a + y_loc * cos_a
+        pts.append((px, py))
+
+    return pts
+
+
+def glint_state(p: Union[dict, Any], t: float, duration: float) -> Tuple[float, float, float]:
+    """
+    Compute position (x, y) and alpha_factor for a glint particle at time t.
+    Returns (x, y, alpha_factor) where alpha_factor is in [0.0, 1.0].
+    Seamlessly loops over duration with period matching integer n flashes and integer drift.
+    """
+    n = p["n"] if isinstance(p, dict) else getattr(p, "n", 2)
+    phase_init = p["phase"] if isinstance(p, dict) else getattr(p, "phase", 0.0)
+    val = (t / duration) * n + phase_init
+    phase = val % 1.0
+    cycle = math.floor(val)
+    alpha_factor = math.sin(math.pi * phase) ** 2
+
+    positions = p["positions"] if isinstance(p, dict) else getattr(p, "positions")
+    base_pos = positions[cycle % n]
+    vx = p.get("vx", 0.0) if isinstance(p, dict) else getattr(p, "vx", 0.0)
+    vy = p.get("vy", 0.0) if isinstance(p, dict) else getattr(p, "vy", 0.0)
+    w = p.get("width", 1920) if isinstance(p, dict) else getattr(p, "width", 1920)
+    h = p.get("height", 1080) if isinstance(p, dict) else getattr(p, "height", 1080)
+
+    x = (base_pos[0] + vx * t) % w
+    y = (base_pos[1] + vy * t) % h
+    return x, y, alpha_factor
 
 
 def _speed_multiplier(speed_level: int) -> float:
@@ -78,9 +148,75 @@ def generate_particle_loop_video(
     rng = random.Random(42 + count + speed)
 
     particles = []
+    is_glints = (style == STYLE_LIGHT_GLINTS or "glint" in str(style).lower())
     is_flecks = (style == STYLE_DRIFTING_FLECKS or "fleck" in str(style).lower())
 
-    if is_flecks:
+    base_sprites = {}
+    alpha_cache = {}
+
+    if is_glints:
+        # Light Glints: thin tapered white sliver / flick drifting slowly with flashing glint
+        r_out = int(round(r * 0.4 + 255 * 0.6))
+        g_out = int(round(g * 0.4 + 255 * 0.6))
+        b_out = int(round(b * 0.4 + 255 * 0.6))
+
+        kx_choices = [1] if sm <= 1.0 else ([1, 2] if sm <= 3.0 else [2, 3])
+        ky_choices = [-1] if sm <= 1.0 else ([-2, -1] if sm <= 3.0 else [-3, -2])
+
+        for _ in range(count):
+            depth = rng.uniform(0.35, 1.0)
+            length = rng.uniform(14.0, 48.0) * res_scale
+            w_ratio = rng.uniform(7.0, 11.0)
+            g_width = length / w_ratio
+            angle = -60.0 + rng.uniform(-14.0, 14.0)
+            n_val = rng.choice([2, 3, 4])
+            phase = rng.uniform(0.0, 1.0)
+            peak_alpha = int(round(rng.uniform(150, 255) * (0.5 + 0.5 * depth)))
+
+            positions = [
+                (rng.uniform(0, width), rng.uniform(0, height))
+                for _ in range(n_val)
+            ]
+            kx = rng.choice(kx_choices)
+            ky = rng.choice(ky_choices)
+            vx = kx * width / duration
+            vy = ky * height / duration
+
+            # Quantize length and angle into buckets to maximize sprite reuse
+            len_b = int(round(length / 2.0)) * 2
+            ang_b = int(round(angle / 2.0)) * 2
+            b_key = (len_b, ang_b)
+
+            if b_key not in base_sprites:
+                b_width = len_b / 9.0
+                pad = int(math.ceil(max(len_b, b_width))) + 8
+                SS = 4
+                im_ss = Image.new("RGBA", (pad * SS, pad * SS), (0, 0, 0, 0))
+                d_ss = ImageDraw.Draw(im_ss)
+                cx_ss = pad * SS / 2.0
+                cy_ss = pad * SS / 2.0
+                p_out = lens_polygon(cx_ss, cy_ss, len_b * SS, b_width * SS, ang_b)
+                d_ss.polygon(p_out, fill=(r_out, g_out, b_out, 255))
+                p_in = lens_polygon(cx_ss, cy_ss, len_b * SS * 0.65, b_width * SS * 0.45, ang_b)
+                d_ss.polygon(p_in, fill=(255, 255, 255, 255))
+                spr = im_ss.resize((pad, pad), Image.Resampling.LANCZOS)
+                base_sprites[b_key] = (spr, pad)
+
+            particles.append({
+                "n": n_val,
+                "phase": phase,
+                "positions": positions,
+                "vx": vx,
+                "vy": vy,
+                "width": width,
+                "height": height,
+                "peak_alpha": peak_alpha,
+                "b_key": b_key,
+                "length": length,
+                "glint_width": g_width,
+                "angle_deg": angle,
+            })
+    elif is_flecks:
         # Drifting Flecks: Horizontal drift with subtle vertical undulating wave
         for _ in range(count):
             depth = rng.uniform(0.35, 1.0)
@@ -141,9 +277,37 @@ def generate_particle_loop_video(
     for frame_idx in range(num_frames):
         t = frame_idx / float(fps)
         img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(img)
 
-        if is_flecks:
+        if is_glints:
+            for p in particles:
+                cur_x, cur_y, alpha_factor = glint_state(p, t, duration)
+                eff_alpha = int(p["peak_alpha"] * alpha_factor)
+                if eff_alpha < 4:
+                    continue
+                q_level = int(round(eff_alpha / 17.0))
+                if q_level <= 0:
+                    continue
+                q_alpha = min(255, q_level * 17)
+
+                b_key = p["b_key"]
+                ckey = (b_key, q_level)
+                if ckey not in alpha_cache:
+                    base_spr, pad = base_sprites[b_key]
+                    r_ch, g_ch, b_ch, a_ch = base_spr.split()
+                    scale = q_alpha / 255.0
+                    a_ch = a_ch.point(lambda val: int(val * scale))
+                    alpha_cache[ckey] = (Image.merge("RGBA", (r_ch, g_ch, b_ch, a_ch)), pad)
+
+                spr, pad = alpha_cache[ckey]
+                dest_x = int(round(cur_x - pad / 2.0))
+                dest_y = int(round(cur_y - pad / 2.0))
+
+                if dest_x + pad <= 0 or dest_y + pad <= 0 or dest_x >= width or dest_y >= height:
+                    continue
+
+                img.alpha_composite(spr, dest=(dest_x, dest_y))
+        elif is_flecks:
+            draw = ImageDraw.Draw(img)
             for p in particles:
                 cur_x = (p["x0"] + p["vx"] * t) % width
                 cur_y = p["y0"] + p["A"] * math.sin(two_pi * p["m"] * t / duration)
@@ -153,6 +317,7 @@ def generate_particle_loop_video(
                     fill=(r, g, b, p["alpha"]),
                 )
         else:
+            draw = ImageDraw.Draw(img)
             for p in particles:
                 cur_y = (p["y0"] + p["vy"] * t) % height
                 cur_x = (p["x0"] + p["A"] * math.sin(two_pi * p["m"] * t / duration)) % width

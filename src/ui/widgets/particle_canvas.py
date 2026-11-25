@@ -13,17 +13,20 @@ from __future__ import annotations
 
 import math
 import random
-from typing import List, Optional, Tuple, Union
+from typing import Any, List, Optional, Tuple, Union
 from PySide6.QtCore import Qt, QTimer, QPointF
-from PySide6.QtGui import QColor, QPainter, QPaintEvent, QPixmap
+from PySide6.QtGui import QColor, QPainter, QPaintEvent, QPixmap, QPolygonF
 from PySide6.QtWidgets import QWidget
 
 from src.services.particle_service import (
     STYLE_DRIFTING_FLECKS,
     STYLE_FLOATING_ORBS,
+    STYLE_LIGHT_GLINTS,
     LAYER_BELOW_TEXT,
     LAYER_ABOVE_TEXT,
     _speed_multiplier,
+    lens_polygon,
+    glint_state,
 )
 
 math_sin = math.sin
@@ -32,31 +35,86 @@ math_sin = math.sin
 class Particle:
     __slots__ = (
         "x", "y", "base_y", "speed_x", "speed_y", "sway_phase",
-        "sway_speed", "sway_amp", "radius", "base_alpha", "depth"
+        "sway_speed", "sway_amp", "radius", "base_alpha", "depth",
+        "positions", "n", "phase", "vx", "vy", "width", "height",
+        "length", "glint_width", "angle_deg", "peak_alpha"
     )
 
-    def __init__(self, w: int, h: int, style: str = STYLE_DRIFTING_FLECKS, speed_factor: float = 1.0):
-        self.depth = random.uniform(0.35, 1.0)
-        self.x = random.uniform(0, max(10, w))
-        self.y = random.uniform(0, max(10, h))
+    def __getitem__(self, key: str) -> Any:
+        return getattr(self, key)
+
+    def __init__(
+        self,
+        w: int,
+        h: int,
+        style: str = STYLE_DRIFTING_FLECKS,
+        speed_factor: float = 1.0,
+        rng: Optional[random.Random] = None,
+    ):
+        r_gen = rng if rng is not None else random
+        self.depth = r_gen.uniform(0.35, 1.0)
+        self.x = r_gen.uniform(0, max(10, w))
+        self.y = r_gen.uniform(0, max(10, h))
         self.base_y = self.y
 
-        if style == STYLE_DRIFTING_FLECKS:
+        # Initialize slots with safe defaults
+        self.positions = []
+        self.n = 2
+        self.phase = 0.0
+        self.vx = 0.0
+        self.vy = 0.0
+        self.width = max(10, w)
+        self.height = max(10, h)
+        self.length = 0.0
+        self.glint_width = 0.0
+        self.angle_deg = 0.0
+        self.peak_alpha = 255
+
+        s = str(style).lower()
+        if "fleck" in s:
             # Drifting Flecks: horizontal drift with gentle natural vertical float
             self.radius = 1.0 + self.depth * 1.8
             self.speed_x = (1.5 + self.depth * 2.2) * speed_factor
             self.speed_y = 0.0
-            self.sway_phase = random.uniform(0, 6.28318)
-            self.sway_speed = random.uniform(0.015, 0.04) * speed_factor
+            self.sway_phase = r_gen.uniform(0, 6.28318)
+            self.sway_speed = r_gen.uniform(0.015, 0.04) * speed_factor
             self.sway_amp = 2.0 + self.depth * 5.0
             self.base_alpha = 0.35 + self.depth * 0.55
+        elif "glint" in s:
+            # Light Glints: thin tapered white sliver / flick drifting slowly with flashing glint
+            res_scale = max(0.5, h / 1080.0)
+            self.length = r_gen.uniform(14.0, 48.0) * res_scale
+            w_ratio = r_gen.uniform(7.0, 11.0)
+            self.glint_width = self.length / w_ratio
+            self.radius = self.glint_width
+            self.angle_deg = -60.0 + r_gen.uniform(-14.0, 14.0)
+            self.n = r_gen.choice([2, 3, 4])
+            self.phase = r_gen.uniform(0.0, 1.0)
+            self.peak_alpha = int(round(r_gen.uniform(150, 255) * (0.5 + 0.5 * self.depth)))
+            self.positions = [
+                (r_gen.uniform(0, self.width), r_gen.uniform(0, self.height))
+                for _ in range(self.n)
+            ]
+            kx_choices = [1] if speed_factor <= 1.0 else ([1, 2] if speed_factor <= 3.0 else [2, 3])
+            ky_choices = [-1] if speed_factor <= 1.0 else ([-2, -1] if speed_factor <= 3.0 else [-3, -2])
+            duration = 6.0
+            self.vx = r_gen.choice(kx_choices) * self.width / duration
+            self.vy = r_gen.choice(ky_choices) * self.height / duration
+            self.speed_x = self.vx
+            self.speed_y = self.vy
+            self.sway_phase = 0.0
+            self.sway_speed = 0.0
+            self.sway_amp = 0.0
+            self.base_alpha = 0.0
+            self.x = self.positions[0][0]
+            self.y = self.positions[0][1]
         else:
             # Floating Orbs: vertical atmospheric float with sinusoidal sway
             self.radius = 1.5 + self.depth * 3.0
             self.speed_x = 0.0
             self.speed_y = (0.5 + self.depth * 1.0) * speed_factor
-            self.sway_phase = random.uniform(0, 6.28318)
-            self.sway_speed = random.uniform(0.015, 0.045) * speed_factor
+            self.sway_phase = r_gen.uniform(0, 6.28318)
+            self.sway_speed = r_gen.uniform(0.015, 0.045) * speed_factor
             self.sway_amp = 0.4 + self.depth * 0.9
             self.base_alpha = 0.25 + self.depth * 0.55
 
@@ -81,6 +139,8 @@ class ParticleOverlayWidget(QWidget):
         self._layer: str = LAYER_BELOW_TEXT
         self._num_particles: int = 80
         self._text_pixmap: Optional[QPixmap] = None
+        self._duration: float = 6.0
+        self._time_counter: float = 0.0
 
         self._particles: List[Particle] = []
 
@@ -141,8 +201,14 @@ class ParticleOverlayWidget(QWidget):
         return self._speed_level
 
     def set_particle_style(self, style: str) -> None:
-        """Set particle style: 'Drifting Flecks' or 'Floating Orbs'."""
-        self._style = STYLE_DRIFTING_FLECKS if "fleck" in str(style).lower() else STYLE_FLOATING_ORBS
+        """Set particle style: 'Drifting Flecks', 'Floating Orbs', or 'Light Glints'."""
+        s = str(style).lower()
+        if "fleck" in s:
+            self._style = STYLE_DRIFTING_FLECKS
+        elif "glint" in s:
+            self._style = STYLE_LIGHT_GLINTS
+        else:
+            self._style = STYLE_FLOATING_ORBS
         self._particles.clear()
         self._ensure_particles()
         self.update()
@@ -181,21 +247,48 @@ class ParticleOverlayWidget(QWidget):
         h = max(100, self.height())
         sm = self._speed_multiplier()
         if len(self._particles) != self._num_particles:
-            self._particles = [Particle(w, h, self._style, sm) for _ in range(self._num_particles)]
+            rng = random.Random(42 + self._num_particles + self._speed_level)
+            self._particles = [
+                Particle(w, h, self._style, sm, rng=rng)
+                for _ in range(self._num_particles)
+            ]
+            if "glint" in self._style.lower():
+                for p in self._particles:
+                    p.width = w
+                    p.height = h
+                    x, y, alpha_factor = glint_state(p, self._time_counter, self._duration)
+                    p.x = x
+                    p.y = y
+                    p.base_alpha = alpha_factor
 
     def _reseed_velocities(self) -> None:
         sm = self._speed_multiplier()
-        is_flecks = (self._style == STYLE_DRIFTING_FLECKS)
-        for p in self._particles:
-            if is_flecks:
+        s = self._style.lower()
+        if "fleck" in s:
+            for p in self._particles:
                 p.speed_x = (1.5 + p.depth * 2.2) * sm
                 p.sway_speed = random.uniform(0.015, 0.04) * sm
-            else:
+        elif "glint" in s:
+            kx_choices = [1] if sm <= 1.0 else ([1, 2] if sm <= 3.0 else [2, 3])
+            ky_choices = [-1] if sm <= 1.0 else ([-2, -1] if sm <= 3.0 else [-3, -2])
+            duration = getattr(self, "_duration", 6.0)
+            for p in self._particles:
+                kx = random.choice(kx_choices)
+                ky = random.choice(ky_choices)
+                p.vx = kx * p.width / duration
+                p.vy = ky * p.height / duration
+        else:
+            for p in self._particles:
                 p.speed_y = (0.5 + p.depth * 1.0) * sm
                 p.sway_speed = random.uniform(0.015, 0.045) * sm
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        w = max(100, self.width())
+        h = max(100, self.height())
+        for p in self._particles:
+            p.width = w
+            p.height = h
         self._ensure_particles()
 
     def _update_particles(self) -> None:
@@ -208,7 +301,22 @@ class ParticleOverlayWidget(QWidget):
             return
 
         sm = self._speed_multiplier()
-        is_flecks = (self._style == STYLE_DRIFTING_FLECKS)
+        s = self._style.lower()
+
+        if "glint" in s:
+            dt = 1.0 / 30.0
+            self._time_counter = (self._time_counter + dt) % self._duration
+            for p in self._particles:
+                p.width = w
+                p.height = h
+                x, y, alpha_factor = glint_state(p, self._time_counter, self._duration)
+                p.x = x
+                p.y = y
+                p.base_alpha = alpha_factor
+            self.update()
+            return
+
+        is_flecks = ("fleck" in s)
 
         for p in self._particles:
             if is_flecks:
@@ -253,11 +361,31 @@ class ParticleOverlayWidget(QWidget):
             g = self._color.green()
             b = self._color.blue()
 
-            for p in self._particles:
-                alpha = int(p.base_alpha * 240)
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor(r, g, b, alpha))
-                painter.drawEllipse(QPointF(p.x, p.y), p.radius, p.radius)
+            if "glint" in self._style.lower():
+                r_out = int(round(r * 0.4 + 255 * 0.6))
+                g_out = int(round(g * 0.4 + 255 * 0.6))
+                b_out = int(round(b * 0.4 + 255 * 0.6))
+                for p in self._particles:
+                    eff_alpha = int(p.peak_alpha * p.base_alpha)
+                    if eff_alpha <= 5:
+                        continue
+                    # Outer lens sliver
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.setBrush(QColor(r_out, g_out, b_out, eff_alpha))
+                    pts = lens_polygon(p.x, p.y, p.length, p.glint_width, p.angle_deg)
+                    painter.drawPolygon(QPolygonF([QPointF(px, py) for px, py in pts]))
+
+                    # Core bright center (glow)
+                    core_alpha = min(255, int(eff_alpha * 1.15))
+                    painter.setBrush(QColor(255, 255, 255, core_alpha))
+                    core_pts = lens_polygon(p.x, p.y, p.length * 0.65, p.glint_width * 0.45, p.angle_deg)
+                    painter.drawPolygon(QPolygonF([QPointF(px, py) for px, py in core_pts]))
+            else:
+                for p in self._particles:
+                    alpha = int(p.base_alpha * 240)
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.setBrush(QColor(r, g, b, alpha))
+                    painter.drawEllipse(QPointF(p.x, p.y), p.radius, p.radius)
 
         # 2. If 'Below Text' layer is active and text pixmap is present, draw text on top of particles
         # Centered exactly to align with QLabel preview_image (AlignCenter)

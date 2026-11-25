@@ -121,6 +121,13 @@ def test_particle_styles_and_layers(qapp):
     overlay.set_particle_style("Floating Orbs")
     assert overlay.get_particle_style() == "Floating Orbs"
 
+    overlay.set_particle_style("Light Glints")
+    assert overlay.get_particle_style() == "Light Glints"
+
+    # Fallback for unknown style
+    overlay.set_particle_style("Unknown Style")
+    assert overlay.get_particle_style() == "Floating Orbs"
+
     overlay.set_particle_layer("Below Text")
     assert overlay.get_particle_layer() == "Below Text"
 
@@ -181,3 +188,65 @@ def test_particle_export_command_above_text():
         filter_str = "".join(cmd)
         assert "particles_loop.mov" in "".join(cmd)
         assert "v_final_part" in filter_str
+
+
+def test_light_glints_constants_and_helpers():
+    import math
+    from src.services.particle_service import (
+        STYLE_LIGHT_GLINTS,
+        PARTICLE_STYLES,
+        lens_polygon,
+        glint_state,
+    )
+
+    assert STYLE_LIGHT_GLINTS in PARTICLE_STYLES
+    assert STYLE_LIGHT_GLINTS == "Light Glints"
+
+    # Test lens_polygon output geometry
+    pts = lens_polygon(100.0, 100.0, 36.0, 4.0, -60.0, n=14)
+    assert len(pts) == 28
+    # Tips should match half_len distance along angle -60
+    assert any(p != (100.0, 100.0) for p in pts)
+
+    # Test glint_state periodicity
+    duration = 6.0
+    p = {
+        "n": 3,
+        "phase": 0.4,
+        "positions": [(120.0, 300.0), (500.0, 700.0), (800.0, 200.0)],
+        "vx": 1 * 1920.0 / duration,
+        "vy": -2 * 1080.0 / duration,
+        "width": 1920,
+        "height": 1080,
+    }
+    for t in [0.0, 1.35, 3.0, 4.75, 5.99]:
+        s0 = glint_state(p, t, duration)
+        s1 = glint_state(p, t + duration, duration)
+        assert math.isclose(s0[0], s1[0], abs_tol=1e-5), f"x mismatch at t={t}"
+        assert math.isclose(s0[1], s1[1], abs_tol=1e-5), f"y mismatch at t={t}"
+        assert math.isclose(s0[2], s1[2], abs_tol=1e-5), f"alpha mismatch at t={t}"
+
+
+def test_generate_particle_loop_video_light_glints():
+    import tempfile
+    from pathlib import Path
+    from src.services.particle_service import (
+        generate_particle_loop_video,
+        STYLE_LIGHT_GLINTS,
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_mov = Path(tmp) / "glints_loop.mov"
+        res = generate_particle_loop_video(
+            output_path=out_mov,
+            width=320,
+            height=240,
+            fps=15,
+            duration=1.0,
+            style=STYLE_LIGHT_GLINTS,
+            quantity=30,
+            color=(255, 255, 255),
+            speed=2,
+        )
+        assert res.is_file()
+        assert res.stat().st_size > 0
