@@ -1585,14 +1585,33 @@ class MainWindow(QMainWindow):
         self._update_particles_controls_visibility()
 
         self.particles_size_slider = QSlider(Qt.Orientation.Horizontal)
-        self.particles_size_slider.setRange(50, 300)
-        self.particles_size_slider.setValue(100)
-        self.particles_size_slider.setSingleStep(5)
-        self.particles_size_slider.setPageStep(25)
-        self.particles_size_slider.setToolTip("Adjust particle visual size across all styles (50% to 300%)")
-        self.particles_size_val_lbl = QLabel("100%")
+        self.particles_size_slider.setRange(1, 20)
+        self.particles_size_slider.setValue(5)
+        self.particles_size_slider.setSingleStep(1)
+        self.particles_size_slider.setPageStep(2)
+        self.particles_size_slider.setToolTip("Adjust particle visual size across all styles (range 1 to 20)")
+
+        self.particles_size_spin = QSpinBox()
+        self.particles_size_spin.setRange(1, 20)
+        self.particles_size_spin.setValue(5)
+        self.particles_size_spin.setSingleStep(1)
+        self.particles_size_spin.setFixedWidth(55)
+        self.particles_size_spin.setToolTip("Adjust particle visual size across all styles (range 1 to 20)")
+
+        self.particles_size_val_lbl = QLabel("5")
         self.particles_size_slider.valueChanged.connect(self._on_particles_size_slider_changed)
-        sec_particles.addLayout(self._create_slider_prop_row("Size:", self.particles_size_slider, self.particles_size_val_lbl))
+        self.particles_size_spin.valueChanged.connect(self._on_particles_size_spin_changed)
+
+        size_row = QHBoxLayout()
+        size_row.setContentsMargins(0, 0, 0, 0)
+        size_row.setSpacing(6)
+        size_lbl = QLabel("Particle Size:")
+        size_lbl.setObjectName("prop_label")
+        size_lbl.setFixedWidth(90)
+        size_row.addWidget(size_lbl)
+        size_row.addWidget(self.particles_size_slider, 1)
+        size_row.addWidget(self.particles_size_spin)
+        sec_particles.addLayout(size_row)
         layout.addWidget(sec_particles)
 
         layout.addStretch(1)
@@ -2505,7 +2524,7 @@ class MainWindow(QMainWindow):
             "particles_quantity": self.particles_count_spin.value() if hasattr(self, "particles_count_spin") else 80,
             "particles_color": getattr(self, "particles_color", (56, 189, 248)),
             "particles_speed": self.particles_speed_spin.value() if hasattr(self, "particles_speed_spin") else 2,
-            "particles_size": self.particles_size_slider.value() if hasattr(self, "particles_size_slider") else 100,
+            "particles_size": self.particles_size_spin.value() if hasattr(self, "particles_size_spin") else (self.particles_size_slider.value() if hasattr(self, "particles_size_slider") else 5),
             "particles_angle": self.particles_angle_spin.value() if hasattr(self, "particles_angle_spin") else 225,
             "output_path": self.output_edit.text().strip(),
         }
@@ -5257,17 +5276,26 @@ class MainWindow(QMainWindow):
             self.particles_speed_spin.setValue(int(tmpl["particles_speed"]))
         if "particles_angle" in tmpl and hasattr(self, "particles_angle_spin"):
             self.particles_angle_spin.setValue(int(tmpl["particles_angle"]))
-        if hasattr(self, "particles_size_slider"):
-            sz = max(50, min(300, int(tmpl.get("particles_size", 100) if tmpl.get("particles_size") is not None else 100)))
-            self.particles_size_slider.setValue(sz)
+        if hasattr(self, "particles_size_slider") or hasattr(self, "particles_size_spin"):
+            raw_sz = tmpl.get("particles_size")
+            if raw_sz is not None and 1 <= int(raw_sz) <= 20:
+                sz = int(raw_sz)
+            elif raw_sz is not None and int(raw_sz) > 20:
+                sz = max(1, min(20, int(round(int(raw_sz) / 20.0))))
+            else:
+                sz = 5
+            if hasattr(self, "particles_size_slider"):
+                self.particles_size_slider.setValue(sz)
+            if hasattr(self, "particles_size_spin"):
+                self.particles_size_spin.setValue(sz)
             if hasattr(self, "particles_size_val_lbl"):
-                self.particles_size_val_lbl.setText(f"{sz}%")
+                self.particles_size_val_lbl.setText(str(sz))
         if hasattr(self, "particle_overlay"):
             self.particle_overlay.set_particle_style(self.particles_style_combo.currentText() if hasattr(self, "particles_style_combo") else "Wind Streaks")
             self.particle_overlay.set_particle_layer(self.particles_layer_combo.currentText() if hasattr(self, "particles_layer_combo") else "Below Text")
             self.particle_overlay.set_particle_count(self.particles_count_spin.value() if hasattr(self, "particles_count_spin") else 80)
             self.particle_overlay.set_particle_speed(self.particles_speed_spin.value() if hasattr(self, "particles_speed_spin") else 2)
-            self.particle_overlay.set_particle_size(self.particles_size_slider.value() if hasattr(self, "particles_size_slider") else 100)
+            self.particle_overlay.set_particle_size(self.particles_size_spin.value() if hasattr(self, "particles_size_spin") else 5)
             if hasattr(self, "particles_angle_spin"):
                 self.particle_overlay.set_particle_angle(self.particles_angle_spin.value())
             self.particle_overlay.set_particle_color(self.particles_color)
@@ -5776,17 +5804,26 @@ class MainWindow(QMainWindow):
                 self.particles_speed_spin.setValue(int(data["particles_speed"]))
             if hasattr(self, "particles_angle_spin") and "particles_angle" in data:
                 self.particles_angle_spin.setValue(int(data["particles_angle"]))
-            if hasattr(self, "particles_size_slider"):
-                sz = max(50, min(300, int(data.get("particles_size", 100) if data.get("particles_size") is not None else 100)))
-                self.particles_size_slider.setValue(sz)
+            if hasattr(self, "particles_size_slider") or hasattr(self, "particles_size_spin"):
+                raw_sz = data.get("particles_size")
+                if raw_sz is not None and 1 <= int(raw_sz) <= 20:
+                    sz = int(raw_sz)
+                elif raw_sz is not None and int(raw_sz) > 20:
+                    sz = max(1, min(20, int(round(int(raw_sz) / 20.0))))
+                else:
+                    sz = 5
+                if hasattr(self, "particles_size_slider"):
+                    self.particles_size_slider.setValue(sz)
+                if hasattr(self, "particles_size_spin"):
+                    self.particles_size_spin.setValue(sz)
                 if hasattr(self, "particles_size_val_lbl"):
-                    self.particles_size_val_lbl.setText(f"{sz}%")
+                    self.particles_size_val_lbl.setText(str(sz))
             if hasattr(self, "particle_overlay"):
                 self.particle_overlay.set_particle_style(self.particles_style_combo.currentText() if hasattr(self, "particles_style_combo") else "Wind Streaks")
                 self.particle_overlay.set_particle_layer(self.particles_layer_combo.currentText() if hasattr(self, "particles_layer_combo") else "Below Text")
                 self.particle_overlay.set_particle_count(self.particles_count_spin.value() if hasattr(self, "particles_count_spin") else 80)
                 self.particle_overlay.set_particle_speed(self.particles_speed_spin.value() if hasattr(self, "particles_speed_spin") else 2)
-                self.particle_overlay.set_particle_size(self.particles_size_slider.value() if hasattr(self, "particles_size_slider") else 100)
+                self.particle_overlay.set_particle_size(self.particles_size_spin.value() if hasattr(self, "particles_size_spin") else 5)
                 if hasattr(self, "particles_angle_spin"):
                     self.particle_overlay.set_particle_angle(self.particles_angle_spin.value())
                 self.particle_overlay.set_particle_color(self.particles_color)
@@ -5952,8 +5989,21 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"Audio normalization {state_str}")
 
     def _on_particles_size_slider_changed(self, val: int) -> None:
+        if hasattr(self, "particles_size_spin") and self.particles_size_spin.value() != val:
+            self.particles_size_spin.blockSignals(True)
+            self.particles_size_spin.setValue(val)
+            self.particles_size_spin.blockSignals(False)
         if hasattr(self, "particles_size_val_lbl"):
-            self.particles_size_val_lbl.setText(f"{val}%")
+            self.particles_size_val_lbl.setText(str(val))
+        self._on_particles_param_changed()
+
+    def _on_particles_size_spin_changed(self, val: int) -> None:
+        if hasattr(self, "particles_size_slider") and self.particles_size_slider.value() != val:
+            self.particles_size_slider.blockSignals(True)
+            self.particles_size_slider.setValue(val)
+            self.particles_size_slider.blockSignals(False)
+        if hasattr(self, "particles_size_val_lbl"):
+            self.particles_size_val_lbl.setText(str(val))
         self._on_particles_param_changed()
 
     def _update_particles_controls_visibility(self) -> None:
@@ -5978,7 +6028,7 @@ class MainWindow(QMainWindow):
             style = self.particles_style_combo.currentText() if hasattr(self, "particles_style_combo") else "Wind Streaks"
             layer = self.particles_layer_combo.currentText() if hasattr(self, "particles_layer_combo") else "Below Text"
             count = self.particles_count_spin.value() if hasattr(self, "particles_count_spin") else 80
-            sz = self.particles_size_slider.value() if hasattr(self, "particles_size_slider") else 100
+            sz = self.particles_size_spin.value() if hasattr(self, "particles_size_spin") else (self.particles_size_slider.value() if hasattr(self, "particles_size_slider") else 5)
             ang = self.particles_angle_spin.value() if hasattr(self, "particles_angle_spin") else 225
             self.particle_overlay.set_particle_style(style)
             self.particle_overlay.set_particle_layer(layer)

@@ -420,8 +420,8 @@ def generate_particle_loop_video(
         duration = num_frames / float(fps)
 
     res_scale = height / 1080.0
-    size_val = max(50, min(300, int(size)))
-    geom_scale = res_scale * (size_val / 100.0)
+    size_factor = (size / 5.0) if (1 <= size <= 20) else (size / 100.0)
+    geom_scale = res_scale * size_factor
     sm = _speed_multiplier(speed)
     count = max(10, min(300, int(quantity)))
 
@@ -447,7 +447,7 @@ def generate_particle_loop_video(
             height=height,
             angle_deg=angle,
             speed_level=speed,
-            size_factor=size_val / 100.0,
+            size_factor=size_factor,
             seed=42 + count + speed + int(angle),
         )
     elif is_glints:
@@ -704,7 +704,7 @@ def generate_particle_loop_video(
         # Drifting Flecks: Horizontal drift with subtle vertical undulating wave
         for _ in range(count):
             depth = rng.uniform(0.35, 1.0)
-            radius = max(0.5, (1.2 + depth * 1.8) * geom_scale)
+            radius = (1.2 + depth * 1.8) * geom_scale
             # Integer screen widths per loop (1, 2, or 3) scaled by speed factor
             k_choices = [1, 2] if sm <= 1.0 else ([1, 2, 3] if sm <= 2.0 else [2, 3, 4])
             k = rng.choice(k_choices)
@@ -722,7 +722,7 @@ def generate_particle_loop_video(
         # Floating Orbs: Vertical float with sinusoidal sway
         for _ in range(count):
             depth = rng.uniform(0.3, 1.0)
-            radius = max(0.8, (1.8 + depth * 3.2) * geom_scale)
+            radius = (1.8 + depth * 3.2) * geom_scale
             k_choices = [1, 2] if sm <= 1.0 else ([1, 2, 3] if sm <= 2.0 else [2, 3, 4])
             k = rng.choice(k_choices)
             vy = k * height / duration

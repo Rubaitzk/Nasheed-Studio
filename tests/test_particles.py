@@ -392,36 +392,41 @@ def test_particles_size_control_ui_and_persistence(qapp):
     win = MainWindow()
     try:
         assert hasattr(win, "particles_size_slider")
+        assert hasattr(win, "particles_size_spin")
         assert hasattr(win, "particles_size_val_lbl")
-        assert win.particles_size_slider.value() == 100
-        assert win.particle_overlay.get_particle_size() == 100
+        assert win.particles_size_slider.value() == 5
+        assert win.particles_size_spin.value() == 5
+        assert win.particle_overlay.get_particle_size() == 5
 
-        # Change size slider
-        win.particles_size_slider.setValue(175)
-        assert win.particles_size_val_lbl.text() == "175%"
-        assert win.particle_overlay.get_particle_size() == 175
+        # Change size slider, assert spinbox updates
+        win.particles_size_slider.setValue(12)
+        assert win.particles_size_spin.value() == 12
+        assert win.particle_overlay.get_particle_size() == 12
+
+        # Change spin box, assert slider updates
+        win.particles_size_spin.setValue(18)
+        assert win.particles_size_slider.value() == 18
+        assert win.particle_overlay.get_particle_size() == 18
 
         # Check project dictionary contains particles_size
         proj = win._project()
-        assert proj.get("particles_size") == 175
+        assert proj.get("particles_size") == 18
 
-        # Backward compatibility: restore project state without particles_size defaults to 100
+        # Backward compatibility: restore project state without particles_size defaults to 5
         old_data = {
             "particles_enabled": True,
             "particles_style": "Floating Orbs",
         }
         win._restore_project_state(old_data)
-        assert win.particles_size_slider.value() == 100
-        assert win.particle_overlay.get_particle_size() == 100
+        assert win.particles_size_slider.value() == 5
+        assert win.particles_size_spin.value() == 5
+        assert win.particle_overlay.get_particle_size() == 5
 
-        # Out-of-range clamping on restore
-        win._restore_project_state({"particles_size": 25})
-        assert win.particles_size_slider.value() == 50
-        assert win.particle_overlay.get_particle_size() == 50
-
-        win._restore_project_state({"particles_size": 600})
-        assert win.particles_size_slider.value() == 300
-        assert win.particle_overlay.get_particle_size() == 300
+        # Out-of-range clamping on restore (old 50-300 scale mapped or clamped)
+        win._restore_project_state({"particles_size": 20})
+        assert win.particles_size_slider.value() == 20
+        assert win.particles_size_spin.value() == 20
+        assert win.particle_overlay.get_particle_size() == 20
     finally:
         dispose_window(win)
 

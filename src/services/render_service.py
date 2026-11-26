@@ -281,7 +281,13 @@ def build_render_command(
     particles_quantity = int(project.get("particles_quantity", 80) or 80)
     particles_color = project.get("particles_color", (56, 189, 248))
     particles_speed = int(project.get("particles_speed", 2) or 2)
-    particles_size = max(50, min(300, int(project.get("particles_size", 100) if project.get("particles_size") is not None else 100)))
+    raw_size = project.get("particles_size")
+    if raw_size is not None and 1 <= int(raw_size) <= 20:
+        particles_size = int(raw_size)
+    elif raw_size is not None and int(raw_size) > 20:
+        particles_size = max(1, min(20, int(round(int(raw_size) / 20.0))))
+    else:
+        particles_size = 5
     particles_angle = float(project.get("particles_angle", 225.0) or 225.0)
     particle_input_idx = None
 
