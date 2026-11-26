@@ -347,6 +347,7 @@ def assemble_release(bundle: Path) -> Path:
         ROOT / "packaging" / "build_exe.py",
         ROOT / "build_release.py",
         ROOT / "tests",
+        ROOT / "scripts",
     ]
     for s in script_sources:
         if s.is_file():
@@ -492,7 +493,7 @@ final_deliverable/
       create_desktop_shortcut.ps1 ← Desktop shortcut helper
       README_HOW_TO_RUN.txt   ← Quick-start guide
   Source_Code/                ← Complete clean Python source for maintenance & transparency
-  Scripts/                    ← Release automation & automated test suite (392 tests)
+  Scripts/                    ← Release automation & automated test suite (437 tests)
   Templates/                  ← Seed design templates (JSON)
   Installation/
     INSTALLATION.md           ← Installation and first-run instructions
@@ -512,7 +513,7 @@ final_deliverable/
 2. Navigates to `Application/NCN Studio/` and double-clicks `NCN Studio.exe` (or double-clicks `Create Desktop Shortcut.bat` to place a shortcut on Desktop).
 3. No Python installation is required. No external codecs or software installations are needed.
 4. Embedded Python runtime, standard library (`base_library.zip`), PySide6 Qt 6 engine, and static FFmpeg/FFprobe binaries are bundled inside `Application/NCN Studio/_internal/`.
-5. Complete source code, test suite (392 automated tests), and documentation are included for full ownership.
+5. Complete source code, test suite (437 automated tests), and documentation are included for full ownership.
 """
     manifest_path = release_dir / "MANIFEST.md"
     manifest_path.write_text(manifest, encoding="utf-8")
@@ -554,6 +555,12 @@ def create_final_delivery_zip(release_dir: Path) -> Path:
     step(f"Syncing compatibility archive: {compat_zip.name}…")
     shutil.copy2(final_zip, compat_zip)
     ok(f"Compatibility ZIP synchronized: {compat_zip}")
+
+    # Also synchronize the deliverable archive inside release_dir (final_deliverable/NCN-2-2Deliverable.zip)
+    deliverable_zip = release_dir / "NCN-2-2Deliverable.zip"
+    step(f"Syncing deliverable archive inside final_deliverable: {deliverable_zip.name}…")
+    shutil.copy2(final_zip, deliverable_zip)
+    ok(f"Deliverable ZIP synchronized: {deliverable_zip}")
 
     return final_zip
 
