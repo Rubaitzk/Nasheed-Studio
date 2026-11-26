@@ -184,6 +184,21 @@ QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {
     border: 1px solid #6C9FE8;
     background: #282E3B;
 }
+
+/* ---- QLineEdit Clear Button Vertical Centering (Item 6) ---- */
+QLineEdit QToolButton {
+    background: transparent;
+    border: none;
+    border-radius: 0px;
+    padding: 0px;
+    margin: 0px;
+    min-height: 0px;
+    min-width: 0px;
+}
+QLineEdit QToolButton:hover, QLineEdit QToolButton:pressed {
+    background: transparent;
+    border: none;
+}
 QSpinBox, QDoubleSpinBox {
     padding-left: 6px;
     padding-right: 22px;
