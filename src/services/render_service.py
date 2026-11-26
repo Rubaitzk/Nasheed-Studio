@@ -477,7 +477,7 @@ def build_render_command(
     # Feature D: Ambient particles (Layer: Below Text - beneath typography & tracklist)
     # Wind Streaks is strictly foreground overlay, so it is rendered above text at the final step
     if particle_input_idx is not None and particles_style != "Wind Streaks" and particles_layer == "Below Text":
-        filters.append(f"[{v_bg_stream}][{particle_input_idx}:v]overlay=0:0:shortest=1[v_bg_part]")
+        filters.append(f"[{v_bg_stream}][{particle_input_idx}:v]overlay=0:0:format=auto:shortest=1[v_bg_part]")
         v_bg_stream = "v_bg_part"
 
     if fg_input_idx is not None:
@@ -549,7 +549,7 @@ def build_render_command(
 
     # Feature D: Ambient particles (Layer: Above Text - floats over all visual layers)
     if particle_input_idx is not None and (particles_style == "Wind Streaks" or particles_layer != "Below Text"):
-        filters.append(f"[{current_v}][{particle_input_idx}:v]overlay=0:0:shortest=1[v_final_part]")
+        filters.append(f"[{current_v}][{particle_input_idx}:v]overlay=0:0:format=auto:shortest=1[v_final_part]")
         current_v = "v_final_part"
 
     video_out = f"[{current_v}]" if current_v != "0:v" else "0:v"

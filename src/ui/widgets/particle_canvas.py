@@ -39,6 +39,7 @@ from src.services.particle_service import (
     glint_state,
     wind_streak_state,
     create_wind_streak_particles,
+    draw_particle_shape,
 )
 
 math_sin = math.sin
@@ -677,101 +678,96 @@ class ParticleOverlayWidget(QWidget):
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
-        # 1. Draw particles
+        # 1. Draw particles using unified anti-aliased vector drawer
         if self._particles:
-            r = self._color.red()
-            g = self._color.green()
-            b = self._color.blue()
+            base_col = (self._color.red(), self._color.green(), self._color.blue())
+            sz_fac = self._size_factor()
+            h_val = max(10, self.height())
+            s = self._style.lower()
 
-            if "wind" in self._style.lower():
-                for p in self._particles:
-                    cr, cg, cb = p.color_rgb
-                    a = int(round(p.base_alpha * 255))
-                    pen = QPen(QColor(cr, cg, cb, a), max(0.1, p.thickness), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
-                    painter.setPen(pen)
-                    rot = p.rot
-                    half_d = max(0.1, (p.length - p.thickness) / 2.0)
-                    cos_r = math.cos(rot)
-                    sin_r = math.sin(rot)
-                    x1 = p.x - half_d * cos_r
-                    y1 = p.y - half_d * sin_r
-                    x2 = p.x + half_d * cos_r
-                    y2 = p.y + half_d * sin_r
-                    painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
-            elif "glint" in self._style.lower():
-                r_out = int(round(r * 0.4 + 255 * 0.6))
-                g_out = int(round(g * 0.4 + 255 * 0.6))
-                b_out = int(round(b * 0.4 + 255 * 0.6))
-                for p in self._particles:
-                    eff_alpha = int(p.peak_alpha * p.base_alpha)
-                    if eff_alpha <= 5:
-                        continue
-                    # Outer lens sliver
-                    painter.setPen(Qt.PenStyle.NoPen)
-                    painter.setBrush(QColor(r_out, g_out, b_out, eff_alpha))
-                    pts = lens_polygon(p.x, p.y, p.length, p.glint_width, p.angle_deg)
-                    painter.drawPolygon(QPolygonF([QPointF(px, py) for px, py in pts]))
-
-                    # Core bright center (glow)
-                    core_alpha = min(255, int(eff_alpha * 1.15))
-                    painter.setBrush(QColor(255, 255, 255, core_alpha))
-                    core_pts = lens_polygon(p.x, p.y, p.length * 0.65, p.glint_width * 0.45, p.angle_deg)
-                    painter.drawPolygon(QPolygonF([QPointF(px, py) for px, py in core_pts]))
-            elif "twinkle" in self._style.lower():
-                r_out = int(round(r * 0.4 + 255 * 0.6))
-                g_out = int(round(g * 0.4 + 255 * 0.6))
-                b_out = int(round(b * 0.4 + 255 * 0.6))
-                for p in self._particles:
-                    eff_alpha = int(p.peak_alpha * p.base_alpha)
-                    if eff_alpha <= 5:
-                        continue
-                    painter.setPen(Qt.PenStyle.NoPen)
-                    painter.setBrush(QColor(r_out, g_out, b_out, eff_alpha))
-                    pts = star_4point_polygon(p.x, p.y, p.radius, p.radius * 0.18, p.angle_deg)
-                    painter.drawPolygon(QPolygonF([QPointF(px, py) for px, py in pts]))
-
-                    core_alpha = min(255, int(eff_alpha * 1.15))
-                    painter.setBrush(QColor(255, 255, 255, core_alpha))
-                    core_pts = star_4point_polygon(p.x, p.y, p.radius * 0.45, p.radius * 0.10, p.angle_deg)
-                    painter.drawPolygon(QPolygonF([QPointF(px, py) for px, py in core_pts]))
-            elif "bokeh" in self._style.lower():
-                r_edge = int(round(r * 0.3 + 255 * 0.7))
-                g_edge = int(round(g * 0.3 + 255 * 0.7))
-                b_edge = int(round(b * 0.3 + 255 * 0.7))
-                pen_w = max(0.5, 1.8 * (max(10, self.height()) / 1080.0) * self._size_factor())
-                pen = QPen(QColor(r_edge, g_edge, b_edge, 210), pen_w)
-                brush = QBrush(QColor(r, g, b, 50))
-                for p in self._particles:
-                    painter.setPen(pen)
-                    painter.setBrush(brush)
-                    painter.drawEllipse(QPointF(p.x, p.y), p.radius, p.radius)
-            elif "crescent" in self._style.lower():
-                r_out = int(round(r * 0.35 + 255 * 0.65))
-                g_out = int(round(g * 0.35 + 255 * 0.65))
-                b_out = int(round(b * 0.35 + 255 * 0.65))
-                painter.setPen(Qt.PenStyle.NoPen)
-                for p in self._particles:
-                    painter.setBrush(QColor(r_out, g_out, b_out, int(p.base_alpha * 240)))
-                    if p.sub_type == "crescent":
-                        pts = crescent_polygon(p.x, p.y, p.radius, p.angle_deg)
-                    else:
-                        pts = star_5point_polygon(p.x, p.y, p.radius, angle_deg=p.angle_deg)
-                    painter.drawPolygon(QPolygonF([QPointF(px, py) for px, py in pts]))
-            elif "eight" in self._style.lower():
-                r_out = int(round(r * 0.35 + 255 * 0.65))
-                g_out = int(round(g * 0.35 + 255 * 0.65))
-                b_out = int(round(b * 0.35 + 255 * 0.65))
-                painter.setPen(Qt.PenStyle.NoPen)
-                for p in self._particles:
-                    painter.setBrush(QColor(r_out, g_out, b_out, int(p.base_alpha * 240)))
-                    pts = star_8point_polygon(p.x, p.y, p.radius, angle_deg=p.angle_deg)
-                    painter.drawPolygon(QPolygonF([QPointF(px, py) for px, py in pts]))
-            else:
-                for p in self._particles:
-                    alpha = int(p.base_alpha * 240)
-                    painter.setPen(Qt.PenStyle.NoPen)
-                    painter.setBrush(QColor(r, g, b, alpha))
-                    painter.drawEllipse(QPointF(p.x, p.y), p.radius, p.radius)
+            for p in self._particles:
+                if "wind" in s:
+                    draw_particle_shape(
+                        painter,
+                        self._style,
+                        p.x,
+                        p.y,
+                        length=p.length,
+                        thickness=p.thickness,
+                        rot_rad=p.rot,
+                        color_rgb=p.color_rgb,
+                        alpha=p.base_alpha,
+                    )
+                elif "glint" in s:
+                    eff_alpha = p.peak_alpha * p.base_alpha
+                    draw_particle_shape(
+                        painter,
+                        self._style,
+                        p.x,
+                        p.y,
+                        length=p.length,
+                        glint_width=p.glint_width,
+                        angle_deg=p.angle_deg,
+                        alpha=eff_alpha,
+                        base_color_rgb=base_col,
+                    )
+                elif "twinkle" in s:
+                    eff_alpha = p.peak_alpha * p.base_alpha
+                    draw_particle_shape(
+                        painter,
+                        self._style,
+                        p.x,
+                        p.y,
+                        radius=p.radius,
+                        angle_deg=p.angle_deg,
+                        alpha=eff_alpha,
+                        base_color_rgb=base_col,
+                    )
+                elif "bokeh" in s:
+                    draw_particle_shape(
+                        painter,
+                        self._style,
+                        p.x,
+                        p.y,
+                        radius=p.radius,
+                        base_color_rgb=base_col,
+                        size_factor=sz_fac,
+                        canvas_height=h_val,
+                    )
+                elif "crescent" in s:
+                    draw_particle_shape(
+                        painter,
+                        self._style,
+                        p.x,
+                        p.y,
+                        radius=p.radius,
+                        angle_deg=p.angle_deg,
+                        alpha=p.base_alpha,
+                        sub_type=p.sub_type,
+                        base_color_rgb=base_col,
+                    )
+                elif "eight" in s:
+                    draw_particle_shape(
+                        painter,
+                        self._style,
+                        p.x,
+                        p.y,
+                        radius=p.radius,
+                        angle_deg=p.angle_deg,
+                        alpha=p.base_alpha,
+                        base_color_rgb=base_col,
+                    )
+                else:
+                    # Flecks & Orbs
+                    draw_particle_shape(
+                        painter,
+                        self._style,
+                        p.x,
+                        p.y,
+                        radius=p.radius,
+                        alpha=p.base_alpha,
+                        base_color_rgb=base_col,
+                    )
 
         # 2. If 'Below Text' layer is active and text pixmap is present, draw text on top of particles
         # Wind Streaks is strictly foreground overlay above text, so skip drawing text over particles

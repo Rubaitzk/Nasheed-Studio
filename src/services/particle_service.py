@@ -16,8 +16,11 @@ import os
 import random
 import subprocess
 from pathlib import Path
-from typing import Any, List, Tuple, Union
+from typing import Any, List, Optional, Tuple, Union
 from PIL import Image, ImageDraw
+
+from PySide6.QtCore import Qt, QPointF
+from PySide6.QtGui import QImage, QPainter, QColor, QPen, QBrush, QPolygonF
 
 STYLE_WIND_STREAKS = "Wind Streaks"
 STYLE_DRIFTING_FLECKS = "Drifting Flecks"
@@ -209,6 +212,140 @@ def glint_state(p: Union[dict, Any], t: float, duration: float) -> Tuple[float, 
     x = (base_pos[0] + vx * t) % w
     y = (base_pos[1] + vy * t) % h
     return x, y, alpha_factor
+
+
+def draw_particle_shape(
+    painter: QPainter,
+    style: str,
+    x: float,
+    y: float,
+    *,
+    length: float = 0.0,
+    thickness: float = 0.0,
+    radius: float = 0.0,
+    glint_width: float = 0.0,
+    angle_deg: float = 0.0,
+    rot_rad: float = 0.0,
+    color_rgb: Tuple[int, int, int] = (255, 255, 255),
+    alpha: float = 1.0,
+    sub_type: str = "default",
+    base_color_rgb: Optional[Tuple[int, int, int]] = None,
+    size_factor: float = 1.0,
+    canvas_height: float = 1080.0,
+) -> None:
+    """
+    Unified anti-aliased vector particle drawing function used by both
+    the interactive UI preview (ParticleOverlayWidget) and the MP4 export
+    render pipeline (generate_particle_loop_video).
+
+    Guarantees:
+    - Pure vector drawing at true angle with floating-point sub-pixel coordinates.
+    - Continuous floating-point thickness (no integer rounding).
+    - QPen with RoundCap for Wind Streaks capsules.
+    - Full Antialiasing, SmoothPixmapTransform and TextAntialiasing hints.
+    - Zero dark fringes with Format_ARGB32_Premultiplied compositing.
+    """
+    s = str(style).lower()
+    r_base, g_base, b_base = base_color_rgb or color_rgb
+
+    if "wind" in s:
+        cr, cg, cb = color_rgb
+        a = max(0, min(255, int(round(alpha * 255.0))))
+        if a <= 0:
+            return
+        pen = QPen(
+            QColor(cr, cg, cb, a),
+            max(0.1, float(thickness)),
+            Qt.PenStyle.SolidLine,
+            Qt.PenCapStyle.RoundCap,
+        )
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        half_d = max(0.0, (float(length) - float(thickness)) / 2.0)
+        cos_r = math.cos(rot_rad)
+        sin_r = math.sin(rot_rad)
+        x1 = x - half_d * cos_r
+        y1 = y - half_d * sin_r
+        x2 = x + half_d * cos_r
+        y2 = y + half_d * sin_r
+        painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+
+    elif "glint" in s:
+        r_out = int(round(r_base * 0.4 + 255 * 0.6))
+        g_out = int(round(g_base * 0.4 + 255 * 0.6))
+        b_out = int(round(b_base * 0.4 + 255 * 0.6))
+        eff_alpha = max(0, min(255, int(round(alpha if alpha > 1.0 else alpha * 255.0))))
+        if eff_alpha <= 4:
+            return
+        painter.setPen(Qt.PenStyle.NoPen)
+        # Outer lens sliver
+        painter.setBrush(QColor(r_out, g_out, b_out, eff_alpha))
+        pts = lens_polygon(x, y, length, glint_width, angle_deg)
+        painter.drawPolygon(QPolygonF([QPointF(px, py) for px, py in pts]))
+
+        # Core bright center (glow)
+        core_alpha = min(255, int(round(eff_alpha * 1.15)))
+        painter.setBrush(QColor(255, 255, 255, core_alpha))
+        core_pts = lens_polygon(x, y, length * 0.65, glint_width * 0.45, angle_deg)
+        painter.drawPolygon(QPolygonF([QPointF(px, py) for px, py in core_pts]))
+
+    elif "twinkle" in s:
+        r_out = int(round(r_base * 0.4 + 255 * 0.6))
+        g_out = int(round(g_base * 0.4 + 255 * 0.6))
+        b_out = int(round(b_base * 0.4 + 255 * 0.6))
+        eff_alpha = max(0, min(255, int(round(alpha if alpha > 1.0 else alpha * 255.0))))
+        if eff_alpha <= 4:
+            return
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(r_out, g_out, b_out, eff_alpha))
+        pts = star_4point_polygon(x, y, radius, radius * 0.18, angle_deg)
+        painter.drawPolygon(QPolygonF([QPointF(px, py) for px, py in pts]))
+
+        core_alpha = min(255, int(round(eff_alpha * 1.15)))
+        painter.setBrush(QColor(255, 255, 255, core_alpha))
+        core_pts = star_4point_polygon(x, y, radius * 0.45, radius * 0.10, angle_deg)
+        painter.drawPolygon(QPolygonF([QPointF(px, py) for px, py in core_pts]))
+
+    elif "bokeh" in s:
+        r_edge = int(round(r_base * 0.3 + 255 * 0.7))
+        g_edge = int(round(g_base * 0.3 + 255 * 0.7))
+        b_edge = int(round(b_base * 0.3 + 255 * 0.7))
+        pen_w = max(0.5, 1.8 * (canvas_height / 1080.0) * size_factor)
+        pen = QPen(QColor(r_edge, g_edge, b_edge, 210), pen_w)
+        brush = QBrush(QColor(r_base, g_base, b_base, 55))
+        painter.setPen(pen)
+        painter.setBrush(brush)
+        painter.drawEllipse(QPointF(x, y), float(radius), float(radius))
+
+    elif "crescent" in s:
+        r_out = int(round(r_base * 0.35 + 255 * 0.65))
+        g_out = int(round(g_base * 0.35 + 255 * 0.65))
+        b_out = int(round(b_base * 0.35 + 255 * 0.65))
+        painter.setPen(Qt.PenStyle.NoPen)
+        a_val = max(0, min(255, int(round(alpha if alpha > 1.0 else alpha * 240.0))))
+        painter.setBrush(QColor(r_out, g_out, b_out, a_val))
+        if sub_type == "crescent":
+            pts = crescent_polygon(x, y, radius, angle_deg)
+        else:
+            pts = star_5point_polygon(x, y, radius, angle_deg=angle_deg)
+        painter.drawPolygon(QPolygonF([QPointF(px, py) for px, py in pts]))
+
+    elif "eight" in s:
+        r_out = int(round(r_base * 0.35 + 255 * 0.65))
+        g_out = int(round(g_base * 0.35 + 255 * 0.65))
+        b_out = int(round(b_base * 0.35 + 255 * 0.65))
+        painter.setPen(Qt.PenStyle.NoPen)
+        a_val = max(0, min(255, int(round(alpha if alpha > 1.0 else alpha * 240.0))))
+        painter.setBrush(QColor(r_out, g_out, b_out, a_val))
+        pts = star_8point_polygon(x, y, radius, angle_deg=angle_deg)
+        painter.drawPolygon(QPolygonF([QPointF(px, py) for px, py in pts]))
+
+    else:
+        # Drifting Flecks and Floating Orbs
+        a_val = max(0, min(255, int(round(alpha if alpha > 1.0 else alpha * 240.0))))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(r_base, g_base, b_base, a_val))
+        painter.drawEllipse(QPointF(x, y), float(radius), float(radius))
 
 
 def capsule_polygon(
@@ -659,6 +796,9 @@ def generate_particle_loop_video(
             particles.append({
                 "x0": x0, "y0": y0, "vy": vy, "m": m, "A": A,
                 "radius": radius, "b_key": b_key,
+                "sub_type": shape_type,
+                "angle_deg": angle,
+                "alpha": alpha,
             })
     elif is_eight_stars:
         # Eight-Point Stars: small Islamic-style stars (two overlaid squares), sparse and slow
@@ -699,6 +839,8 @@ def generate_particle_loop_video(
             particles.append({
                 "x0": x0, "y0": y0, "vy": vy, "m": m, "A": A,
                 "radius": radius, "b_key": b_key,
+                "angle_deg": angle,
+                "alpha": alpha,
             })
     elif is_flecks:
         # Drifting Flecks: Horizontal drift with subtle vertical undulating wave
@@ -742,7 +884,7 @@ def generate_particle_loop_video(
         "-f", "rawvideo",
         "-vcodec", "rawvideo",
         "-s", f"{width}x{height}",
-        "-pix_fmt", "rgba",
+        "-pix_fmt", "bgra",
         "-r", str(fps),
         "-i", "-",
         "-c:v", "qtrle",
@@ -758,13 +900,18 @@ def generate_particle_loop_video(
     )
 
     two_pi = 2.0 * math.pi
+    base_col = (r, g, b)
+    qimg = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
 
     for frame_idx in range(num_frames):
         t = frame_idx / float(fps)
-        img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        qimg.fill(0)
+        painter = QPainter(qimg)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
         if is_wind:
-            draw = ImageDraw.Draw(img)
             for p in particles:
                 cur_x, cur_y, alpha_val, rot = wind_streak_state(p, t)
                 L = p["length"]
@@ -772,81 +919,122 @@ def generate_particle_loop_video(
                 margin_check = L + T + 4.0
                 if cur_x < -margin_check or cur_x > width + margin_check or cur_y < -margin_check or cur_y > height + margin_check:
                     continue
-                half_d = max(0.1, (L - T) / 2.0)
-                cos_r = math.cos(rot)
-                sin_r = math.sin(rot)
-                x1 = cur_x - half_d * cos_r
-                y1 = cur_y - half_d * sin_r
-                x2 = cur_x + half_d * cos_r
-                y2 = cur_y + half_d * sin_r
-                cr, cg, cb = p["color_rgb"]
-                ca = int(round(alpha_val * 255))
-                fill_color = (cr, cg, cb, ca)
-                draw.line([(x1, y1), (x2, y2)], fill=fill_color, width=max(1, int(round(T))))
-                r_cap = max(0.5, T / 2.0)
-                draw.ellipse([x1 - r_cap, y1 - r_cap, x1 + r_cap, y1 + r_cap], fill=fill_color)
-                draw.ellipse([x2 - r_cap, y2 - r_cap, x2 + r_cap, y2 + r_cap], fill=fill_color)
-        elif is_glints or is_stars:
+                draw_particle_shape(
+                    painter,
+                    STYLE_WIND_STREAKS,
+                    cur_x,
+                    cur_y,
+                    length=L,
+                    thickness=T,
+                    rot_rad=rot,
+                    color_rgb=p["color_rgb"],
+                    alpha=alpha_val,
+                )
+        elif is_glints:
             for p in particles:
                 cur_x, cur_y, alpha_factor = glint_state(p, t, duration)
-                eff_alpha = int(p["peak_alpha"] * alpha_factor)
+                eff_alpha = p["peak_alpha"] * alpha_factor
                 if eff_alpha < 4:
                     continue
-                q_level = int(round(eff_alpha / 17.0))
-                if q_level <= 0:
+                draw_particle_shape(
+                    painter,
+                    STYLE_LIGHT_GLINTS,
+                    cur_x,
+                    cur_y,
+                    length=p["length"],
+                    glint_width=p["glint_width"],
+                    angle_deg=p["angle_deg"],
+                    alpha=eff_alpha,
+                    base_color_rgb=base_col,
+                )
+        elif is_stars:
+            for p in particles:
+                cur_x, cur_y, alpha_factor = glint_state(p, t, duration)
+                eff_alpha = p["peak_alpha"] * alpha_factor
+                if eff_alpha < 4:
                     continue
-                q_alpha = min(255, q_level * 17)
-
-                b_key = p["b_key"]
-                ckey = (b_key, q_level)
-                if ckey not in alpha_cache:
-                    base_spr, pad = base_sprites[b_key]
-                    r_ch, g_ch, b_ch, a_ch = base_spr.split()
-                    scale = q_alpha / 255.0
-                    a_ch = a_ch.point(lambda val: int(val * scale))
-                    alpha_cache[ckey] = (Image.merge("RGBA", (r_ch, g_ch, b_ch, a_ch)), pad)
-
-                spr, pad = alpha_cache[ckey]
-                dest_x = int(round(cur_x - pad / 2.0))
-                dest_y = int(round(cur_y - pad / 2.0))
-
-                if dest_x + pad <= 0 or dest_y + pad <= 0 or dest_x >= width or dest_y >= height:
-                    continue
-
-                img.alpha_composite(spr, dest=(dest_x, dest_y))
-        elif is_bokeh or is_crescents or is_eight_stars:
+                draw_particle_shape(
+                    painter,
+                    STYLE_TWINKLE_STARS,
+                    cur_x,
+                    cur_y,
+                    radius=p["radius"],
+                    angle_deg=p["angle_deg"],
+                    alpha=eff_alpha,
+                    base_color_rgb=base_col,
+                )
+        elif is_bokeh:
             for p in particles:
                 cur_y = (p["y0"] + p["vy"] * t) % height
                 cur_x = (p["x0"] + p["A"] * math.sin(two_pi * p["m"] * t / duration)) % width
-                b_key = p["b_key"]
-                spr, pad = base_sprites[b_key]
-                dest_x = int(round(cur_x - pad / 2.0))
-                dest_y = int(round(cur_y - pad / 2.0))
-                if dest_x + pad <= 0 or dest_y + pad <= 0 or dest_x >= width or dest_y >= height:
-                    continue
-                img.alpha_composite(spr, dest=(dest_x, dest_y))
+                draw_particle_shape(
+                    painter,
+                    STYLE_BOKEH_RINGS,
+                    cur_x,
+                    cur_y,
+                    radius=p["radius"],
+                    base_color_rgb=base_col,
+                    size_factor=size_factor,
+                    canvas_height=height,
+                )
+        elif is_crescents:
+            for p in particles:
+                cur_y = (p["y0"] + p["vy"] * t) % height
+                cur_x = (p["x0"] + p["A"] * math.sin(two_pi * p["m"] * t / duration)) % width
+                draw_particle_shape(
+                    painter,
+                    STYLE_CRESCENTS_AND_STARS,
+                    cur_x,
+                    cur_y,
+                    radius=p["radius"],
+                    angle_deg=p.get("angle_deg", 25.0),
+                    alpha=p.get("alpha", 200),
+                    sub_type=p.get("sub_type", "crescent"),
+                    base_color_rgb=base_col,
+                )
+        elif is_eight_stars:
+            for p in particles:
+                cur_y = (p["y0"] + p["vy"] * t) % height
+                cur_x = (p["x0"] + p["A"] * math.sin(two_pi * p["m"] * t / duration)) % width
+                draw_particle_shape(
+                    painter,
+                    STYLE_EIGHT_POINT_STARS,
+                    cur_x,
+                    cur_y,
+                    radius=p["radius"],
+                    angle_deg=p.get("angle_deg", 0.0),
+                    alpha=p.get("alpha", 200),
+                    base_color_rgb=base_col,
+                )
         elif is_flecks:
-            draw = ImageDraw.Draw(img)
             for p in particles:
                 cur_x = (p["x0"] + p["vx"] * t) % width
                 cur_y = p["y0"] + p["A"] * math.sin(two_pi * p["m"] * t / duration)
-                r_val = p["radius"]
-                draw.ellipse(
-                    [cur_x - r_val, cur_y - r_val, cur_x + r_val, cur_y + r_val],
-                    fill=(r, g, b, p["alpha"]),
+                draw_particle_shape(
+                    painter,
+                    STYLE_DRIFTING_FLECKS,
+                    cur_x,
+                    cur_y,
+                    radius=p["radius"],
+                    alpha=p["alpha"],
+                    base_color_rgb=base_col,
                 )
         else:
-            draw = ImageDraw.Draw(img)
             for p in particles:
                 cur_y = (p["y0"] + p["vy"] * t) % height
                 cur_x = (p["x0"] + p["A"] * math.sin(two_pi * p["m"] * t / duration)) % width
-                r_val = p["radius"]
-                draw.ellipse(
-                    [cur_x - r_val, cur_y - r_val, cur_x + r_val, cur_y + r_val],
-                    fill=(r, g, b, p["alpha"]),
+                draw_particle_shape(
+                    painter,
+                    STYLE_FLOATING_ORBS,
+                    cur_x,
+                    cur_y,
+                    radius=p["radius"],
+                    alpha=p["alpha"],
+                    base_color_rgb=base_col,
                 )
 
-        proc.stdin.write(img.tobytes())
+        painter.end()
+        proc.stdin.write(bytes(qimg.constBits()))
 
     proc.stdin.close()
     _, stderr_bytes = proc.communicate()
