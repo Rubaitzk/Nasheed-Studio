@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, List, Tuple, Union
 from PIL import Image, ImageDraw
 
+STYLE_WIND_STREAKS = "Wind Streaks"
 STYLE_DRIFTING_FLECKS = "Drifting Flecks"
 STYLE_FLOATING_ORBS = "Floating Orbs"
 STYLE_LIGHT_GLINTS = "Light Glints"
@@ -31,6 +32,7 @@ LAYER_BELOW_TEXT = "Below Text"
 LAYER_ABOVE_TEXT = "Above Text"
 
 PARTICLE_STYLES = [
+    STYLE_WIND_STREAKS,
     STYLE_DRIFTING_FLECKS,
     STYLE_FLOATING_ORBS,
     STYLE_LIGHT_GLINTS,
@@ -209,6 +211,170 @@ def glint_state(p: Union[dict, Any], t: float, duration: float) -> Tuple[float, 
     return x, y, alpha_factor
 
 
+def capsule_polygon(
+    cx: float,
+    cy: float,
+    length: float,
+    thickness: float,
+    angle_rad: float,
+    n_arc: int = 8,
+) -> List[Tuple[float, float]]:
+    """
+    Generate vertices of a solid capsule (rectangle with semicircular caps at both ends).
+    """
+    half_t = max(0.4, thickness / 2.0)
+    half_l = max(0.1, (length - thickness) / 2.0)
+    cos_a = math.cos(angle_rad)
+    sin_a = math.sin(angle_rad)
+
+    pts: List[Tuple[float, float]] = []
+    # Cap 2 (positive x local, from -pi/2 to +pi/2)
+    for i in range(n_arc + 1):
+        theta = -math.pi / 2.0 + math.pi * i / n_arc
+        lx = half_l + half_t * math.cos(theta)
+        ly = half_t * math.sin(theta)
+        px = cx + lx * cos_a - ly * sin_a
+        py = cy + lx * sin_a + ly * cos_a
+        pts.append((px, py))
+
+    # Cap 1 (negative x local, from +pi/2 to 3*pi/2)
+    for i in range(n_arc + 1):
+        theta = math.pi / 2.0 + math.pi * i / n_arc
+        lx = -half_l + half_t * math.cos(theta)
+        ly = half_t * math.sin(theta)
+        px = cx + lx * cos_a - ly * sin_a
+        py = cy + lx * sin_a + ly * cos_a
+        pts.append((px, py))
+
+    return pts
+
+
+def wind_streak_state(p: Union[dict, Any], t: float) -> Tuple[float, float, float, float]:
+    """
+    Compute (x, y, alpha, rot) for a Wind Streaks particle at time t.
+    Returns:
+        x (float): current center x
+        y (float): current center y
+        alpha (float): constant per-particle alpha [0.6, 0.9]
+        rot (float): constant rotation angle = math.atan2(vy, vx)
+    """
+    t_life = p["t_life"] if isinstance(p, dict) else getattr(p, "t_life")
+    t_phase = p["phase"] if isinstance(p, dict) else getattr(p, "phase")
+    sx = p["spawn_x"] if isinstance(p, dict) else getattr(p, "spawn_x")
+    sy = p["spawn_y"] if isinstance(p, dict) else getattr(p, "spawn_y")
+    vx = p["vx"] if isinstance(p, dict) else getattr(p, "vx")
+    vy = p["vy"] if isinstance(p, dict) else getattr(p, "vy")
+    alpha = p["alpha"] if isinstance(p, dict) else getattr(p, "base_alpha")
+
+    tau = (t_phase + t) % t_life
+    cur_x = sx + vx * tau
+    cur_y = sy + vy * tau
+    rot = math.atan2(vy, vx)
+    return cur_x, cur_y, alpha, rot
+
+
+def create_wind_streak_particles(
+    count: int,
+    width: float,
+    height: float,
+    angle_deg: float = 225.0,
+    speed_level: int = 2,
+    size_factor: float = 1.0,
+    seed: Optional[int] = None,
+) -> List[dict]:
+    """
+    Deterministic particle generator for Wind Streaks.
+    Used by both preview (ParticleOverlayWidget) and render (generate_particle_loop_video)
+    to guarantee identical behavior and resolution-independent parity.
+    """
+    res_scale = max(10.0, height) / 1080.0
+    geom_scale = res_scale * size_factor
+    sm = _speed_multiplier(speed_level)
+
+    rng_seed = seed if seed is not None else (4242 + int(count) + int(speed_level) + int(angle_deg))
+    rng = random.Random(rng_seed)
+
+    rad = math.radians(angle_deg)
+    cos_a = math.cos(rad)
+    sin_a = math.sin(rad)
+
+    # Reference speed magnitude at 1080p: ~254.55844 px/s
+    # At default 225 deg: vx = -180.0, vy = +180.0 px/s with sm=1.0
+    speed_mag_ref = 254.558441227 * sm
+    base_vx = speed_mag_ref * cos_a
+    base_vy = -speed_mag_ref * sin_a
+
+    margin = 50.0 * res_scale
+    w_box = width + 2.0 * margin
+    h_box = height + 2.0 * margin
+
+    particles = []
+    for _ in range(count):
+        speed_var = rng.uniform(0.85, 1.15)
+        vx = base_vx * speed_var * res_scale
+        vy = base_vy * speed_var * res_scale
+
+        if vx <= 0 and vy >= 0:
+            l_spawn = w_box + h_box
+            u = rng.uniform(0.0, l_spawn)
+            if u < w_box:
+                sx = -margin + u
+                sy = -margin
+            else:
+                sx = width + margin
+                sy = -margin + (u - w_box)
+            tx = (-margin - sx) / vx if vx < 0 else 1e9
+            ty = (height + margin - sy) / vy if vy > 0 else 1e9
+            t_life = max(0.2, min(tx, ty))
+        else:
+            sx_edge = (width + margin) if vx < 0 else -margin
+            sy_edge = -margin if vy > 0 else (height + margin)
+            cx_edge = -margin if vx < 0 else (width + margin)
+            cy_edge = (height + margin) if vy > 0 else -margin
+
+            l_spawn = w_box + h_box
+            u = rng.uniform(0.0, l_spawn)
+            if u < w_box:
+                sx = -margin + u
+                sy = sy_edge
+            else:
+                sx = sx_edge
+                sy = -margin + (u - w_box)
+            tx = (cx_edge - sx) / vx if abs(vx) > 1e-4 else 1e9
+            ty = (cy_edge - sy) / vy if abs(vy) > 1e-4 else 1e9
+            t_life = max(0.2, min(tx, ty))
+
+        t_phase = rng.uniform(0.0, t_life)
+
+        base_len = rng.uniform(6.0, 14.0)
+        base_thick = rng.uniform(1.5, 2.0)
+        length = max(1.0, base_len * geom_scale)
+        thickness = max(0.8, base_thick * geom_scale)
+
+        alpha = rng.uniform(0.6, 0.9)
+        color_rgb = rng.choice([(255, 255, 255), (224, 224, 224)])
+        rot = math.atan2(vy, vx)
+
+        particles.append({
+            "spawn_x": sx,
+            "spawn_y": sy,
+            "vx": vx,
+            "vy": vy,
+            "t_life": t_life,
+            "phase": t_phase,
+            "length": length,
+            "thickness": thickness,
+            "base_length": base_len,
+            "base_thickness": base_thick,
+            "alpha": alpha,
+            "color_rgb": color_rgb,
+            "rot": rot,
+            "angle_deg": math.degrees(rot),
+        })
+
+    return particles
+
+
 def _speed_multiplier(speed_level: int) -> float:
     # 1: 0.5x, 2: 1.0x, 3: 1.6x, 4: 2.4x, 5: 3.5x
     multipliers = {1: 0.5, 2: 1.0, 3: 1.6, 4: 2.4, 5: 3.5}
@@ -221,11 +387,12 @@ def generate_particle_loop_video(
     height: int,
     fps: int = 30,
     duration: float = 6.0,
-    style: str = STYLE_DRIFTING_FLECKS,
+    style: str = STYLE_WIND_STREAKS,
     quantity: int = 80,
     color: Union[Tuple[int, int, int], str] = (56, 189, 248),
     speed: int = 2,
     size: int = 100,
+    angle: float = 225.0,
     ffmpeg_bin: str = "ffmpeg",
 ) -> Path:
     """
@@ -262,6 +429,7 @@ def generate_particle_loop_video(
     rng = random.Random(42 + count + speed)
 
     particles = []
+    is_wind = (style == STYLE_WIND_STREAKS or "wind" in str(style).lower())
     is_glints = (style == STYLE_LIGHT_GLINTS or "glint" in str(style).lower())
     is_stars = (style == STYLE_TWINKLE_STARS or "twinkle" in str(style).lower())
     is_bokeh = (style == STYLE_BOKEH_RINGS or "bokeh" in str(style).lower())
@@ -272,7 +440,17 @@ def generate_particle_loop_video(
     base_sprites = {}
     alpha_cache = {}
 
-    if is_glints:
+    if is_wind:
+        particles = create_wind_streak_particles(
+            count=count,
+            width=width,
+            height=height,
+            angle_deg=angle,
+            speed_level=speed,
+            size_factor=size_val / 100.0,
+            seed=42 + count + speed + int(angle),
+        )
+    elif is_glints:
         # Light Glints: thin tapered white sliver / flick drifting slowly with flashing glint
         r_out = int(round(r * 0.4 + 255 * 0.6))
         g_out = int(round(g * 0.4 + 255 * 0.6))
@@ -560,6 +738,7 @@ def generate_particle_loop_video(
 
     cmd = [
         ffmpeg_bin, "-y",
+        "-loglevel", "error",
         "-f", "rawvideo",
         "-vcodec", "rawvideo",
         "-s", f"{width}x{height}",
@@ -584,7 +763,30 @@ def generate_particle_loop_video(
         t = frame_idx / float(fps)
         img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
 
-        if is_glints or is_stars:
+        if is_wind:
+            draw = ImageDraw.Draw(img)
+            for p in particles:
+                cur_x, cur_y, alpha_val, rot = wind_streak_state(p, t)
+                L = p["length"]
+                T = p["thickness"]
+                margin_check = L + T + 4.0
+                if cur_x < -margin_check or cur_x > width + margin_check or cur_y < -margin_check or cur_y > height + margin_check:
+                    continue
+                half_d = max(0.1, (L - T) / 2.0)
+                cos_r = math.cos(rot)
+                sin_r = math.sin(rot)
+                x1 = cur_x - half_d * cos_r
+                y1 = cur_y - half_d * sin_r
+                x2 = cur_x + half_d * cos_r
+                y2 = cur_y + half_d * sin_r
+                cr, cg, cb = p["color_rgb"]
+                ca = int(round(alpha_val * 255))
+                fill_color = (cr, cg, cb, ca)
+                draw.line([(x1, y1), (x2, y2)], fill=fill_color, width=max(1, int(round(T))))
+                r_cap = max(0.5, T / 2.0)
+                draw.ellipse([x1 - r_cap, y1 - r_cap, x1 + r_cap, y1 + r_cap], fill=fill_color)
+                draw.ellipse([x2 - r_cap, y2 - r_cap, x2 + r_cap, y2 + r_cap], fill=fill_color)
+        elif is_glints or is_stars:
             for p in particles:
                 cur_x, cur_y, alpha_factor = glint_state(p, t, duration)
                 eff_alpha = int(p["peak_alpha"] * alpha_factor)

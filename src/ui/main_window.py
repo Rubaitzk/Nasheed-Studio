@@ -1523,8 +1523,9 @@ class MainWindow(QMainWindow):
         sec_particles.addWidget(self.particles_check)
 
         self.particles_style_combo = QComboBox()
-        self.particles_style_combo.addItems(["Drifting Flecks", "Floating Orbs", "Light Glints", "Twinkle Stars", "Bokeh Rings", "Crescents & Stars", "Eight-Point Stars"])
-        self.particles_style_combo.setToolTip("Animation style: Drifting Flecks (horizontal float), Floating Orbs (vertical float), Light Glints (slanted slivers), Twinkle Stars (4-point stars), Bokeh Rings (soft circles), Crescents & Stars, or Eight-Point Stars")
+        from src.services.particle_service import PARTICLE_STYLES
+        self.particles_style_combo.addItems(PARTICLE_STYLES)
+        self.particles_style_combo.setToolTip("Animation style: Wind Streaks (capsules drifting diagonally), Drifting Flecks (horizontal float), Floating Orbs (vertical float), Light Glints (slanted slivers), Twinkle Stars (4-point stars), Bokeh Rings (soft circles), Crescents & Stars, or Eight-Point Stars")
         self.particles_style_combo.currentTextChanged.connect(self._on_particles_param_changed)
         sec_particles.addLayout(self._create_prop_row("Style:", self.particles_style_combo))
 
@@ -1532,7 +1533,11 @@ class MainWindow(QMainWindow):
         self.particles_layer_combo.addItems(["Below Text", "Above Text"])
         self.particles_layer_combo.setToolTip("Particle layering: 'Below Text' keeps playlist typography crisp and visible; 'Above Text' floats over all layers")
         self.particles_layer_combo.currentTextChanged.connect(self._on_particles_param_changed)
-        sec_particles.addLayout(self._create_prop_row("Layer:", self.particles_layer_combo))
+        self._particles_layer_row = QWidget()
+        lay_l = self._create_prop_row("Layer:", self.particles_layer_combo)
+        lay_l.setContentsMargins(0, 0, 0, 0)
+        self._particles_layer_row.setLayout(lay_l)
+        sec_particles.addWidget(self._particles_layer_row)
 
         self.particles_count_spin = QSpinBox()
         self.particles_count_spin.setRange(10, 300)
@@ -1541,14 +1546,18 @@ class MainWindow(QMainWindow):
         self.particles_count_spin.setKeyboardTracking(False)
         self.particles_count_spin.setToolTip("Adjust particle quantity / density across the frame")
         self.particles_count_spin.valueChanged.connect(self._on_particles_param_changed)
-        sec_particles.addLayout(self._create_prop_row("Quantity:", self.particles_count_spin))
+        sec_particles.addLayout(self._create_prop_row("Density:", self.particles_count_spin))
 
         self.particles_color_btn = QPushButton()
         self.particles_color_btn.setFixedHeight(24)
         self.particles_color_btn.setToolTip("Choose particle color")
         self.particles_color_btn.clicked.connect(self._choose_particles_color)
         self._update_particles_color_btn()
-        sec_particles.addLayout(self._create_prop_row("Particle Color:", self.particles_color_btn))
+        self._particles_color_row = QWidget()
+        col_l = self._create_prop_row("Particle Color:", self.particles_color_btn)
+        col_l.setContentsMargins(0, 0, 0, 0)
+        self._particles_color_row.setLayout(col_l)
+        sec_particles.addWidget(self._particles_color_row)
 
         self.particles_speed_spin = QSpinBox()
         self.particles_speed_spin.setRange(1, 5)
@@ -1558,6 +1567,22 @@ class MainWindow(QMainWindow):
         self.particles_speed_spin.setToolTip("Adjust particle drift speed (1=Slow, 5=Fast)")
         self.particles_speed_spin.valueChanged.connect(self._on_particles_param_changed)
         sec_particles.addLayout(self._create_prop_row("Speed (1-5):", self.particles_speed_spin))
+
+        self.particles_angle_spin = QSpinBox()
+        self.particles_angle_spin.setRange(0, 360)
+        self.particles_angle_spin.setValue(225)
+        self.particles_angle_spin.setSingleStep(5)
+        self.particles_angle_spin.setSuffix("°")
+        self.particles_angle_spin.setKeyboardTracking(False)
+        self.particles_angle_spin.setToolTip("Adjust particle travel angle in degrees (default 225° top-right to bottom-left)")
+        self.particles_angle_spin.valueChanged.connect(self._on_particles_param_changed)
+        self._particles_angle_row = QWidget()
+        ang_l = self._create_prop_row("Angle:", self.particles_angle_spin)
+        ang_l.setContentsMargins(0, 0, 0, 0)
+        self._particles_angle_row.setLayout(ang_l)
+        sec_particles.addWidget(self._particles_angle_row)
+
+        self._update_particles_controls_visibility()
 
         self.particles_size_slider = QSlider(Qt.Orientation.Horizontal)
         self.particles_size_slider.setRange(50, 300)
@@ -2475,12 +2500,13 @@ class MainWindow(QMainWindow):
             "highlight_y_offset": self.highlight_y_offset_spin.value() if hasattr(self, "highlight_y_offset_spin") else 0,
             "audio_normalize_enabled": self.audio_normalize_check.isChecked() if hasattr(self, "audio_normalize_check") else False,
             "particles_enabled": self.particles_check.isChecked() if hasattr(self, "particles_check") else False,
-            "particles_style": self.particles_style_combo.currentText() if hasattr(self, "particles_style_combo") else "Drifting Flecks",
+            "particles_style": self.particles_style_combo.currentText() if hasattr(self, "particles_style_combo") else "Wind Streaks",
             "particles_layer": self.particles_layer_combo.currentText() if hasattr(self, "particles_layer_combo") else "Below Text",
             "particles_quantity": self.particles_count_spin.value() if hasattr(self, "particles_count_spin") else 80,
             "particles_color": getattr(self, "particles_color", (56, 189, 248)),
             "particles_speed": self.particles_speed_spin.value() if hasattr(self, "particles_speed_spin") else 2,
             "particles_size": self.particles_size_slider.value() if hasattr(self, "particles_size_slider") else 100,
+            "particles_angle": self.particles_angle_spin.value() if hasattr(self, "particles_angle_spin") else 225,
             "output_path": self.output_edit.text().strip(),
         }
 
@@ -5229,19 +5255,25 @@ class MainWindow(QMainWindow):
             self._update_particles_color_btn()
         if "particles_speed" in tmpl and hasattr(self, "particles_speed_spin"):
             self.particles_speed_spin.setValue(int(tmpl["particles_speed"]))
+        if "particles_angle" in tmpl and hasattr(self, "particles_angle_spin"):
+            self.particles_angle_spin.setValue(int(tmpl["particles_angle"]))
         if hasattr(self, "particles_size_slider"):
             sz = max(50, min(300, int(tmpl.get("particles_size", 100) if tmpl.get("particles_size") is not None else 100)))
             self.particles_size_slider.setValue(sz)
             if hasattr(self, "particles_size_val_lbl"):
                 self.particles_size_val_lbl.setText(f"{sz}%")
         if hasattr(self, "particle_overlay"):
-            self.particle_overlay.set_particle_style(self.particles_style_combo.currentText() if hasattr(self, "particles_style_combo") else "Drifting Flecks")
+            self.particle_overlay.set_particle_style(self.particles_style_combo.currentText() if hasattr(self, "particles_style_combo") else "Wind Streaks")
             self.particle_overlay.set_particle_layer(self.particles_layer_combo.currentText() if hasattr(self, "particles_layer_combo") else "Below Text")
             self.particle_overlay.set_particle_count(self.particles_count_spin.value() if hasattr(self, "particles_count_spin") else 80)
             self.particle_overlay.set_particle_speed(self.particles_speed_spin.value() if hasattr(self, "particles_speed_spin") else 2)
             self.particle_overlay.set_particle_size(self.particles_size_slider.value() if hasattr(self, "particles_size_slider") else 100)
+            if hasattr(self, "particles_angle_spin"):
+                self.particle_overlay.set_particle_angle(self.particles_angle_spin.value())
             self.particle_overlay.set_particle_color(self.particles_color)
             self.particle_overlay.set_enabled(self.particles_check.isChecked() if hasattr(self, "particles_check") else False)
+        if hasattr(self, "_update_particles_controls_visibility"):
+            self._update_particles_controls_visibility()
         if "intro_audio_path" in tmpl and hasattr(self, "intro_audio_label"):
             iap = tmpl["intro_audio_path"]
             if iap and Path(iap).is_file():
@@ -5742,19 +5774,25 @@ class MainWindow(QMainWindow):
                 self._update_particles_color_btn()
             if hasattr(self, "particles_speed_spin") and "particles_speed" in data:
                 self.particles_speed_spin.setValue(int(data["particles_speed"]))
+            if hasattr(self, "particles_angle_spin") and "particles_angle" in data:
+                self.particles_angle_spin.setValue(int(data["particles_angle"]))
             if hasattr(self, "particles_size_slider"):
                 sz = max(50, min(300, int(data.get("particles_size", 100) if data.get("particles_size") is not None else 100)))
                 self.particles_size_slider.setValue(sz)
                 if hasattr(self, "particles_size_val_lbl"):
                     self.particles_size_val_lbl.setText(f"{sz}%")
             if hasattr(self, "particle_overlay"):
-                self.particle_overlay.set_particle_style(self.particles_style_combo.currentText() if hasattr(self, "particles_style_combo") else "Drifting Flecks")
+                self.particle_overlay.set_particle_style(self.particles_style_combo.currentText() if hasattr(self, "particles_style_combo") else "Wind Streaks")
                 self.particle_overlay.set_particle_layer(self.particles_layer_combo.currentText() if hasattr(self, "particles_layer_combo") else "Below Text")
                 self.particle_overlay.set_particle_count(self.particles_count_spin.value() if hasattr(self, "particles_count_spin") else 80)
                 self.particle_overlay.set_particle_speed(self.particles_speed_spin.value() if hasattr(self, "particles_speed_spin") else 2)
                 self.particle_overlay.set_particle_size(self.particles_size_slider.value() if hasattr(self, "particles_size_slider") else 100)
+                if hasattr(self, "particles_angle_spin"):
+                    self.particle_overlay.set_particle_angle(self.particles_angle_spin.value())
                 self.particle_overlay.set_particle_color(self.particles_color)
                 self.particle_overlay.set_enabled(self.particles_check.isChecked() if hasattr(self, "particles_check") else False)
+            if hasattr(self, "_update_particles_controls_visibility"):
+                self._update_particles_controls_visibility()
 
             self._check_logo_website_overlap()
             self._refresh_tracks()
@@ -5918,19 +5956,37 @@ class MainWindow(QMainWindow):
             self.particles_size_val_lbl.setText(f"{val}%")
         self._on_particles_param_changed()
 
+    def _update_particles_controls_visibility(self) -> None:
+        """Show only the controls relevant to the selected particle style."""
+        if not hasattr(self, "particles_style_combo"):
+            return
+        style = self.particles_style_combo.currentText()
+        is_wind = ("wind" in style.lower())
+        if hasattr(self, "_particles_angle_row"):
+            self._particles_angle_row.setVisible(is_wind)
+        if hasattr(self, "_particles_color_row"):
+            self._particles_color_row.setVisible(not is_wind)
+        if hasattr(self, "_particles_layer_row"):
+            self._particles_layer_row.setVisible(not is_wind)
+
     def _on_particles_param_changed(self) -> None:
+        if hasattr(self, "_update_particles_controls_visibility"):
+            self._update_particles_controls_visibility()
         if hasattr(self, "particle_overlay"):
             enabled = self.particles_check.isChecked()
             spd = self.particles_speed_spin.value() if hasattr(self, "particles_speed_spin") else 2
-            style = self.particles_style_combo.currentText() if hasattr(self, "particles_style_combo") else "Drifting Flecks"
+            style = self.particles_style_combo.currentText() if hasattr(self, "particles_style_combo") else "Wind Streaks"
             layer = self.particles_layer_combo.currentText() if hasattr(self, "particles_layer_combo") else "Below Text"
             count = self.particles_count_spin.value() if hasattr(self, "particles_count_spin") else 80
             sz = self.particles_size_slider.value() if hasattr(self, "particles_size_slider") else 100
+            ang = self.particles_angle_spin.value() if hasattr(self, "particles_angle_spin") else 225
             self.particle_overlay.set_particle_style(style)
             self.particle_overlay.set_particle_layer(layer)
             self.particle_overlay.set_particle_count(count)
             self.particle_overlay.set_particle_speed(spd)
             self.particle_overlay.set_particle_size(sz)
+            if hasattr(self.particle_overlay, "set_particle_angle"):
+                self.particle_overlay.set_particle_angle(ang)
             self.particle_overlay.set_enabled(enabled)
             self._refresh_particles_preview_state()
         self._mark_dirty()
@@ -5959,6 +6015,7 @@ class MainWindow(QMainWindow):
             return
 
         part_enabled = hasattr(self, "particles_check") and self.particles_check.isChecked()
+        part_style = self.particles_style_combo.currentText() if hasattr(self, "particles_style_combo") else "Wind Streaks"
         part_layer = self.particles_layer_combo.currentText() if hasattr(self, "particles_layer_combo") else "Below Text"
 
         if part_enabled and part_layer == "Below Text":

@@ -276,12 +276,13 @@ def build_render_command(
 
     # Feature D: Ambient Particle Effects Video Sequence (Export rendering)
     particles_enabled = bool(project.get("particles_enabled", False))
-    particles_style = project.get("particles_style", "Drifting Flecks")
+    particles_style = project.get("particles_style", "Wind Streaks")
     particles_layer = project.get("particles_layer", "Below Text")
     particles_quantity = int(project.get("particles_quantity", 80) or 80)
     particles_color = project.get("particles_color", (56, 189, 248))
     particles_speed = int(project.get("particles_speed", 2) or 2)
     particles_size = max(50, min(300, int(project.get("particles_size", 100) if project.get("particles_size") is not None else 100)))
+    particles_angle = float(project.get("particles_angle", 225.0) or 225.0)
     particle_input_idx = None
 
     if particles_enabled:
@@ -301,6 +302,7 @@ def build_render_command(
                 color=particles_color,
                 speed=particles_speed,
                 size=particles_size,
+                angle=particles_angle,
                 ffmpeg_bin=ffmpeg,
             )
         except Exception as p_err:
@@ -324,7 +326,7 @@ def build_render_command(
     else:
         bg_clean_file = Path(work_dir) / "composition_bg.png"
         fg_file = Path(work_dir) / "composition_fg.png"
-        if particles_enabled and particles_layer == "Below Text" and bg_clean_file.is_file() and fg_file.is_file():
+        if particles_enabled and particles_style != "Wind Streaks" and particles_layer == "Below Text" and bg_clean_file.is_file() and fg_file.is_file():
             command += ["-loop", "1", "-framerate", "30", "-i", str(bg_clean_file)]
             current_input_idx = 1
             command += ["-loop", "1", "-framerate", "1", "-i", str(fg_file)]
@@ -467,7 +469,8 @@ def build_render_command(
         v_bg_stream = "0:v"
 
     # Feature D: Ambient particles (Layer: Below Text - beneath typography & tracklist)
-    if particle_input_idx is not None and particles_layer == "Below Text":
+    # Wind Streaks is strictly foreground overlay, so it is rendered above text at the final step
+    if particle_input_idx is not None and particles_style != "Wind Streaks" and particles_layer == "Below Text":
         filters.append(f"[{v_bg_stream}][{particle_input_idx}:v]overlay=0:0:shortest=1[v_bg_part]")
         v_bg_stream = "v_bg_part"
 
@@ -539,7 +542,7 @@ def build_render_command(
             current_v = next_label
 
     # Feature D: Ambient particles (Layer: Above Text - floats over all visual layers)
-    if particle_input_idx is not None and particles_layer != "Below Text":
+    if particle_input_idx is not None and (particles_style == "Wind Streaks" or particles_layer != "Below Text"):
         filters.append(f"[{current_v}][{particle_input_idx}:v]overlay=0:0:shortest=1[v_final_part]")
         current_v = "v_final_part"
 

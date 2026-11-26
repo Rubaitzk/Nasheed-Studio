@@ -19,6 +19,7 @@ from PySide6.QtGui import QColor, QPainter, QPaintEvent, QPixmap, QPolygonF, QPe
 from PySide6.QtWidgets import QWidget
 
 from src.services.particle_service import (
+    STYLE_WIND_STREAKS,
     STYLE_DRIFTING_FLECKS,
     STYLE_FLOATING_ORBS,
     STYLE_LIGHT_GLINTS,
@@ -30,11 +31,14 @@ from src.services.particle_service import (
     LAYER_ABOVE_TEXT,
     _speed_multiplier,
     lens_polygon,
+    capsule_polygon,
     star_4point_polygon,
     crescent_polygon,
     star_5point_polygon,
     star_8point_polygon,
     glint_state,
+    wind_streak_state,
+    create_wind_streak_particles,
 )
 
 math_sin = math.sin
@@ -47,20 +51,27 @@ class Particle:
         "positions", "n", "phase", "vx", "vy", "width", "height",
         "length", "glint_width", "angle_deg", "peak_alpha", "sub_type",
         "base_radius", "base_length", "base_glint_width", "base_sway_amp",
-        "base_speed_x", "base_speed_y", "style_name", "w_ratio"
+        "base_speed_x", "base_speed_y", "style_name", "w_ratio",
+        "thickness", "base_thickness", "color_rgb", "t_life",
+        "spawn_x", "spawn_y", "rot", "speed_var"
     )
 
     def __getitem__(self, key: str) -> Any:
         return getattr(self, key)
 
+    @property
+    def rotation(self) -> float:
+        return math.atan2(self.vy, self.vx)
+
     def __init__(
         self,
         w: int,
         h: int,
-        style: str = STYLE_DRIFTING_FLECKS,
+        style: str = STYLE_WIND_STREAKS,
         speed_factor: float = 1.0,
         size_factor: float = 1.0,
         rng: Optional[random.Random] = None,
+        angle: float = 225.0,
     ):
         r_gen = rng if rng is not None else random
         self.depth = r_gen.uniform(0.35, 1.0)
@@ -88,6 +99,14 @@ class Particle:
         self.base_speed_x = 0.0
         self.base_speed_y = 0.0
         self.w_ratio = 8.0
+        self.thickness = 0.0
+        self.base_thickness = 0.0
+        self.color_rgb = (255, 255, 255)
+        self.t_life = 1.0
+        self.spawn_x = 0.0
+        self.spawn_y = 0.0
+        self.rot = 0.0
+        self.speed_var = 1.0
 
         self.style_name = str(style).lower()
         s = self.style_name
@@ -95,7 +114,71 @@ class Particle:
         res_scale = max(10, h) / 1080.0
         geom_scale = res_scale * size_factor
 
-        if "fleck" in s:
+        if "wind" in s:
+            # Wind Streaks: solid white capsules drifting diagonally with constant velocity
+            self.angle_deg = float(angle)
+            base_len = r_gen.uniform(6.0, 14.0)
+            base_thick = r_gen.uniform(1.5, 2.0)
+            self.base_length = base_len
+            self.base_thickness = base_thick
+            self.length = max(1.0, base_len * geom_scale)
+            self.thickness = max(0.8, base_thick * geom_scale)
+            self.radius = self.thickness
+            self.base_alpha = r_gen.uniform(0.6, 0.9)
+            self.color_rgb = r_gen.choice([(255, 255, 255), (224, 224, 224)])
+
+            rad = math.radians(self.angle_deg)
+            cos_a = math.cos(rad)
+            sin_a = math.sin(rad)
+            speed_mag_ref = 254.558441227 * speed_factor
+            self.base_speed_x = speed_mag_ref * cos_a
+            self.base_speed_y = -speed_mag_ref * sin_a
+
+            self.speed_var = r_gen.uniform(0.85, 1.15)
+            self.vx = self.base_speed_x * self.speed_var * res_scale
+            self.vy = self.base_speed_y * self.speed_var * res_scale
+            self.speed_x = self.vx
+            self.speed_y = self.vy
+            self.rot = math.atan2(self.vy, self.vx)
+            self.angle_deg = math.degrees(self.rot)
+
+            margin = 50.0 * res_scale
+            w_box = max(10, w) + 2.0 * margin
+            h_box = max(10, h) + 2.0 * margin
+            if self.vx <= 0 and self.vy >= 0:
+                l_spawn = w_box + h_box
+                u = r_gen.uniform(0.0, l_spawn)
+                if u < w_box:
+                    self.spawn_x = -margin + u
+                    self.spawn_y = -margin
+                else:
+                    self.spawn_x = max(10, w) + margin
+                    self.spawn_y = -margin + (u - w_box)
+                tx = (-margin - self.spawn_x) / self.vx if self.vx < 0 else 1e9
+                ty = (max(10, h) + margin - self.spawn_y) / self.vy if self.vy > 0 else 1e9
+                self.t_life = max(0.2, min(tx, ty))
+            else:
+                sx_edge = (max(10, w) + margin) if self.vx < 0 else -margin
+                sy_edge = -margin if self.vy > 0 else (max(10, h) + margin)
+                cx_edge = -margin if self.vx < 0 else (max(10, w) + margin)
+                cy_edge = (max(10, h) + margin) if self.vy > 0 else -margin
+
+                l_spawn = w_box + h_box
+                u = r_gen.uniform(0.0, l_spawn)
+                if u < w_box:
+                    self.spawn_x = -margin + u
+                    self.spawn_y = sy_edge
+                else:
+                    self.spawn_x = sx_edge
+                    self.spawn_y = -margin + (u - w_box)
+                tx = (cx_edge - self.spawn_x) / self.vx if abs(self.vx) > 1e-4 else 1e9
+                ty = (cy_edge - self.spawn_y) / self.vy if abs(self.vy) > 1e-4 else 1e9
+                self.t_life = max(0.2, min(tx, ty))
+
+            self.phase = r_gen.uniform(0.0, self.t_life)
+            self.x = self.spawn_x + self.vx * self.phase
+            self.y = self.spawn_y + self.vy * self.phase
+        elif "fleck" in s:
             # Drifting Flecks: horizontal drift with gentle natural vertical float
             self.base_radius = 1.2 + self.depth * 1.8
             self.radius = max(0.5, self.base_radius * geom_scale)
@@ -222,7 +305,18 @@ class Particle:
     def update_scale(self, res_scale: float, geom_scale: float) -> None:
         """Rescale particle dimensions and velocities when window is resized or size is changed."""
         s = self.style_name
-        if "fleck" in s:
+        if "wind" in s:
+            self.length = max(1.0, self.base_length * geom_scale)
+            self.thickness = max(0.8, self.base_thickness * geom_scale)
+            self.radius = self.thickness
+            var = getattr(self, "speed_var", 1.0)
+            self.vx = self.base_speed_x * var * res_scale
+            self.vy = self.base_speed_y * var * res_scale
+            self.speed_x = self.vx
+            self.speed_y = self.vy
+            self.rot = math.atan2(self.vy, self.vx)
+            self.angle_deg = math.degrees(self.rot)
+        elif "fleck" in s:
             self.radius = max(0.5, self.base_radius * geom_scale)
             self.sway_amp = self.base_sway_amp * res_scale
             self.speed_x = self.base_speed_x * res_scale
@@ -269,7 +363,8 @@ class ParticleOverlayWidget(QWidget):
         self._speed_level: int = 2  # 1 to 5
         self._size_percent: int = 100  # 50 to 300 %
         self._color: QColor = QColor(56, 189, 248)  # Default cyan accent
-        self._style: str = STYLE_DRIFTING_FLECKS
+        self._style: str = STYLE_WIND_STREAKS
+        self._angle: float = 225.0
         self._layer: str = LAYER_BELOW_TEXT
         self._num_particles: int = 80
         self._text_pixmap: Optional[QPixmap] = None
@@ -350,10 +445,22 @@ class ParticleOverlayWidget(QWidget):
         for p in self._particles:
             p.update_scale(res_scale, geom_scale)
 
+    def set_particle_angle(self, angle: float) -> None:
+        """Set particle travel angle in degrees."""
+        self._angle = float(angle)
+        self._particles.clear()
+        self._ensure_particles()
+        self.update()
+
+    def get_particle_angle(self) -> float:
+        return self._angle
+
     def set_particle_style(self, style: str) -> None:
-        """Set particle style: 'Drifting Flecks', 'Floating Orbs', 'Light Glints', or 'Twinkle Stars'."""
+        """Set particle style: 'Wind Streaks', 'Drifting Flecks', 'Floating Orbs', 'Light Glints', etc."""
         s = str(style).lower()
-        if "fleck" in s:
+        if "wind" in s:
+            self._style = STYLE_WIND_STREAKS
+        elif "fleck" in s:
             self._style = STYLE_DRIFTING_FLECKS
         elif "glint" in s:
             self._style = STYLE_LIGHT_GLINTS
@@ -408,7 +515,7 @@ class ParticleOverlayWidget(QWidget):
         if len(self._particles) != self._num_particles:
             rng = random.Random(42 + self._num_particles + self._speed_level)
             self._particles = [
-                Particle(w, h, self._style, sm, size_factor=size_factor, rng=rng)
+                Particle(w, h, self._style, sm, size_factor=size_factor, rng=rng, angle=getattr(self, "_angle", 225.0))
                 for _ in range(self._num_particles)
             ]
             if "glint" in self._style.lower() or "twinkle" in self._style.lower():
@@ -424,7 +531,22 @@ class ParticleOverlayWidget(QWidget):
         sm = self._speed_multiplier()
         s = self._style.lower()
         res_scale = max(10, self.height()) / 1080.0
-        if "fleck" in s:
+        if "wind" in s:
+            rad = math.radians(getattr(self, "_angle", 225.0))
+            cos_a = math.cos(rad)
+            sin_a = math.sin(rad)
+            speed_mag_ref = 254.558441227 * sm
+            for p in self._particles:
+                p.base_speed_x = speed_mag_ref * cos_a
+                p.base_speed_y = -speed_mag_ref * sin_a
+                var = getattr(p, "speed_var", 1.0)
+                p.vx = p.base_speed_x * var * res_scale
+                p.vy = p.base_speed_y * var * res_scale
+                p.speed_x = p.vx
+                p.speed_y = p.vy
+                p.rot = math.atan2(p.vy, p.vx)
+                p.angle_deg = math.degrees(p.rot)
+        elif "fleck" in s:
             for p in self._particles:
                 p.base_speed_x = (4.5 + p.depth * 6.6) * sm
                 p.speed_x = p.base_speed_x * res_scale
@@ -480,6 +602,18 @@ class ParticleOverlayWidget(QWidget):
 
         sm = self._speed_multiplier()
         s = self._style.lower()
+
+        if "wind" in s:
+            dt = 1.0 / 30.0
+            self._time_counter += dt
+            for p in self._particles:
+                p.width = w
+                p.height = h
+                tau = (p.phase + self._time_counter) % p.t_life
+                p.x = p.spawn_x + p.vx * tau
+                p.y = p.spawn_y + p.vy * tau
+            self.update()
+            return
 
         if "glint" in s or "twinkle" in s:
             dt = 1.0 / 30.0
@@ -539,7 +673,22 @@ class ParticleOverlayWidget(QWidget):
             g = self._color.green()
             b = self._color.blue()
 
-            if "glint" in self._style.lower():
+            if "wind" in self._style.lower():
+                for p in self._particles:
+                    cr, cg, cb = p.color_rgb
+                    a = int(round(p.base_alpha * 255))
+                    pen = QPen(QColor(cr, cg, cb, a), max(1.0, p.thickness), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+                    painter.setPen(pen)
+                    rot = p.rot
+                    half_d = max(0.1, (p.length - p.thickness) / 2.0)
+                    cos_r = math.cos(rot)
+                    sin_r = math.sin(rot)
+                    x1 = p.x - half_d * cos_r
+                    y1 = p.y - half_d * sin_r
+                    x2 = p.x + half_d * cos_r
+                    y2 = p.y + half_d * sin_r
+                    painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+            elif "glint" in self._style.lower():
                 r_out = int(round(r * 0.4 + 255 * 0.6))
                 g_out = int(round(g * 0.4 + 255 * 0.6))
                 b_out = int(round(b * 0.4 + 255 * 0.6))
@@ -615,7 +764,7 @@ class ParticleOverlayWidget(QWidget):
                     painter.drawEllipse(QPointF(p.x, p.y), p.radius, p.radius)
 
         # 2. If 'Below Text' layer is active and text pixmap is present, draw text on top of particles
-        # Centered exactly to align with QLabel preview_image (AlignCenter)
+        # Wind Streaks is strictly foreground overlay above text, so skip drawing text over particles
         if self._layer == LAYER_BELOW_TEXT and self._text_pixmap and not self._text_pixmap.isNull():
             ox = max(0, (self.width() - self._text_pixmap.width()) // 2)
             oy = max(0, (self.height() - self._text_pixmap.height()) // 2)

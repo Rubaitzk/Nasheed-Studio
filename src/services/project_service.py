@@ -160,6 +160,7 @@ TEMPLATE_DESIGN_KEYS = [
     "particles_quantity",
     "particles_color",
     "particles_speed",
+    "particles_angle",
 ]
 
 PROTECTED_PROJECT_CONTENT_KEYS = {
