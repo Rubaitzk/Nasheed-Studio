@@ -261,23 +261,23 @@ class PlaylistDelegate(QStyledItemDelegate):
 
         # Background card
         if is_selected:
-            bg_color = QColor("#253042")
-            border_color = QColor("#38455C")
+            bg_color = QColor(TOKENS["selection_bg"])
+            border_color = QColor(TOKENS["selection_border"])
         elif is_hover:
-            bg_color = QColor("#242A36")
-            border_color = QColor("#333B4A")
+            bg_color = QColor(TOKENS["item_hover_bg"])
+            border_color = QColor(TOKENS["item_hover_border"])
         else:
-            bg_color = QColor("#1E222A")
-            border_color = QColor("#242933")
+            bg_color = QColor(TOKENS["bg_panel_alt"])
+            border_color = QColor(TOKENS["bg_input"])
 
         painter.setPen(border_color)
         painter.setBrush(bg_color)
         painter.drawRoundedRect(rect, 4, 4)
 
-        # 3px Blue Accent Indicator on Left Edge for Selected Item
+        # 3px Green Accent Indicator on Left Edge for Selected Item
         if is_selected:
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor("#6C9FE8"))
+            painter.setBrush(QColor(TOKENS["accent"]))
             painter.drawRoundedRect(QRect(rect.left(), rect.top() + 3, 3, rect.height() - 6), 1.5, 1.5)
 
         # Extract text content
@@ -306,7 +306,7 @@ class PlaylistDelegate(QStyledItemDelegate):
         fm = painter.fontMetrics()
 
         # 1. Track Index
-        idx_color = QColor("#6C9FE8") if is_selected else QColor("#626976")
+        idx_color = QColor(TOKENS["accent"]) if is_selected else QColor(TOKENS["text_subtle"])
         font_bold = QFont(painter.font())
         font_bold.setBold(True)
         painter.setFont(font_bold)
@@ -319,7 +319,7 @@ class PlaylistDelegate(QStyledItemDelegate):
         dur_w = 0
         if dur_str:
             painter.setFont(font_normal)
-            painter.setPen(QColor("#9CA3AF"))
+            painter.setPen(QColor(TOKENS["text_muted"]))
             dur_w = fm.horizontalAdvance(dur_str)
             painter.drawText(rect.right() - dur_w - 10, rect.top() + 18, dur_str)
 
@@ -327,14 +327,14 @@ class PlaylistDelegate(QStyledItemDelegate):
         title_x = rect.left() + 34
         avail_title_w = max(40, rect.right() - dur_w - 18 - title_x)
         painter.setFont(font_bold if is_selected else font_normal)
-        painter.setPen(QColor("#FFFFFF") if is_selected else QColor("#F0F2F5"))
+        painter.setPen(QColor("#FFFFFF") if is_selected else QColor(TOKENS["text_main"]))
         elided_title = fm.elidedText(title_str, Qt.TextElideMode.ElideRight, avail_title_w)
         painter.drawText(title_x, rect.top() + 18, elided_title)
 
         # 4. Filename (Second line, elided)
         if filename_str:
             painter.setFont(font_normal)
-            painter.setPen(QColor("#626976"))
+            painter.setPen(QColor(TOKENS["text_subtle"]))
             avail_sub_w = max(40, rect.right() - 10 - title_x)
             elided_sub = fm.elidedText(filename_str, Qt.TextElideMode.ElideRight, avail_sub_w)
             painter.drawText(title_x, rect.top() + 34, elided_sub)
@@ -605,7 +605,7 @@ class MainWindow(QMainWindow):
 
         # App Brand & Name
         brand_icon = QLabel()
-        brand_icon.setPixmap(get_svg_pixmap("app", 20, "#6C9FE8"))
+        brand_icon.setPixmap(get_svg_pixmap("app", 20, TOKENS["accent"]))
         tbl.addWidget(brand_icon)
 
         title_lbl = QLabel("NCN Studio")
@@ -635,13 +635,15 @@ class MainWindow(QMainWindow):
 
         # Top Bar Action Buttons
         self.new_btn = QPushButton("New")
-        self.new_btn.setIcon(get_svg_icon("new", 14, "#F0F2F5"))
+        self.new_btn.setObjectName("outlined_accent")
+        self.new_btn.setIcon(get_svg_icon("new", 14, TOKENS["text_main"]))
         self.new_btn.setToolTip("Create new project (Ctrl+N)")
         self.new_btn.clicked.connect(self.new_project)
         tbl.addWidget(self.new_btn)
 
         self.open_btn = QPushButton("Open")
-        self.open_btn.setIcon(get_svg_icon("open", 14, "#F0F2F5"))
+        self.open_btn.setObjectName("outlined_accent")
+        self.open_btn.setIcon(get_svg_icon("open", 14, TOKENS["text_main"]))
         self.open_btn.setToolTip("Open existing project (Ctrl+O)")
         self.open_btn.clicked.connect(self.open_project)
         tbl.addWidget(self.open_btn)
@@ -649,7 +651,7 @@ class MainWindow(QMainWindow):
         # Save is the ONLY filled button in the top bar
         self.save_btn = QPushButton("Save")
         self.save_btn.setObjectName("primary")
-        self.save_btn.setIcon(get_svg_icon("save", 14, "#0E141E"))
+        self.save_btn.setIcon(get_svg_icon("save", 14, TOKENS["accent_text"]))
         self.save_btn.setToolTip("Save project changes (Ctrl+S)")
         self.save_btn.clicked.connect(self.save_project)
         tbl.addWidget(self.save_btn)
@@ -1091,10 +1093,10 @@ class MainWindow(QMainWindow):
         self.cancel_btn.clicked.connect(self._cancel_export)
         eb_layout.addWidget(self.cancel_btn)
 
-        # Render button (Filled blue primary button)
+        # Render button (Filled green primary button)
         self.render_btn = QPushButton("Render MP4 →")
         self.render_btn.setObjectName("primary")
-        self.render_btn.setIcon(get_svg_icon("render", 13, "#0E141E"))
+        self.render_btn.setIcon(get_svg_icon("render", 13, TOKENS["accent_text"]))
         self.render_btn.clicked.connect(self.render_video)
         eb_layout.addWidget(self.render_btn)
 
@@ -1372,6 +1374,7 @@ class MainWindow(QMainWindow):
         self.background_clear_btn.clicked.connect(self.clear_background)
 
         self.background_btn = QPushButton("Choose Background…")
+        self.background_btn.setObjectName("outlined_accent")
         self.background_btn.setToolTip("Select background image (PNG, JPG) or video (MP4, MOV)")
         self.background_btn.setIcon(get_svg_icon("image", 13, "#F0F2F5"))
         self.background_btn.clicked.connect(self.choose_background)
@@ -1432,6 +1435,7 @@ class MainWindow(QMainWindow):
         self.logo_clear_btn.clicked.connect(self.clear_logo)
 
         self.logo_btn = QPushButton("Choose logo…")
+        self.logo_btn.setObjectName("outlined_accent")
         self.logo_btn.setIcon(get_svg_icon("image", 13, "#F0F2F5"))
         self.logo_btn.clicked.connect(self.choose_logo)
 
@@ -1925,6 +1929,7 @@ class MainWindow(QMainWindow):
         cur_icon = QLabel()
         cur_icon.setPixmap(get_svg_pixmap("tab_indicator", 14, "#9CA3AF"))
         self.cursor_btn = QPushButton("Choose cursor…")
+        self.cursor_btn.setObjectName("outlined_accent")
         self.cursor_btn.clicked.connect(self.choose_cursor)
         self.cursor_reset_btn = QPushButton("Reset")
         self.cursor_reset_btn.clicked.connect(self.reset_cursor)
@@ -2178,6 +2183,7 @@ class MainWindow(QMainWindow):
         self.intro_audio_clear_btn = QPushButton("Clear")
         self.intro_audio_clear_btn.clicked.connect(self.clear_intro_audio)
         self.intro_audio_btn = QPushButton("Choose Intro Audio…")
+        self.intro_audio_btn.setObjectName("outlined_accent")
         self.intro_audio_btn.clicked.connect(self.choose_intro_audio)
 
         intro_audio_row.addWidget(intro_audio_icon)
@@ -2235,6 +2241,7 @@ class MainWindow(QMainWindow):
         self.sfx_reset_btn = QPushButton("Reset")
         self.sfx_reset_btn.clicked.connect(self.reset_sfx)
         self.sfx_btn = QPushButton("Choose SFX…")
+        self.sfx_btn.setObjectName("outlined_accent")
         self.sfx_btn.clicked.connect(self.choose_sfx)
 
         sfx_row.addWidget(sfx_icon)

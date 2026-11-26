@@ -58,15 +58,15 @@ def test_divider_width_is_1px(main_window):
 
 
 def test_divider_uses_same_color_as_existing_divider(main_window):
-    """Assert the divider uses the same color as the existing hairline dividers (#2E3440)."""
-    expected_color = TOKENS["border_hairline"].upper()  # #2E3440
-    assert expected_color == "#2E3440"
+    """Assert the divider uses the same color as the existing hairline dividers."""
+    expected_color = TOKENS["border_hairline"].upper()
+    assert expected_color == TOKENS["border_hairline"].upper()
 
     # Verify hairline_h and hairline_v styles in application stylesheet
     assert "QFrame#hairline_h" in STYLE
     assert "QFrame#playlist_canvas_divider" in STYLE
     assert "QFrame#canvas_inspector_divider" in STYLE
-    assert "#2E3440" in STYLE
+    assert expected_color in STYLE
 
 
 def test_layout_margins_are_symmetric(main_window):

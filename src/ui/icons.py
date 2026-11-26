@@ -157,7 +157,14 @@ SVG_ICONS = {
 }
 
 
-def get_svg_pixmap(name: str, size: int = 16, color: str = "#F0F2F5") -> QPixmap:
+try:
+    from src.ui.style import TOKENS
+    DEFAULT_ICON_COLOR = TOKENS.get("text_main", "#F0F4F1")
+except Exception:
+    DEFAULT_ICON_COLOR = "#F0F4F1"
+
+
+def get_svg_pixmap(name: str, size: int = 16, color: str = DEFAULT_ICON_COLOR) -> QPixmap:
     """Render an SVG string to a QPixmap with the specified size and color."""
     svg_str = SVG_ICONS.get(name)
     if not svg_str:
@@ -181,7 +188,7 @@ def get_svg_pixmap(name: str, size: int = 16, color: str = "#F0F2F5") -> QPixmap
     return pix
 
 
-def get_svg_icon(name: str, size: int = 16, color: str = "#F0F2F5") -> QIcon:
+def get_svg_icon(name: str, size: int = 16, color: str = DEFAULT_ICON_COLOR) -> QIcon:
     """Create a QIcon from an SVG icon name."""
     pix = get_svg_pixmap(name, size, color)
     return QIcon(pix)
