@@ -685,7 +685,7 @@ QCheckBox::indicator:checked, QRadioButton::indicator:checked {{
 }}
 
 /* ---- ScrollArea & Menus ---- */
-QScrollArea {{
+QScrollArea, QScrollArea > QWidget, QScrollArea > QWidget > QWidget {{
     border: none;
     background: transparent;
 }}
