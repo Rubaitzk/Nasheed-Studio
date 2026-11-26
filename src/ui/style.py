@@ -12,6 +12,11 @@ Approved Palette:
 - Blue accent: #6C9FE8 (sparingly: render CTA, active indicators, playhead, focus)
 """
 
+try:
+    from src.ui import resources_rc  # noqa: F401 - registers :/icons/... resources
+except ImportError:
+    pass
+
 # Named token dictionary
 TOKENS = {
     "bg_app": "#111317",
@@ -175,12 +180,13 @@ QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {
 }
 QSpinBox, QDoubleSpinBox {
     padding-left: 6px;
-    padding-right: 20px;
+    padding-right: 22px;
 }
 QSpinBox::up-button, QDoubleSpinBox::up-button {
     subcontrol-origin: border;
     subcontrol-position: top right;
-    width: 18px;
+    width: 20px;
+    height: 12px;
     border-left: 1px solid #2E3440;
     border-bottom: 1px solid #2E3440;
     background: #2A303D;
@@ -189,10 +195,14 @@ QSpinBox::up-button, QDoubleSpinBox::up-button {
 QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover {
     background: #343C4C;
 }
+QSpinBox::up-button:pressed, QDoubleSpinBox::up-button:pressed {
+    background: #1E222A;
+}
 QSpinBox::down-button, QDoubleSpinBox::down-button {
     subcontrol-origin: border;
     subcontrol-position: bottom right;
-    width: 18px;
+    width: 20px;
+    height: 12px;
     border-left: 1px solid #2E3440;
     background: #2A303D;
     border-bottom-right-radius: 3px;
@@ -200,32 +210,62 @@ QSpinBox::down-button, QDoubleSpinBox::down-button {
 QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
     background: #343C4C;
 }
+QSpinBox::down-button:pressed, QDoubleSpinBox::down-button:pressed {
+    background: #1E222A;
+}
 QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
-    width: 0;
-    height: 0;
-    border-left: 3px solid transparent;
-    border-right: 3px solid transparent;
-    border-bottom: 4px solid #9CA3AF;
+    image: url(:/icons/chevron_up.svg);
+    width: 10px;
+    height: 10px;
+}
+QSpinBox::up-arrow:hover, QDoubleSpinBox::up-arrow:hover {
+    image: url(:/icons/chevron_up_hover.svg);
+}
+QSpinBox::up-arrow:pressed, QDoubleSpinBox::up-arrow:pressed {
+    image: url(:/icons/chevron_up_pressed.svg);
+}
+QSpinBox::up-arrow:disabled, QDoubleSpinBox::up-arrow:disabled,
+QSpinBox::up-arrow:off, QDoubleSpinBox::up-arrow:off {
+    image: url(:/icons/chevron_up_disabled.svg);
 }
 QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
-    width: 0;
-    height: 0;
-    border-left: 3px solid transparent;
-    border-right: 3px solid transparent;
-    border-top: 4px solid #9CA3AF;
+    image: url(:/icons/chevron_down.svg);
+    width: 10px;
+    height: 10px;
+}
+QSpinBox::down-arrow:hover, QDoubleSpinBox::down-arrow:hover {
+    image: url(:/icons/chevron_down_hover.svg);
+}
+QSpinBox::down-arrow:pressed, QDoubleSpinBox::down-arrow:pressed {
+    image: url(:/icons/chevron_down_pressed.svg);
+}
+QSpinBox::down-arrow:disabled, QDoubleSpinBox::down-arrow:disabled,
+QSpinBox::down-arrow:off, QDoubleSpinBox::down-arrow:off {
+    image: url(:/icons/chevron_down_disabled.svg);
 }
 QComboBox::drop-down {
     subcontrol-origin: padding;
     subcontrol-position: top right;
-    width: 20px;
+    width: 22px;
     border-left: none;
 }
+QComboBox::drop-down:hover {
+    background: transparent;
+}
 QComboBox::down-arrow {
-    image: none;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 5px solid #9CA3AF;
+    image: url(:/icons/chevron_down.svg);
+    width: 10px;
+    height: 10px;
     margin-right: 6px;
+}
+QComboBox::down-arrow:hover {
+    image: url(:/icons/chevron_down_hover.svg);
+}
+QComboBox::down-arrow:pressed {
+    image: url(:/icons/chevron_down_pressed.svg);
+}
+QComboBox::down-arrow:disabled {
+    image: url(:/icons/chevron_down_disabled.svg);
 }
 QComboBox QAbstractItemView {
     background: #1E222A;
@@ -549,6 +589,16 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
     height: 0px;
     background: none;
     border: none;
+}
+QScrollBar::up-arrow:vertical {
+    image: url(:/icons/chevron_up.svg);
+    width: 8px;
+    height: 8px;
+}
+QScrollBar::down-arrow:vertical {
+    image: url(:/icons/chevron_down.svg);
+    width: 8px;
+    height: 8px;
 }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
     background: none;

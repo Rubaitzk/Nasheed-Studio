@@ -27,6 +27,7 @@ __pycache__/
 *.webp
 *.tiff
 assets/
+!assets/icons/**
 user_templates/
 Documentation/
 

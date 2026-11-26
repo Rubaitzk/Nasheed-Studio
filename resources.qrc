@@ -1,0 +1,22 @@
+<RCC>
+    <qresource prefix="/">
+        <file>assets/icons/chevron_down.svg</file>
+        <file>assets/icons/chevron_down_hover.svg</file>
+        <file>assets/icons/chevron_down_pressed.svg</file>
+        <file>assets/icons/chevron_down_disabled.svg</file>
+        <file>assets/icons/chevron_up.svg</file>
+        <file>assets/icons/chevron_up_hover.svg</file>
+        <file>assets/icons/chevron_up_pressed.svg</file>
+        <file>assets/icons/chevron_up_disabled.svg</file>
+    </qresource>
+    <qresource prefix="/icons">
+        <file alias="chevron_down.svg">assets/icons/chevron_down.svg</file>
+        <file alias="chevron_down_hover.svg">assets/icons/chevron_down_hover.svg</file>
+        <file alias="chevron_down_pressed.svg">assets/icons/chevron_down_pressed.svg</file>
+        <file alias="chevron_down_disabled.svg">assets/icons/chevron_down_disabled.svg</file>
+        <file alias="chevron_up.svg">assets/icons/chevron_up.svg</file>
+        <file alias="chevron_up_hover.svg">assets/icons/chevron_up_hover.svg</file>
+        <file alias="chevron_up_pressed.svg">assets/icons/chevron_up_pressed.svg</file>
+        <file alias="chevron_up_disabled.svg">assets/icons/chevron_up_disabled.svg</file>
+    </qresource>
+</RCC>
