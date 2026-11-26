@@ -960,6 +960,34 @@ class MainWindow(QMainWindow):
         self._install_inspector_wheel_filters()
         self.splitter.addWidget(self.inspector_panel)
 
+        # --------------------------------------------------------------
+        # Splitter Vertical Dividers (Item 4)
+        # 1 px vertical dividers centered in splitter handles with symmetric spacing
+        # --------------------------------------------------------------
+        self.splitter.setHandleWidth(7)
+
+        # 1. Divider between Playlist & Audio and Video Canvas (handle 1)
+        h1 = self.splitter.handle(1)
+        h1_layout = QHBoxLayout(h1)
+        h1_layout.setContentsMargins(3, 0, 3, 0)
+        h1_layout.setSpacing(0)
+        self.playlist_canvas_divider = QFrame(h1)
+        self.playlist_canvas_divider.setObjectName("playlist_canvas_divider")
+        self.playlist_canvas_divider.setFixedWidth(1)
+        self.playlist_canvas_divider.setFrameShape(QFrame.Shape.VLine)
+        h1_layout.addWidget(self.playlist_canvas_divider)
+
+        # 2. Divider between Video Canvas and Inspector (handle 2)
+        h2 = self.splitter.handle(2)
+        h2_layout = QHBoxLayout(h2)
+        h2_layout.setContentsMargins(3, 0, 3, 0)
+        h2_layout.setSpacing(0)
+        self.canvas_inspector_divider = QFrame(h2)
+        self.canvas_inspector_divider.setObjectName("canvas_inspector_divider")
+        self.canvas_inspector_divider.setFixedWidth(1)
+        self.canvas_inspector_divider.setFrameShape(QFrame.Shape.VLine)
+        h2_layout.addWidget(self.canvas_inspector_divider)
+
         # Set default splitter weights & stretch
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)

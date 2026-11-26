@@ -152,11 +152,17 @@ QFrame#hairline_h {
     min-height: 1px;
     border: none;
 }
-QSplitter::handle {
-    background: #181B21;
-    width: 4px;
+QFrame#hairline_v, QFrame#playlist_canvas_divider, QFrame#canvas_inspector_divider {
+    background: #2E3440;
+    max-width: 1px;
+    min-width: 1px;
+    border: none;
 }
-QSplitter::handle:hover {
+QSplitter::handle {
+    background: #111317;
+}
+QSplitter::handle:hover QFrame#playlist_canvas_divider,
+QSplitter::handle:hover QFrame#canvas_inspector_divider {
     background: #6C9FE8;
 }
 
