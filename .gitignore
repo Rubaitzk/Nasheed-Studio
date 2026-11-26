@@ -31,8 +31,9 @@ assets/
 user_templates/
 Documentation/
 
-# Allow deterministic test fixtures
+# Allow deterministic test fixtures and theme artifacts
 !tests/fixtures/**
+!tests/artifacts/theme/**
 
 # Build artifacts & packages
 build/
