@@ -16,16 +16,30 @@ def application_icon_path() -> Path | None:
         bundle_dir = Path(sys.executable).resolve().parent
         candidates.extend(
             [
+                bundle_dir / "app_icon.png",
+                bundle_dir / "app_icon.ico",
                 bundle_dir / "assets" / "app_icon.png",
+                bundle_dir / "assets" / "app_icon.ico",
                 bundle_dir / "_internal" / "assets" / "app_icon.png",
+                bundle_dir / "_internal" / "assets" / "app_icon.ico",
             ]
         )
         meipass = getattr(sys, "_MEIPASS", None)
         if meipass:
-            candidates.append(Path(meipass) / "assets" / "app_icon.png")
+            candidates.extend(
+                [
+                    Path(meipass) / "assets" / "app_icon.png",
+                    Path(meipass) / "assets" / "app_icon.ico",
+                ]
+            )
 
     source_root = Path(__file__).resolve().parents[2]
-    candidates.append(source_root / "assets" / "app_icon.png")
+    candidates.extend(
+        [
+            source_root / "assets" / "app_icon.png",
+            source_root / "assets" / "app_icon.ico",
+        ]
+    )
 
     for candidate in candidates:
         if candidate.is_file():

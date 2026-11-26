@@ -5,6 +5,12 @@ from src.ui.branding import application_icon
 
 
 def main():
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("NCNStudio.PlaylistAutomation.App")
+        except Exception:
+            pass
     app = QApplication(sys.argv)
     app.setApplicationName("NCN Studio")
     icon = application_icon()

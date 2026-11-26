@@ -117,11 +117,16 @@ def test_project_serialization_includes_all_new_properties(qapp):
 
 def test_render_and_preview_parity_with_offsets(qapp):
     """Ensure project settings with adjusters and colors are forwarded accurately to render pipeline."""
+    fixtures_dir = Path(__file__).resolve().parent / "fixtures"
+    cursor_fixture = str(fixtures_dir / "cursors" / "test_paw_cursor.png")
+    wav_fixture = str(fixtures_dir / "audio" / "sample_tone.wav")
+    bg_fixture = str(fixtures_dir / "images" / "sample_bg.png")
+
     project = {
         "collection_title": "GYM Nasheeds",
-        "background": "assets/lion_clean_bg.png",
-        "logo": "assets/ncn_logo.png",
-        "cursor_path": "assets/paw_cursor.png",
+        "background": bg_fixture,
+        "logo": "",
+        "cursor_path": cursor_fixture,
         "cursor_size": 50,
         "cursor_y_offset": 8,
         "highlight_y_offset": -5,
@@ -133,7 +138,7 @@ def test_render_and_preview_parity_with_offsets(qapp):
         "highlight_corner_radius": 0,
         "highlight_target": "text",
         "tracks": [
-            {"title": "Track 1", "duration": 10.0, "path": "assets/dragon-studio-cartoon-cat-meow-487661.mp3"},
+            {"title": "Track 1", "duration": 1.0, "path": wav_fixture},
         ],
         "output_path": "test_output.mp4",
     }
@@ -148,14 +153,14 @@ def test_render_and_preview_parity_with_offsets(qapp):
         base_prev, ov_prev = create_composition(
             width=1920,
             height=1080,
-            background_path="assets/lion_clean_bg.png",
-            logo_path="assets/ncn_logo.png",
+            background_path=bg_fixture,
+            logo_path=None,
             collection_title="GYM Nasheeds",
             track_titles=["Track 1"],
             template="Cinematic",
             out_dir=tmp_prev,
             indicator_mode="both",
-            cursor_path="assets/paw_cursor.png",
+            cursor_path=cursor_fixture,
             cursor_size=50,
             cursor_y_offset=8,
             highlight_y_offset=-5,

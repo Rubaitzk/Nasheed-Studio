@@ -34,8 +34,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional, Union
 
-from PySide6.QtCore import Qt, Signal, QObject, QTimer, QSettings, QEvent, QSize, QUrl
-from PySide6.QtGui import QPixmap, QAction, QIcon, QDragEnterEvent, QDropEvent, QColor, QPainter, QImage, QKeySequence, QShortcut, QKeyEvent
+from PySide6.QtCore import Qt, Signal, QObject, QTimer, QSettings, QEvent, QSize, QUrl, QRect
+from PySide6.QtGui import QPixmap, QAction, QIcon, QDragEnterEvent, QDropEvent, QColor, QPainter, QImage, QKeySequence, QShortcut, QKeyEvent, QFont, QFontMetrics
 from PySide6.QtMultimedia import QMediaPlayer, QVideoSink, QAudioOutput
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -44,7 +44,7 @@ from PySide6.QtWidgets import (
     QFormLayout, QSplitter, QMessageBox, QProgressBar, QFrame, QAbstractItemView,
     QToolButton, QInputDialog, QSizePolicy, QSpinBox, QScrollArea, QCheckBox,
     QDoubleSpinBox, QSlider, QTabWidget, QMenu, QStyledItemDelegate, QStyleOptionViewItem, QStyle,
-    QColorDialog,
+    QColorDialog, QLayout,
 )
 from PIL import Image
 
@@ -69,6 +69,21 @@ from src.services.project_service import (
 from src.ui.icons import get_svg_icon, get_svg_pixmap
 from src.ui.branding import application_icon
 from src.ui.style import STYLE, TOKENS
+from src.ui.widgets import SearchableFontComboBox, ParticleOverlayWidget
+
+
+def _hex_or_tuple_to_rgb(val: Any, default: tuple[int, int, int] = (56, 189, 248)) -> tuple[int, int, int]:
+    """Parse color into (R, G, B) tuple."""
+    if isinstance(val, (tuple, list)) and len(val) >= 3:
+        return (int(val[0]), int(val[1]), int(val[2]))
+    if isinstance(val, str):
+        s = val.strip().lstrip("#")
+        if len(s) == 6:
+            try:
+                return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
+            except ValueError:
+                pass
+    return default
 
 
 def _set_combo_case_insensitive(combo: Any, text: Any) -> bool:
@@ -161,13 +176,170 @@ class AspectRatioContainer(QWidget):
 # Drag & Drop Aware Track List with Crisp Rendering
 # ---------------------------------------------------------------------------
 
-class PlaylistDelegate(QStyledItemDelegate):
-    """Item delegate that removes State_HasFocus to prevent dotted focus rects or white artifacts."""
+class CollapsibleSection(QWidget):
+    """Clean Resolve-style collapsible inspector section with twirl arrow."""
 
-    def paint(self, painter, option, index):
+    def __init__(self, title: str, collapsed: bool = False, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._is_collapsed = collapsed
+        self._title_text = title
+
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 2, 0, 4)
+        main_layout.setSpacing(4)
+
+        # Header button
+        self.toggle_btn = QPushButton()
+        self.toggle_btn.setObjectName("twirl_header")
+        self.toggle_btn.setCheckable(True)
+        self.toggle_btn.setChecked(not collapsed)
+        self.toggle_btn.setFixedHeight(28)
+        self.toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.toggle_btn.clicked.connect(self._on_toggle)
+        main_layout.addWidget(self.toggle_btn)
+
+        # Content widget
+        self.content_widget = QWidget()
+        self.content_layout = QVBoxLayout(self.content_widget)
+        self.content_layout.setContentsMargins(2, 2, 2, 4)
+        self.content_layout.setSpacing(6)
+        main_layout.addWidget(self.content_widget)
+
+        self.content_widget.setVisible(not collapsed)
+        self._update_header()
+
+    def _on_toggle(self) -> None:
+        self._is_collapsed = not self.toggle_btn.isChecked()
+        self.content_widget.setVisible(not self._is_collapsed)
+        self._update_header()
+
+    def setCollapsed(self, collapsed: bool) -> None:
+        self._is_collapsed = collapsed
+        self.toggle_btn.setChecked(not collapsed)
+        self.content_widget.setVisible(not collapsed)
+        self._update_header()
+
+    def isCollapsed(self) -> bool:
+        return self._is_collapsed
+
+    def _update_header(self) -> None:
+        arrow = "▼" if not self._is_collapsed else "▶"
+        self.toggle_btn.setText(f" {arrow}  {self._title_text}")
+
+    def addWidget(self, widget: QWidget) -> None:
+        self.content_layout.addWidget(widget)
+
+    def addLayout(self, layout: QLayout) -> None:
+        self.content_layout.addLayout(layout)
+
+    def addSpacing(self, spacing: int) -> None:
+        self.content_layout.addSpacing(spacing)
+
+
+class PlaylistDelegate(QStyledItemDelegate):
+    """Item delegate that suppresses focus rects, prevents layout distortion from long titles,
+    and provides a clean, modern Resolve-style row with a restrained blue accent indicator."""
+
+    ROW_HEIGHT = 44
+
+    def sizeHint(self, option: QStyleOptionViewItem, index) -> QSize:
+        w = option.rect.width() if option.rect.width() > 0 else 240
+        return QSize(w, self.ROW_HEIGHT)
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:
         opt = QStyleOptionViewItem(option)
         opt.state &= ~QStyle.StateFlag.State_HasFocus
-        super().paint(painter, opt, index)
+
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+
+        rect = opt.rect.adjusted(2, 2, -2, -2)
+        is_selected = bool(opt.state & QStyle.StateFlag.State_Selected)
+        is_hover = bool(opt.state & QStyle.StateFlag.State_MouseOver)
+
+        # Background card
+        if is_selected:
+            bg_color = QColor(TOKENS["selection_bg"])
+            border_color = QColor(TOKENS["selection_border"])
+        elif is_hover:
+            bg_color = QColor(TOKENS["item_hover_bg"])
+            border_color = QColor(TOKENS["item_hover_border"])
+        else:
+            bg_color = QColor(TOKENS["bg_panel_alt"])
+            border_color = QColor(TOKENS["bg_input"])
+
+        painter.setPen(border_color)
+        painter.setBrush(bg_color)
+        painter.drawRoundedRect(rect, 4, 4)
+
+        # 3px Green Accent Indicator on Left Edge for Selected Item
+        if is_selected:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(TOKENS["accent"]))
+            painter.drawRoundedRect(QRect(rect.left(), rect.top() + 3, 3, rect.height() - 6), 1.5, 1.5)
+
+        # Extract text content
+        raw_text = index.data(Qt.ItemDataRole.DisplayRole) or ""
+        lines = raw_text.split("\n")
+        title_line = lines[0] if lines else ""
+        meta_line = lines[1].strip() if len(lines) > 1 else ""
+
+        # Track index & clean title
+        idx_str = f"{index.row() + 1:02d}"
+        title_str = title_line
+        if title_line.startswith(idx_str):
+            title_str = title_line[len(idx_str):].strip()
+
+        # Duration & filename
+        dur_str = ""
+        filename_str = meta_line
+        if "·" in meta_line:
+            parts = meta_line.split("·", 1)
+            dur_str = parts[0].strip()
+            filename_str = parts[1].strip()
+        elif ":" in meta_line and "·" not in meta_line:
+            dur_str = meta_line
+            filename_str = ""
+
+        fm = painter.fontMetrics()
+
+        # 1. Track Index
+        idx_color = QColor(TOKENS["accent"]) if is_selected else QColor(TOKENS["text_subtle"])
+        font_bold = QFont(painter.font())
+        font_bold.setBold(True)
+        painter.setFont(font_bold)
+        painter.setPen(idx_color)
+        painter.drawText(rect.left() + 10, rect.top() + 18, idx_str)
+
+        # 2. Duration (Right-aligned)
+        font_normal = QFont(painter.font())
+        font_normal.setBold(False)
+        dur_w = 0
+        if dur_str:
+            painter.setFont(font_normal)
+            painter.setPen(QColor(TOKENS["text_muted"]))
+            dur_w = fm.horizontalAdvance(dur_str)
+            painter.drawText(rect.right() - dur_w - 10, rect.top() + 18, dur_str)
+
+        # 3. Track Title (Elided to avoid layout distortion)
+        title_x = rect.left() + 34
+        avail_title_w = max(40, rect.right() - dur_w - 18 - title_x)
+        painter.setFont(font_bold if is_selected else font_normal)
+        painter.setPen(QColor("#FFFFFF") if is_selected else QColor(TOKENS["text_main"]))
+        elided_title = fm.elidedText(title_str, Qt.TextElideMode.ElideRight, avail_title_w)
+        painter.drawText(title_x, rect.top() + 18, elided_title)
+
+        # 4. Filename (Second line, elided)
+        if filename_str:
+            painter.setFont(font_normal)
+            painter.setPen(QColor(TOKENS["text_subtle"]))
+            avail_sub_w = max(40, rect.right() - 10 - title_x)
+            elided_sub = fm.elidedText(filename_str, Qt.TextElideMode.ElideRight, avail_sub_w)
+            painter.drawText(title_x, rect.top() + 34, elided_sub)
+
+        painter.restore()
 
 
 class PlaylistListWidget(QListWidget):
@@ -250,12 +422,23 @@ class InspectorFocusWheelFilter(QObject):
     """
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         if event.type() == QEvent.Type.Wheel and isinstance(obj, QWidget):
+            # Never intercept wheel events on popup windows, dropdown lists, or viewports
+            win = obj.window()
+            if win and (win.windowType() == Qt.WindowType.Popup or win.inherits("QComboBoxPrivateContainer")):
+                return False
+            if isinstance(obj, QAbstractItemView) or isinstance(obj.parent(), QAbstractItemView):
+                return False
+
             is_focused = obj.hasFocus()
             if not is_focused and hasattr(obj, "findChildren"):
                 is_focused = any(c.hasFocus() for c in obj.findChildren(QWidget))
             if not is_focused:
                 scroll_area = self._find_scroll_area(obj)
                 if scroll_area:
+                    # Dismiss any open combobox popups so they do not detach when scrolling
+                    for cb in scroll_area.findChildren(QComboBox):
+                        if cb.view() and cb.view().isVisible():
+                            cb.hidePopup()
                     vsb = scroll_area.verticalScrollBar()
                     delta = event.angleDelta().y()
                     step = vsb.singleStep() * 3 if vsb.singleStep() > 0 else 60
@@ -305,6 +488,7 @@ class MainWindow(QMainWindow):
         self._preview_timeline_timer.timeout.connect(self._on_preview_timeline_tick)
         self._preview_audio_player: Optional[QMediaPlayer] = None
         self._preview_audio_output: Optional[QAudioOutput] = None
+        self._preview_audio_pending_seek: Optional[int] = None
         self._preview_volume: int = 70
         self._preview_pre_mute_volume: int = 70
         self._preview_is_muted: bool = False
@@ -333,6 +517,7 @@ class MainWindow(QMainWindow):
         self.website_color = None
         self.intro_title_color = (255, 255, 255)
         self.intro_website_color = (204, 204, 204)
+        self.particles_color = (56, 189, 248)
         self._last_video_frame_time = 0.0
         self._previewing_intro = False
         self.tracks: list[dict] = []
@@ -349,6 +534,8 @@ class MainWindow(QMainWindow):
         # Preview cache
         self._cached_preview_key = None
         self._cached_preview_pixmap: Optional[QPixmap] = None
+        self._static_layer_render_count: int = 0
+        self._scaled_pixmap_cache: dict = {}
 
         # Timers
         self._title_timer = QTimer(self)
@@ -379,6 +566,7 @@ class MainWindow(QMainWindow):
         self._update_intro_title_color_btn()
         self._update_intro_website_color_btn()
         self._update_project_ui_indicators()
+        self._standardize_numeric_controls()
         self._refresh_preview()
 
         # Undo / Redo engine state
@@ -417,7 +605,7 @@ class MainWindow(QMainWindow):
 
         # App Brand & Name
         brand_icon = QLabel()
-        brand_icon.setPixmap(get_svg_pixmap("app", 20, "#3d8b58"))
+        brand_icon.setPixmap(get_svg_pixmap("app", 20, TOKENS["accent"]))
         tbl.addWidget(brand_icon)
 
         title_lbl = QLabel("NCN Studio")
@@ -447,13 +635,15 @@ class MainWindow(QMainWindow):
 
         # Top Bar Action Buttons
         self.new_btn = QPushButton("New")
-        self.new_btn.setIcon(get_svg_icon("new", 14, "#edf2ee"))
+        self.new_btn.setObjectName("outlined_accent")
+        self.new_btn.setIcon(get_svg_icon("new", 14, TOKENS["text_main"]))
         self.new_btn.setToolTip("Create new project (Ctrl+N)")
         self.new_btn.clicked.connect(self.new_project)
         tbl.addWidget(self.new_btn)
 
         self.open_btn = QPushButton("Open")
-        self.open_btn.setIcon(get_svg_icon("open", 14, "#edf2ee"))
+        self.open_btn.setObjectName("outlined_accent")
+        self.open_btn.setIcon(get_svg_icon("open", 14, TOKENS["text_main"]))
         self.open_btn.setToolTip("Open existing project (Ctrl+O)")
         self.open_btn.clicked.connect(self.open_project)
         tbl.addWidget(self.open_btn)
@@ -461,7 +651,7 @@ class MainWindow(QMainWindow):
         # Save is the ONLY filled button in the top bar
         self.save_btn = QPushButton("Save")
         self.save_btn.setObjectName("primary")
-        self.save_btn.setIcon(get_svg_icon("save", 14, "#ffffff"))
+        self.save_btn.setIcon(get_svg_icon("save", 14, TOKENS["accent_text"]))
         self.save_btn.setToolTip("Save project changes (Ctrl+S)")
         self.save_btn.clicked.connect(self.save_project)
         tbl.addWidget(self.save_btn)
@@ -469,7 +659,7 @@ class MainWindow(QMainWindow):
         # Templates dropdown menu button
         self.templates_btn = QToolButton()
         self.templates_btn.setText("Templates ▾")
-        self.templates_btn.setIcon(get_svg_icon("template", 14, "#edf2ee"))
+        self.templates_btn.setIcon(get_svg_icon("template", 14, "#F0F2F5"))
         self.templates_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         tmpl_menu = QMenu(self.templates_btn)
         act_apply_tmpl = tmpl_menu.addAction("Apply Reusable Template…")
@@ -486,7 +676,7 @@ class MainWindow(QMainWindow):
         # Inspector toggle button
         self.inspector_toggle_btn = QToolButton()
         self.inspector_toggle_btn.setText("Inspector")
-        self.inspector_toggle_btn.setIcon(get_svg_icon("inspector", 14, "#edf2ee"))
+        self.inspector_toggle_btn.setIcon(get_svg_icon("inspector", 14, "#F0F2F5"))
         self.inspector_toggle_btn.setCheckable(True)
         self.inspector_toggle_btn.setChecked(True)
         self.inspector_toggle_btn.setToolTip("Toggle Inspector Panel")
@@ -556,7 +746,7 @@ class MainWindow(QMainWindow):
         btn_row.setSpacing(6)
 
         self.add_tracks_btn = QPushButton()
-        self.add_tracks_btn.setIcon(get_svg_icon("add", 16, "#edf2ee"))
+        self.add_tracks_btn.setIcon(get_svg_icon("add", 16, "#F0F2F5"))
         self.add_tracks_btn.setIconSize(QSize(16, 16))
         self.add_tracks_btn.setToolTip("Add Audio (Ctrl+Shift+O / Ctrl+I) — Add audio files (MP3, WAV, M4A, AAC, FLAC)")
         self.add_tracks_btn.setAccessibleName("Add Audio")
@@ -564,7 +754,7 @@ class MainWindow(QMainWindow):
         self.add_tracks_btn.clicked.connect(self.add_tracks)
 
         self.rename_track_btn = QPushButton()
-        self.rename_track_btn.setIcon(get_svg_icon("edit", 16, "#edf2ee"))
+        self.rename_track_btn.setIcon(get_svg_icon("edit", 16, "#F0F2F5"))
         self.rename_track_btn.setIconSize(QSize(16, 16))
         self.rename_track_btn.setToolTip("Edit Title (F2) — Rename or adjust selected nasheed title")
         self.rename_track_btn.setAccessibleName("Edit Title")
@@ -572,7 +762,7 @@ class MainWindow(QMainWindow):
         self.rename_track_btn.clicked.connect(self._on_rename_track_clicked)
 
         self.remove_track_btn = QPushButton()
-        self.remove_track_btn.setIcon(get_svg_icon("remove", 16, "#edf2ee"))
+        self.remove_track_btn.setIcon(get_svg_icon("remove", 16, "#F0F2F5"))
         self.remove_track_btn.setIconSize(QSize(16, 16))
         self.remove_track_btn.setToolTip("Remove (Delete / Backspace) — Remove selected track(s) from playlist")
         self.remove_track_btn.setAccessibleName("Remove")
@@ -580,7 +770,7 @@ class MainWindow(QMainWindow):
         self.remove_track_btn.clicked.connect(self.remove_track)
 
         self.up_btn = QPushButton()
-        self.up_btn.setIcon(get_svg_icon("up", 16, "#edf2ee"))
+        self.up_btn.setIcon(get_svg_icon("up", 16, "#F0F2F5"))
         self.up_btn.setIconSize(QSize(16, 16))
         self.up_btn.setToolTip("Move selected track up (Alt+Up)")
         self.up_btn.setAccessibleName("Move Up")
@@ -588,7 +778,7 @@ class MainWindow(QMainWindow):
         self.up_btn.clicked.connect(lambda: self.move_track(-1))
 
         self.down_btn = QPushButton()
-        self.down_btn.setIcon(get_svg_icon("down", 16, "#edf2ee"))
+        self.down_btn.setIcon(get_svg_icon("down", 16, "#F0F2F5"))
         self.down_btn.setIconSize(QSize(16, 16))
         self.down_btn.setToolTip("Move selected track down (Alt+Down)")
         self.down_btn.setAccessibleName("Move Down")
@@ -630,13 +820,13 @@ class MainWindow(QMainWindow):
         pv_hdr.addWidget(self.preview_badge)
 
         self.preview_intro_btn = QPushButton("Preview Intro Card")
-        self.preview_intro_btn.setIcon(get_svg_icon("eye", 13, "#edf2ee"))
+        self.preview_intro_btn.setIcon(get_svg_icon("eye", 13, "#F0F2F5"))
         self.preview_intro_btn.setToolTip("Toggle between composition preview and intro card preview")
         self.preview_intro_btn.clicked.connect(self._toggle_intro_preview)
         pv_hdr.addWidget(self.preview_intro_btn)
 
         self.play_preview_btn = QPushButton("Play Preview")
-        self.play_preview_btn.setIcon(get_svg_icon("play", 13, "#edf2ee"))
+        self.play_preview_btn.setIcon(get_svg_icon("play", 13, "#F0F2F5"))
         self.play_preview_btn.setToolTip("Play interactive preview of project audio and composition (Space)")
         self.play_preview_btn.clicked.connect(self._toggle_preview_playback)
         self.play_preview_btn.setVisible(True)
@@ -646,6 +836,8 @@ class MainWindow(QMainWindow):
         # 16:9 Frame inside AspectRatioContainer
         self.preview_frame = QFrame()
         self.preview_frame.setObjectName("preview")
+        self.preview_frame.installEventFilter(self)
+        self.particle_overlay = ParticleOverlayWidget(self.preview_frame)
         pf_layout = QVBoxLayout(self.preview_frame)
         pf_layout.setContentsMargins(0, 0, 0, 0)
 
@@ -654,6 +846,7 @@ class MainWindow(QMainWindow):
         self.preview_image.setWordWrap(True)
         self.preview_image.setObjectName("muted")
         pf_layout.addWidget(self.preview_image)
+        self.particle_overlay.raise_()
 
         self.preview_container = AspectRatioContainer(self.preview_frame)
         pv_layout.addWidget(self.preview_container, 1)
@@ -663,14 +856,14 @@ class MainWindow(QMainWindow):
         scrubber_row.setSpacing(8)
 
         self.scrubber_play_btn = QPushButton()
-        self.scrubber_play_btn.setIcon(get_svg_icon("play", 13, "#edf2ee"))
+        self.scrubber_play_btn.setIcon(get_svg_icon("play", 13, "#F0F2F5"))
         self.scrubber_play_btn.setToolTip("Play / Pause interactive preview (Space)")
         self.scrubber_play_btn.setFixedWidth(32)
         self.scrubber_play_btn.clicked.connect(self._toggle_preview_playback)
         scrubber_row.addWidget(self.scrubber_play_btn)
 
         self.scrubber_stop_btn = QPushButton()
-        self.scrubber_stop_btn.setIcon(get_svg_icon("stop", 13, "#edf2ee"))
+        self.scrubber_stop_btn.setIcon(get_svg_icon("stop", 13, "#F0F2F5"))
         self.scrubber_stop_btn.setToolTip("Stop preview and return to start")
         self.scrubber_stop_btn.setFixedWidth(32)
         self.scrubber_stop_btn.clicked.connect(self._stop_preview_playback)
@@ -697,7 +890,7 @@ class MainWindow(QMainWindow):
 
         # Independent Preview Audio Volume Controls
         self.preview_volume_btn = QPushButton()
-        self.preview_volume_btn.setIcon(get_svg_icon("volume_high", 13, "#edf2ee"))
+        self.preview_volume_btn.setIcon(get_svg_icon("volume_high", 13, "#F0F2F5"))
         self.preview_volume_btn.setToolTip("Mute / Unmute preview audio")
         self.preview_volume_btn.setFixedWidth(28)
         self.preview_volume_btn.clicked.connect(self._toggle_preview_mute)
@@ -735,37 +928,71 @@ class MainWindow(QMainWindow):
         insp_hdr.setObjectName("section")
         insp_layout.addWidget(insp_hdr)
 
-        # 4-Tab Icon Tab Strip
+        # 5-Category Editor Inspector
         self.inspector_tabs = QTabWidget()
         self.inspector_tabs.setObjectName("inspector_tabs")
 
-        # Tab 1: Layout & Assets
+        # Tab 0: Canvas & Layout
+        t0_scroll, t0_layout = self._create_tab_scroll()
+        self._build_tab_canvas_layout(t0_layout)
+        self.inspector_tabs.addTab(t0_scroll, get_svg_icon("tab_layout", 13, "#9CA3AF"), "Canvas")
+        self.inspector_tabs.setTabToolTip(0, "Canvas composition, background, logo & playlist layout")
+
+        # Tab 1: Typography & Text
         t1_scroll, t1_layout = self._create_tab_scroll()
-        self._build_tab_layout_assets(t1_layout)
-        self.inspector_tabs.addTab(t1_scroll, get_svg_icon("tab_layout", 14, "#95a399"), "Layout")
-        self.inspector_tabs.setTabToolTip(0, "Layout & Project Assets")
+        self._build_tab_typography_text(t1_layout)
+        self.inspector_tabs.addTab(t1_scroll, get_svg_icon("tab_text", 13, "#9CA3AF"), "Text")
+        self.inspector_tabs.setTabToolTip(1, "Collection title, track typography & watermark")
 
-        # Tab 2: Text
+        # Tab 2: Track Indicator
         t2_scroll, t2_layout = self._create_tab_scroll()
-        self._build_tab_text(t2_layout)
-        self.inspector_tabs.addTab(t2_scroll, get_svg_icon("tab_text", 14, "#95a399"), "Text")
-        self.inspector_tabs.setTabToolTip(1, "Typography & Fonts")
+        self._build_tab_track_indicator(t2_layout)
+        self.inspector_tabs.addTab(t2_scroll, get_svg_icon("tab_indicator", 13, "#9CA3AF"), "Indicator")
+        self.inspector_tabs.setTabToolTip(2, "Active track cursor & highlight indicator")
 
-        # Tab 3: Indicator & Watermark
+        # Tab 3: Intro & Presentation
         t3_scroll, t3_layout = self._create_tab_scroll()
-        self._build_tab_indicator_watermark(t3_layout)
-        self.inspector_tabs.addTab(t3_scroll, get_svg_icon("tab_indicator", 14, "#95a399"), "Indicator")
-        self.inspector_tabs.setTabToolTip(2, "Track Indicator & Website Watermark")
+        self._build_tab_intro_presentation(t3_layout)
+        self.inspector_tabs.addTab(t3_scroll, get_svg_icon("tab_intro", 13, "#9CA3AF"), "Intro")
+        self.inspector_tabs.setTabToolTip(3, "Intro sequence, presentation card, intro title & audio")
 
-        # Tab 4: Intro & Sound
+        # Tab 4: Audio & SFX
         t4_scroll, t4_layout = self._create_tab_scroll()
-        self._build_tab_intro_sound(t4_layout)
-        self.inspector_tabs.addTab(t4_scroll, get_svg_icon("tab_intro", 14, "#95a399"), "Sound")
-        self.inspector_tabs.setTabToolTip(3, "Intro Card & Sound Effects")
+        self._build_tab_audio(t4_layout)
+        self.inspector_tabs.addTab(t4_scroll, get_svg_icon("tab_audio", 13, "#9CA3AF"), "Audio")
+        self.inspector_tabs.setTabToolTip(4, "Track transition sound effects & general audio")
 
         insp_layout.addWidget(self.inspector_tabs, 1)
         self._install_inspector_wheel_filters()
         self.splitter.addWidget(self.inspector_panel)
+
+        # --------------------------------------------------------------
+        # Splitter Vertical Dividers (Item 4)
+        # 1 px vertical dividers centered in splitter handles with symmetric spacing
+        # --------------------------------------------------------------
+        self.splitter.setHandleWidth(7)
+
+        # 1. Divider between Playlist & Audio and Video Canvas (handle 1)
+        h1 = self.splitter.handle(1)
+        h1_layout = QHBoxLayout(h1)
+        h1_layout.setContentsMargins(3, 0, 3, 0)
+        h1_layout.setSpacing(0)
+        self.playlist_canvas_divider = QFrame(h1)
+        self.playlist_canvas_divider.setObjectName("playlist_canvas_divider")
+        self.playlist_canvas_divider.setFixedWidth(1)
+        self.playlist_canvas_divider.setFrameShape(QFrame.Shape.VLine)
+        h1_layout.addWidget(self.playlist_canvas_divider)
+
+        # 2. Divider between Video Canvas and Inspector (handle 2)
+        h2 = self.splitter.handle(2)
+        h2_layout = QHBoxLayout(h2)
+        h2_layout.setContentsMargins(3, 0, 3, 0)
+        h2_layout.setSpacing(0)
+        self.canvas_inspector_divider = QFrame(h2)
+        self.canvas_inspector_divider.setObjectName("canvas_inspector_divider")
+        self.canvas_inspector_divider.setFixedWidth(1)
+        self.canvas_inspector_divider.setFrameShape(QFrame.Shape.VLine)
+        h2_layout.addWidget(self.canvas_inspector_divider)
 
         # Set default splitter weights & stretch
         self.splitter.setStretchFactor(0, 0)
@@ -780,8 +1007,8 @@ class MainWindow(QMainWindow):
         export_bar = QFrame()
         export_bar.setObjectName("export_bar")
         eb_layout = QHBoxLayout(export_bar)
-        eb_layout.setContentsMargins(12, 6, 12, 6)
-        eb_layout.setSpacing(10)
+        eb_layout.setContentsMargins(10, 5, 10, 5)
+        eb_layout.setSpacing(8)
 
         # Output destination
         out_col = QHBoxLayout()
@@ -792,11 +1019,12 @@ class MainWindow(QMainWindow):
 
         self.output_edit = QLineEdit(str(get_exports_dir() / "nasheed_collection.mp4"))
         self.output_edit.setPlaceholderText("Target MP4 destination path")
+        self.output_edit.setMinimumWidth(140)
         self.output_edit.textChanged.connect(self._mark_dirty)
         out_col.addWidget(self.output_edit, 1)
 
         self.choose_output_btn = QPushButton("Browse…")
-        self.choose_output_btn.setIcon(get_svg_icon("folder", 13, "#edf2ee"))
+        self.choose_output_btn.setIcon(get_svg_icon("folder", 13, "#F0F2F5"))
         self.choose_output_btn.clicked.connect(self.choose_output)
         out_col.addWidget(self.choose_output_btn)
         eb_layout.addLayout(out_col, 2)
@@ -810,6 +1038,7 @@ class MainWindow(QMainWindow):
 
         self.resolution_combo = QComboBox()
         self.resolution_combo.addItems(list(RESOLUTIONS.keys()))
+        self.resolution_combo.setMinimumWidth(100)
         self.resolution_combo.currentTextChanged.connect(self._on_resolution_changed)
         res_col.addWidget(self.resolution_combo)
 
@@ -827,6 +1056,7 @@ class MainWindow(QMainWindow):
 
         self.resource_profile_combo = QComboBox()
         self.resource_profile_combo.addItems(["Balanced", "Background-friendly", "Maximum-speed"])
+        self.resource_profile_combo.setMinimumWidth(110)
         self.resource_profile_combo.setToolTip("Encoder resource profile (Stage 4)")
         prof_col.addWidget(self.resource_profile_combo)
         eb_layout.addLayout(prof_col)
@@ -843,6 +1073,7 @@ class MainWindow(QMainWindow):
             "High Quality · Balanced",
             "Compact · Web Sharing",
         ])
+        self.export_quality_combo.setMinimumWidth(140)
         self.export_quality_combo.setToolTip("Export video quality & bitrate tuning (Ultra Detail gives unconstrained visual fidelity)")
         qual_col.addWidget(self.export_quality_combo)
         eb_layout.addLayout(qual_col)
@@ -865,7 +1096,7 @@ class MainWindow(QMainWindow):
         # Render button (Filled green primary button)
         self.render_btn = QPushButton("Render MP4 →")
         self.render_btn.setObjectName("primary")
-        self.render_btn.setIcon(get_svg_icon("render", 13, "#ffffff"))
+        self.render_btn.setIcon(get_svg_icon("render", 13, TOKENS["accent_text"]))
         self.render_btn.clicked.connect(self.render_video)
         eb_layout.addWidget(self.render_btn)
 
@@ -1046,7 +1277,19 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(6, 8, 6, 8)
         layout.setSpacing(10)
         scroll.setWidget(content)
+        scroll.verticalScrollBar().valueChanged.connect(self._dismiss_active_popups)
         return scroll, layout
+
+    def _dismiss_active_popups(self) -> None:
+        """Dismiss open combobox dropdowns when user scrolls the inspector."""
+        if not hasattr(self, "inspector_panel"):
+            return
+        from PySide6.QtWidgets import QComboBox
+        for cb in self.inspector_panel.findChildren(QComboBox):
+            if cb.view() and cb.view().isVisible():
+                cb.hidePopup()
+            if hasattr(cb, "_completer") and cb._completer and cb._completer.popup() and cb._completer.popup().isVisible():
+                cb._completer.popup().hide()
 
     def _install_inspector_wheel_filters(self) -> None:
         if not hasattr(self, "_inspector_wheel_filter"):
@@ -1060,82 +1303,115 @@ class MainWindow(QMainWindow):
             widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             widget.installEventFilter(self._inspector_wheel_filter)
             for child in widget.findChildren(QWidget):
+                if isinstance(child, QAbstractItemView) or isinstance(child.parent(), QAbstractItemView):
+                    continue
                 child.installEventFilter(self._inspector_wheel_filter)
 
-    def _build_tab_layout_assets(self, layout: QVBoxLayout) -> None:
-        # Layout template
-        sec_lbl = QLabel("LAYOUT TEMPLATE")
-        sec_lbl.setObjectName("section")
-        layout.addWidget(sec_lbl)
+    def _create_prop_row(self, label_text: str, widget: QWidget, stretch_w: int = 1, lbl_min_w: int = 90) -> QHBoxLayout:
+        """Create a clean 2-column property row (Label on left, control on right)."""
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+        lbl = QLabel(label_text)
+        lbl.setObjectName("prop_label")
+        lbl.setFixedWidth(lbl_min_w)
+        row.addWidget(lbl)
+        row.addWidget(widget, stretch_w)
+        return row
 
+    def _create_slider_prop_row(self, label_text: str, slider: QSlider, val_lbl: QLabel, lbl_min_w: int = 90) -> QHBoxLayout:
+        """Create a clean slider row with label on left and slider + value readout on right."""
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+        lbl = QLabel(label_text)
+        lbl.setObjectName("prop_label")
+        lbl.setFixedWidth(lbl_min_w)
+        row.addWidget(lbl)
+        row.addWidget(slider, 1)
+        val_lbl.setMinimumWidth(38)
+        val_lbl.setObjectName("muted")
+        row.addWidget(val_lbl)
+        return row
+
+    def _create_dual_spin_row(self, label_text: str, spin_x: QSpinBox, spin_y: QSpinBox, lbl_min_w: int = 90) -> QHBoxLayout:
+        """Create a compact paired X/Y offset row: Label: X [ val ]  Y [ val ]"""
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+        lbl = QLabel(label_text)
+        lbl.setObjectName("prop_label")
+        lbl.setFixedWidth(lbl_min_w)
+        row.addWidget(lbl)
+
+        xlbl = QLabel("X:")
+        xlbl.setObjectName("subtle")
+        row.addWidget(xlbl)
+        row.addWidget(spin_x, 1)
+
+        ylbl = QLabel("Y:")
+        ylbl.setObjectName("subtle")
+        row.addWidget(ylbl)
+        row.addWidget(spin_y, 1)
+        return row
+
+    def _build_tab_canvas_layout(self, layout: QVBoxLayout) -> None:
+        """Category A: Canvas & Layout (preset, background media, logo overlay, playlist arrangement)."""
+        # 1. Preset & Composition
+        sec_preset = CollapsibleSection("Canvas & Preset", collapsed=False)
         self.template_combo = QComboBox()
         self.template_combo.addItems(["Cinematic", "Minimal", "Two-column"])
         self.template_combo.currentTextChanged.connect(self._on_template_changed)
-        layout.addWidget(self.template_combo)
+        sec_preset.addLayout(self._create_prop_row("Template:", self.template_combo))
+        layout.addWidget(sec_preset)
 
-        layout.addSpacing(4)
-        div1 = QFrame()
-        div1.setObjectName("hairline_h")
-        div1.setFrameShape(QFrame.Shape.HLine)
-        layout.addWidget(div1)
-        layout.addSpacing(4)
-
-        # Background Image / Video
-        bg_lbl = QLabel("BACKGROUND (IMAGE / MP4 VIDEO)")
-        bg_lbl.setObjectName("section")
-        layout.addWidget(bg_lbl)
-
+        # 2. Background Media
+        sec_bg = CollapsibleSection("Background Canvas", collapsed=False)
         self.background_label = self._make_asset_label("No background selected")
         self.background_clear_btn = QPushButton()
-        self.background_clear_btn.setIcon(get_svg_icon("clear", 12, "#95a399"))
+        self.background_clear_btn.setIcon(get_svg_icon("clear", 12, "#9CA3AF"))
         self.background_clear_btn.setToolTip("Clear background")
         self.background_clear_btn.clicked.connect(self.clear_background)
 
         self.background_btn = QPushButton("Choose Background…")
+        self.background_btn.setObjectName("outlined_accent")
         self.background_btn.setToolTip("Select background image (PNG, JPG) or video (MP4, MOV)")
-        self.background_btn.setIcon(get_svg_icon("image", 13, "#edf2ee"))
+        self.background_btn.setIcon(get_svg_icon("image", 13, "#F0F2F5"))
         self.background_btn.clicked.connect(self.choose_background)
 
         bg_row = QHBoxLayout()
         bg_row.setSpacing(6)
         bg_icon = QLabel()
-        bg_icon.setPixmap(get_svg_pixmap("image", 14, "#95a399"))
+        bg_icon.setPixmap(get_svg_pixmap("image", 14, "#9CA3AF"))
         bg_row.addWidget(bg_icon)
         bg_row.addWidget(self.background_label, 1)
+        bg_row.addWidget(self.background_btn)
         bg_row.addWidget(self.background_clear_btn)
+        sec_bg.addLayout(bg_row)
 
         self.background_info_label = QLabel("")
         self.background_info_label.setObjectName("subtle")
         self.background_info_label.setWordWrap(True)
+        sec_bg.addWidget(self.background_info_label)
 
         # Video-specific options container
         self.video_controls_group = QWidget()
         vc_layout = QVBoxLayout(self.video_controls_group)
         vc_layout.setContentsMargins(0, 4, 0, 4)
-        vc_layout.setSpacing(4)
+        vc_layout.setSpacing(5)
 
-        fit_row = QHBoxLayout()
-        fit_lbl = QLabel("Video Fit:")
-        fit_lbl.setObjectName("muted")
         self.video_fit_combo = QComboBox()
         self.video_fit_combo.addItems(["Fill / Crop (Cover)", "Fit with Padding (Letterbox)", "Stretch"])
         self.video_fit_combo.currentTextChanged.connect(self._on_video_settings_changed)
-        fit_row.addWidget(fit_lbl)
-        fit_row.addWidget(self.video_fit_combo, 1)
-        vc_layout.addLayout(fit_row)
+        vc_layout.addLayout(self._create_prop_row("Video Fit:", self.video_fit_combo))
 
-        st_row = QHBoxLayout()
-        st_lbl = QLabel("Start Time:")
-        st_lbl.setObjectName("muted")
         self.video_start_spin = QDoubleSpinBox()
         self.video_start_spin.setRange(0.0, 3600.0)
         self.video_start_spin.setSingleStep(0.5)
         self.video_start_spin.setDecimals(1)
         self.video_start_spin.setSuffix(" s")
         self.video_start_spin.valueChanged.connect(self._on_video_settings_changed)
-        st_row.addWidget(st_lbl)
-        st_row.addWidget(self.video_start_spin, 1)
-        vc_layout.addLayout(st_row)
+        vc_layout.addLayout(self._create_prop_row("Start Time:", self.video_start_spin))
 
         self.video_loop_check = QCheckBox("Loop video until audio ends")
         self.video_loop_check.setChecked(True)
@@ -1147,333 +1423,317 @@ class MainWindow(QMainWindow):
         self.video_mute_check.toggled.connect(self._on_video_settings_changed)
         vc_layout.addWidget(self.video_mute_check)
         self.video_controls_group.setVisible(False)
+        sec_bg.addWidget(self.video_controls_group)
+        layout.addWidget(sec_bg)
 
-        layout.addLayout(bg_row)
-        layout.addWidget(self.background_info_label)
-        layout.addWidget(self.background_btn)
-        layout.addWidget(self.video_controls_group)
-
-        layout.addSpacing(4)
-        div2 = QFrame()
-        div2.setObjectName("hairline_h")
-        div2.setFrameShape(QFrame.Shape.HLine)
-        layout.addWidget(div2)
-        layout.addSpacing(4)
-
-        # Logo overlay
-        logo_sec = QLabel("LOGO OVERLAY")
-        logo_sec.setObjectName("section")
-        layout.addWidget(logo_sec)
-
+        # 3. Logo Overlay
+        sec_logo = CollapsibleSection("Logo Overlay", collapsed=False)
         self.logo_label = self._make_asset_label("No logo selected")
         self.logo_clear_btn = QPushButton()
-        self.logo_clear_btn.setIcon(get_svg_icon("clear", 12, "#95a399"))
+        self.logo_clear_btn.setIcon(get_svg_icon("clear", 12, "#9CA3AF"))
         self.logo_clear_btn.setToolTip("Clear logo image")
         self.logo_clear_btn.clicked.connect(self.clear_logo)
 
         self.logo_btn = QPushButton("Choose logo…")
-        self.logo_btn.setIcon(get_svg_icon("image", 13, "#edf2ee"))
+        self.logo_btn.setObjectName("outlined_accent")
+        self.logo_btn.setIcon(get_svg_icon("image", 13, "#F0F2F5"))
         self.logo_btn.clicked.connect(self.choose_logo)
 
         logo_row = QHBoxLayout()
         logo_row.setSpacing(6)
         logo_icon = QLabel()
-        logo_icon.setPixmap(get_svg_pixmap("image", 14, "#95a399"))
+        logo_icon.setPixmap(get_svg_pixmap("image", 14, "#9CA3AF"))
         logo_row.addWidget(logo_icon)
         logo_row.addWidget(self.logo_label, 1)
+        logo_row.addWidget(self.logo_btn)
         logo_row.addWidget(self.logo_clear_btn)
+        sec_logo.addLayout(logo_row)
 
-        layout.addLayout(logo_row)
-        layout.addWidget(self.logo_btn)
-
-        logo_pos_row = QHBoxLayout()
-        logo_pos_row.setSpacing(6)
-        logo_pos_lbl = QLabel("Corner:")
-        logo_pos_lbl.setObjectName("muted")
         self.logo_pos_combo = QComboBox()
         self.logo_pos_combo.addItems(["Bottom-Right", "Bottom-Left", "Top-Right", "Top-Left"])
         self.logo_pos_combo.currentTextChanged.connect(self._on_logo_pos_changed)
-        logo_pos_row.addWidget(logo_pos_lbl)
-        logo_pos_row.addWidget(self.logo_pos_combo, 1)
-        layout.addLayout(logo_pos_row)
+        sec_logo.addLayout(self._create_prop_row("Placement:", self.logo_pos_combo))
 
-        logo_sz_row = QHBoxLayout()
-        logo_sz_row.setSpacing(6)
-        logo_sz_lbl = QLabel("Logo Size:")
-        logo_sz_lbl.setObjectName("muted")
         self.logo_scale_spin = QSpinBox()
         self.logo_scale_spin.setRange(20, 300)
         self.logo_scale_spin.setValue(100)
         self.logo_scale_spin.setSuffix(" %")
         self.logo_scale_spin.setToolTip("Scale logo size relative to default bounding box (20% to 300%)")
         self.logo_scale_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
-        logo_sz_row.addWidget(logo_sz_lbl)
-        logo_sz_row.addWidget(self.logo_scale_spin, 1)
-        layout.addLayout(logo_sz_row)
+        sec_logo.addLayout(self._create_prop_row("Scale:", self.logo_scale_spin))
 
-        logo_x_row = QHBoxLayout()
-        logo_x_row.setSpacing(6)
-        logo_x_lbl = QLabel("Logo X-Offset:")
-        logo_x_lbl.setObjectName("muted")
         self.logo_x_offset_spin = QSpinBox()
         self.logo_x_offset_spin.setRange(-500, 500)
         self.logo_x_offset_spin.setValue(0)
         self.logo_x_offset_spin.setSuffix(" px")
         self.logo_x_offset_spin.setToolTip("Horizontal position offset for logo from selected corner (-500 to +500 px)")
         self.logo_x_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
-        logo_x_row.addWidget(logo_x_lbl)
-        logo_x_row.addWidget(self.logo_x_offset_spin, 1)
-        layout.addLayout(logo_x_row)
+        sec_logo.addLayout(self._create_prop_row("Logo X-Offset:", self.logo_x_offset_spin))
 
-        logo_y_row = QHBoxLayout()
-        logo_y_row.setSpacing(6)
-        logo_y_lbl = QLabel("Logo Y-Offset:")
-        logo_y_lbl.setObjectName("muted")
         self.logo_y_offset_spin = QSpinBox()
         self.logo_y_offset_spin.setRange(-500, 500)
         self.logo_y_offset_spin.setValue(0)
         self.logo_y_offset_spin.setSuffix(" px")
         self.logo_y_offset_spin.setToolTip("Vertical position offset for logo from selected corner (-500 to +500 px)")
         self.logo_y_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
-        logo_y_row.addWidget(logo_y_lbl)
-        logo_y_row.addWidget(self.logo_y_offset_spin, 1)
-        layout.addLayout(logo_y_row)
+        sec_logo.addLayout(self._create_prop_row("Logo Y-Offset:", self.logo_y_offset_spin))
 
         self.logo_cleanup_check = QCheckBox("Remove solid white / checkerboard background")
         self.logo_cleanup_check.setChecked(True)
         self.logo_cleanup_check.toggled.connect(lambda _: self._on_layout_param_changed())
-        layout.addWidget(self.logo_cleanup_check)
+        sec_logo.addWidget(self.logo_cleanup_check)
+        layout.addWidget(sec_logo)
 
-        layout.addSpacing(4)
-        div3 = QFrame()
-        div3.setObjectName("hairline_h")
-        div3.setFrameShape(QFrame.Shape.HLine)
-        layout.addWidget(div3)
-        layout.addSpacing(4)
-
-        # Playlist Layout & Background Panel
-        pl_sec = QLabel("PLAYLIST LAYOUT & BACKGROUND")
-        pl_sec.setObjectName("section")
-        layout.addWidget(pl_sec)
-
-        pl_pos_row = QHBoxLayout()
-        pl_pos_row.setSpacing(6)
-        pl_pos_lbl = QLabel("Position:")
-        pl_pos_lbl.setObjectName("muted")
+        # 4. Playlist Layout & Arrangement
+        sec_pl = CollapsibleSection("Playlist Layout & Grid", collapsed=False)
         self.playlist_pos_combo = QComboBox()
         self.playlist_pos_combo.addItems(["Left", "Center", "Right"])
         self.playlist_pos_combo.currentTextChanged.connect(lambda _: self._on_layout_param_changed())
-        pl_pos_row.addWidget(pl_pos_lbl)
-        pl_pos_row.addWidget(self.playlist_pos_combo, 1)
-        layout.addLayout(pl_pos_row)
+        sec_pl.addLayout(self._create_prop_row("Position:", self.playlist_pos_combo))
 
-        pl_col_row = QHBoxLayout()
-        pl_col_row.setSpacing(6)
-        cols_lbl = QLabel("Columns:")
-        cols_lbl.setObjectName("muted")
         self.playlist_cols_spin = QSpinBox()
         self.playlist_cols_spin.setRange(1, 4)
         self.playlist_cols_spin.setValue(1)
-        self.playlist_cols_spin.setFixedWidth(68)
         self.playlist_cols_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.playlist_cols_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
-        pl_col_row.addWidget(cols_lbl)
-        pl_col_row.addWidget(self.playlist_cols_spin)
+        sec_pl.addLayout(self._create_prop_row("Columns:", self.playlist_cols_spin))
 
-        col_sp_lbl = QLabel("Column gap:")
-        col_sp_lbl.setObjectName("muted")
         self.col_spacing_spin = QSpinBox()
         self.col_spacing_spin.setRange(10, 250)
         self.col_spacing_spin.setValue(50)
         self.col_spacing_spin.setSuffix(" px")
-        self.col_spacing_spin.setMinimumWidth(60)
         self.col_spacing_spin.setToolTip("Distance / gap between playlist columns")
         self.col_spacing_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
-        pl_col_row.addWidget(col_sp_lbl)
-        pl_col_row.addWidget(self.col_spacing_spin, 1)
-        layout.addLayout(pl_col_row)
+        sec_pl.addLayout(self._create_prop_row("Column Gap:", self.col_spacing_spin))
 
-        # Column distribution mode (Automatic vs Manual)
-        dist_mode_row = QHBoxLayout()
-        dist_mode_row.setSpacing(6)
-        dist_mode_lbl = QLabel("Distribution:")
-        dist_mode_lbl.setObjectName("muted")
         self.playlist_col_mode_combo = QComboBox()
         self.playlist_col_mode_combo.addItems(["Automatic", "Manual"])
         self.playlist_col_mode_combo.setToolTip("Control how tracks are distributed across columns (Automatic or Manual)")
         self.playlist_col_mode_combo.currentTextChanged.connect(self._on_col_distribution_mode_changed)
-        dist_mode_row.addWidget(dist_mode_lbl)
-        dist_mode_row.addWidget(self.playlist_col_mode_combo, 1)
-        layout.addLayout(dist_mode_row)
+        sec_pl.addLayout(self._create_prop_row("Distribution:", self.playlist_col_mode_combo))
 
         self.dist_manual_row = QHBoxLayout()
         self.dist_manual_row.setSpacing(6)
         self.dist_manual_lbl = QLabel("Items Per Col:")
-        self.dist_manual_lbl.setObjectName("muted")
+        self.dist_manual_lbl.setObjectName("prop_label")
+        self.dist_manual_lbl.setFixedWidth(90)
         self.playlist_col_dist_edit = QLineEdit("12, 12")
         self.playlist_col_dist_edit.setPlaceholderText("e.g. 12, 12")
         self.playlist_col_dist_edit.setToolTip("Items per column (comma-separated, e.g. '12, 12' or '10, 8'). Unassigned tracks safely flow into the last column.")
         self.playlist_col_dist_edit.textChanged.connect(lambda _: self._on_layout_param_changed())
         self.dist_manual_row.addWidget(self.dist_manual_lbl)
         self.dist_manual_row.addWidget(self.playlist_col_dist_edit, 1)
-        layout.addLayout(self.dist_manual_row)
+        sec_pl.addLayout(self.dist_manual_row)
         self.dist_manual_lbl.setVisible(False)
         self.playlist_col_dist_edit.setVisible(False)
 
-        pl_x_row = QHBoxLayout()
-        pl_x_row.setSpacing(6)
-        pl_x_lbl = QLabel("Track Titles X-Offset:")
-        pl_x_lbl.setObjectName("muted")
         self.playlist_x_offset_spin = QSpinBox()
         self.playlist_x_offset_spin.setRange(-500, 500)
         self.playlist_x_offset_spin.setValue(0)
         self.playlist_x_offset_spin.setSuffix(" px")
         self.playlist_x_offset_spin.setToolTip("Fine-tune horizontal position of nasheed titles playlist (-500 to +500 px)")
         self.playlist_x_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
-        pl_x_row.addWidget(pl_x_lbl)
-        pl_x_row.addWidget(self.playlist_x_offset_spin, 1)
-        layout.addLayout(pl_x_row)
+        sec_pl.addLayout(self._create_prop_row("Track X-Offset:", self.playlist_x_offset_spin))
 
-        pl_y_row = QHBoxLayout()
-        pl_y_row.setSpacing(6)
-        pl_y_lbl = QLabel("Track Titles Y-Offset:")
-        pl_y_lbl.setObjectName("muted")
         self.playlist_y_offset_spin = QSpinBox()
         self.playlist_y_offset_spin.setRange(-500, 500)
         self.playlist_y_offset_spin.setValue(0)
         self.playlist_y_offset_spin.setSuffix(" px")
         self.playlist_y_offset_spin.setToolTip("Fine-tune vertical position of nasheed titles playlist (-500 to +500 px)")
         self.playlist_y_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
-        pl_y_row.addWidget(pl_y_lbl)
-        pl_y_row.addWidget(self.playlist_y_offset_spin, 1)
-        layout.addLayout(pl_y_row)
+        sec_pl.addLayout(self._create_prop_row("Track Y-Offset:", self.playlist_y_offset_spin))
 
-        bg_op_row = QHBoxLayout()
-        bg_op_row.setSpacing(6)
-        bg_op_lbl = QLabel("Panel Opacity:")
-        bg_op_lbl.setObjectName("muted")
         self.playlist_bg_slider = QSlider(Qt.Orientation.Horizontal)
         self.playlist_bg_slider.setRange(0, 100)
         self.playlist_bg_slider.setValue(0)
         self.playlist_bg_val_lbl = QLabel("0% (Transparent)")
-        self.playlist_bg_val_lbl.setObjectName("muted")
         self.playlist_bg_slider.valueChanged.connect(self._on_playlist_bg_changed)
-        bg_op_row.addWidget(bg_op_lbl)
-        bg_op_row.addWidget(self.playlist_bg_slider, 1)
-        bg_op_row.addWidget(self.playlist_bg_val_lbl)
-        layout.addLayout(bg_op_row)
+        sec_pl.addLayout(self._create_slider_prop_row("Panel Opacity:", self.playlist_bg_slider, self.playlist_bg_val_lbl))
+        layout.addWidget(sec_pl)
+
+        # 4. Ambient Particles Effect (Feature D)
+        sec_particles = CollapsibleSection("Ambient Particles Effect", collapsed=False)
+        self.particles_check = QCheckBox("Enable Ambient Particles")
+        self.particles_check.setToolTip("Toggle animated ambient particles floating in the canvas and exported video")
+        self.particles_check.stateChanged.connect(self._on_particles_param_changed)
+        sec_particles.addWidget(self.particles_check)
+
+        self.particles_style_combo = QComboBox()
+        from src.services.particle_service import PARTICLE_STYLES
+        self.particles_style_combo.addItems(PARTICLE_STYLES)
+        self.particles_style_combo.setToolTip("Animation style: Wind Streaks (capsules drifting diagonally), Drifting Flecks (horizontal float), Floating Orbs (vertical float), Light Glints (slanted slivers), Twinkle Stars (4-point stars), Bokeh Rings (soft circles), Crescents & Stars, or Eight-Point Stars")
+        self.particles_style_combo.currentTextChanged.connect(self._on_particles_param_changed)
+        sec_particles.addLayout(self._create_prop_row("Style:", self.particles_style_combo))
+
+        self.particles_layer_combo = QComboBox()
+        self.particles_layer_combo.addItems(["Above Text", "Below Text"])
+        self.particles_layer_combo.setToolTip("Particle layering: 'Below Text' keeps playlist typography crisp and visible; 'Above Text' floats over all layers")
+        self.particles_layer_combo.currentTextChanged.connect(self._on_particles_param_changed)
+        self._particles_layer_row = QWidget()
+        lay_l = self._create_prop_row("Layer:", self.particles_layer_combo)
+        lay_l.setContentsMargins(0, 0, 0, 0)
+        self._particles_layer_row.setLayout(lay_l)
+        sec_particles.addWidget(self._particles_layer_row)
+
+        self.particles_count_spin = QSpinBox()
+        self.particles_count_spin.setRange(10, 300)
+        self.particles_count_spin.setValue(80)
+        self.particles_count_spin.setSingleStep(10)
+        self.particles_count_spin.setKeyboardTracking(False)
+        self.particles_count_spin.setToolTip("Adjust particle quantity / density across the frame")
+        self.particles_count_spin.valueChanged.connect(self._on_particles_param_changed)
+        sec_particles.addLayout(self._create_prop_row("Density:", self.particles_count_spin))
+
+        self.particles_color_btn = QPushButton()
+        self.particles_color_btn.setFixedHeight(24)
+        self.particles_color_btn.setToolTip("Choose particle color")
+        self.particles_color_btn.clicked.connect(self._choose_particles_color)
+        self._update_particles_color_btn()
+        self._particles_color_row = QWidget()
+        col_l = self._create_prop_row("Particle Color:", self.particles_color_btn)
+        col_l.setContentsMargins(0, 0, 0, 0)
+        self._particles_color_row.setLayout(col_l)
+        sec_particles.addWidget(self._particles_color_row)
+
+        self.particles_speed_spin = QSpinBox()
+        self.particles_speed_spin.setRange(1, 5)
+        self.particles_speed_spin.setValue(2)
+        self.particles_speed_spin.setSingleStep(1)
+        self.particles_speed_spin.setKeyboardTracking(False)
+        self.particles_speed_spin.setToolTip("Adjust particle drift speed (1=Slow, 5=Fast)")
+        self.particles_speed_spin.valueChanged.connect(self._on_particles_param_changed)
+        sec_particles.addLayout(self._create_prop_row("Speed (1-5):", self.particles_speed_spin))
+
+        self.particles_angle_spin = QSpinBox()
+        self.particles_angle_spin.setRange(0, 360)
+        self.particles_angle_spin.setValue(225)
+        self.particles_angle_spin.setSingleStep(5)
+        self.particles_angle_spin.setSuffix("°")
+        self.particles_angle_spin.setKeyboardTracking(False)
+        self.particles_angle_spin.setToolTip("Adjust particle travel angle in degrees (default 225° top-right to bottom-left)")
+        self.particles_angle_spin.valueChanged.connect(self._on_particles_param_changed)
+        self._particles_angle_row = QWidget()
+        ang_l = self._create_prop_row("Angle:", self.particles_angle_spin)
+        ang_l.setContentsMargins(0, 0, 0, 0)
+        self._particles_angle_row.setLayout(ang_l)
+        sec_particles.addWidget(self._particles_angle_row)
+
+        self._update_particles_controls_visibility()
+
+        self.particles_size_slider = QSlider(Qt.Orientation.Horizontal)
+        self.particles_size_slider.setRange(1, 20)
+        self.particles_size_slider.setValue(5)
+        self.particles_size_slider.setSingleStep(1)
+        self.particles_size_slider.setPageStep(2)
+        self.particles_size_slider.setToolTip("Adjust particle visual size across all styles (range 1 to 20)")
+
+        self.particles_size_spin = QSpinBox()
+        self.particles_size_spin.setRange(1, 20)
+        self.particles_size_spin.setValue(5)
+        self.particles_size_spin.setSingleStep(1)
+        self.particles_size_spin.setFixedWidth(55)
+        self.particles_size_spin.setToolTip("Adjust particle visual size across all styles (range 1 to 20)")
+
+        self.particles_size_val_lbl = QLabel("5")
+        self.particles_size_slider.valueChanged.connect(self._on_particles_size_slider_changed)
+        self.particles_size_spin.valueChanged.connect(self._on_particles_size_spin_changed)
+
+        size_row = QHBoxLayout()
+        size_row.setContentsMargins(0, 0, 0, 0)
+        size_row.setSpacing(6)
+        size_lbl = QLabel("Particle Size:")
+        size_lbl.setObjectName("prop_label")
+        size_lbl.setFixedWidth(90)
+        size_row.addWidget(size_lbl)
+        size_row.addWidget(self.particles_size_slider, 1)
+        size_row.addWidget(self.particles_size_spin)
+        sec_particles.addLayout(size_row)
+        layout.addWidget(sec_particles)
 
         layout.addStretch(1)
 
-    def _build_tab_text(self, layout: QVBoxLayout) -> None:
-        # Title Typography
-        title_sec = QLabel("COLLECTION TITLE TYPOGRAPHY")
-        title_sec.setObjectName("section")
-        layout.addWidget(title_sec)
+    _build_tab_layout_assets = _build_tab_canvas_layout  # Backward-compatibility alias
 
+    def _build_tab_typography_text(self, layout: QVBoxLayout) -> None:
+        """Category B: Typography & Text (Collection title, playlist tracks typography, watermark/website text)."""
+        # 1. Collection Title
+        sec_title = CollapsibleSection("Collection Title", collapsed=False)
         tf_box = QHBoxLayout()
         tf_box.setSpacing(6)
-        self.title_font_combo = QComboBox()
-        self.title_font_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        self.title_font_combo.setMinimumContentsLength(6)
+        tf_lbl = QLabel("Font Family:")
+        tf_lbl.setObjectName("prop_label")
+        tf_lbl.setFixedWidth(90)
+        self.title_font_combo = SearchableFontComboBox(placeholder="Search title font…")
         self.title_font_combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.title_font_combo.view().setTextElideMode(Qt.TextElideMode.ElideRight)
         self.title_font_combo.currentTextChanged.connect(self._on_title_font_changed)
         self.title_font_browse_btn = QPushButton("Browse…")
         self.title_font_browse_btn.setToolTip("Select custom .ttf/.otf/.ttc font file from disk")
         self.title_font_browse_btn.clicked.connect(self.choose_custom_title_font)
+        tf_box.addWidget(tf_lbl)
         tf_box.addWidget(self.title_font_combo, 1)
         tf_box.addWidget(self.title_font_browse_btn)
-        layout.addLayout(tf_box)
+        sec_title.addLayout(tf_box)
 
-        t_row = QHBoxLayout()
-        t_row.setSpacing(6)
         self.title_style_combo = QComboBox()
         self.title_style_combo.currentTextChanged.connect(self._on_title_style_changed)
+        sec_title.addLayout(self._create_prop_row("Font Style:", self.title_style_combo))
+
         self.title_size_spin = QSpinBox()
         self.title_size_spin.setRange(20, 90)
         self.title_size_spin.setValue(46)
         self.title_size_spin.setSuffix(" px")
         self.title_size_spin.valueChanged.connect(self._on_title_size_changed)
-        t_row.addWidget(self.title_style_combo, 2)
-        t_row.addWidget(self.title_size_spin, 1)
-        layout.addLayout(t_row)
+        sec_title.addLayout(self._create_prop_row("Font Size:", self.title_size_spin))
 
-        t_pos_row = QHBoxLayout()
-        t_pos_row.setSpacing(6)
         self.title_show_check = QCheckBox("Show Title")
         self.title_show_check.setChecked(True)
         self.title_show_check.toggled.connect(self._on_title_visibility_changed)
+        sec_title.addWidget(self.title_show_check)
+
         self.title_pos_combo = QComboBox()
         self.title_pos_combo.addItems(["Top-Center", "Above Playlist", "Top-Left", "Hidden"])
         self.title_pos_combo.currentTextChanged.connect(self._on_title_visibility_changed)
-        t_pos_row.addWidget(self.title_show_check)
-        t_pos_row.addWidget(self.title_pos_combo, 1)
-        layout.addLayout(t_pos_row)
+        sec_title.addLayout(self._create_prop_row("Position:", self.title_pos_combo))
 
-        t_sp_row = QHBoxLayout()
-        t_sp_row.setSpacing(6)
-        self.title_spacing_lbl = QLabel("Title-Playlist Spacing:")
-        self.title_spacing_lbl.setObjectName("muted")
         self.title_spacing_spin = QSpinBox()
         self.title_spacing_spin.setRange(0, 250)
         self.title_spacing_spin.setValue(40)
         self.title_spacing_spin.setSuffix(" px")
         self.title_spacing_spin.setToolTip("Vertical spacing between title rendered bounds and playlist (0 - 250 px)")
         self.title_spacing_spin.valueChanged.connect(self._on_title_spacing_changed)
-        t_sp_row.addWidget(self.title_spacing_lbl, 1)
-        t_sp_row.addWidget(self.title_spacing_spin, 1)
-        layout.addLayout(t_sp_row)
+        self.title_spacing_lbl = QLabel("List Spacing:")
+        sec_title.addLayout(self._create_prop_row("List Spacing:", self.title_spacing_spin))
 
-        t_x_row = QHBoxLayout()
-        t_x_row.setSpacing(6)
-        t_x_lbl = QLabel("Title X-Offset:")
-        t_x_lbl.setObjectName("muted")
         self.title_x_offset_spin = QSpinBox()
         self.title_x_offset_spin.setRange(-500, 500)
         self.title_x_offset_spin.setValue(0)
         self.title_x_offset_spin.setSuffix(" px")
         self.title_x_offset_spin.setToolTip("Fine-tune horizontal position of Big Title (-500 to +500 px)")
         self.title_x_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
-        t_x_row.addWidget(t_x_lbl)
-        t_x_row.addWidget(self.title_x_offset_spin, 1)
-        layout.addLayout(t_x_row)
 
-        t_y_row = QHBoxLayout()
-        t_y_row.setSpacing(6)
-        t_y_lbl = QLabel("Title Y-Offset:")
-        t_y_lbl.setObjectName("muted")
         self.title_y_offset_spin = QSpinBox()
         self.title_y_offset_spin.setRange(-500, 500)
         self.title_y_offset_spin.setValue(0)
         self.title_y_offset_spin.setSuffix(" px")
         self.title_y_offset_spin.setToolTip("Fine-tune vertical position of Big Title (-500 to +500 px)")
         self.title_y_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
-        t_y_row.addWidget(t_y_lbl)
-        t_y_row.addWidget(self.title_y_offset_spin, 1)
-        layout.addLayout(t_y_row)
+        sec_title.addLayout(self._create_prop_row("Title X-Offset:", self.title_x_offset_spin))
+        sec_title.addLayout(self._create_prop_row("Title Y-Offset:", self.title_y_offset_spin))
 
-        top_row = QHBoxLayout()
-        top_row.setSpacing(6)
-        top_lbl = QLabel("Title Opacity:")
-        top_lbl.setObjectName("muted")
         self.title_opacity_slider = QSlider(Qt.Orientation.Horizontal)
         self.title_opacity_slider.setRange(10, 100)
         self.title_opacity_slider.setValue(100)
         self.title_opacity_slider.setToolTip("Adjust title text transparency (10% - 100%)")
         self.title_opacity_val = QLabel("100%")
-        self.title_opacity_val.setMinimumWidth(40)
-        self.title_opacity_val.setObjectName("muted")
         self.title_opacity_slider.valueChanged.connect(self._on_title_opacity_changed)
-        top_row.addWidget(top_lbl)
-        top_row.addWidget(self.title_opacity_slider, 1)
-        top_row.addWidget(self.title_opacity_val)
-        layout.addLayout(top_row)
+        sec_title.addLayout(self._create_slider_prop_row("Opacity:", self.title_opacity_slider, self.title_opacity_val))
 
         t_col_row = QHBoxLayout()
         t_col_row.setSpacing(6)
-        t_col_lbl = QLabel("Title Color:")
-        t_col_lbl.setObjectName("muted")
+        t_col_lbl = QLabel("Text Color:")
+        t_col_lbl.setObjectName("prop_label")
+        t_col_lbl.setFixedWidth(90)
         self.title_color_btn = QPushButton("Choose color…")
         self.title_color_btn.clicked.connect(self.choose_title_color)
         self.title_color_reset_btn = QPushButton("Reset")
@@ -1482,66 +1742,47 @@ class MainWindow(QMainWindow):
         t_col_row.addWidget(t_col_lbl)
         t_col_row.addWidget(self.title_color_btn, 1)
         t_col_row.addWidget(self.title_color_reset_btn)
-        layout.addLayout(t_col_row)
+        sec_title.addLayout(t_col_row)
+        layout.addWidget(sec_title)
 
-        layout.addSpacing(4)
-        div = QFrame()
-        div.setObjectName("hairline_h")
-        div.setFrameShape(QFrame.Shape.HLine)
-        layout.addWidget(div)
-        layout.addSpacing(4)
-
-        # Track Typography
-        track_sec = QLabel("PLAYLIST TRACKS TYPOGRAPHY")
-        track_sec.setObjectName("section")
-        layout.addWidget(track_sec)
-
+        # 2. Playlist Track Typography
+        sec_track = CollapsibleSection("Playlist Track Typography", collapsed=False)
         trf_box = QHBoxLayout()
         trf_box.setSpacing(6)
-        self.track_font_combo = QComboBox()
-        self.track_font_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        self.track_font_combo.setMinimumContentsLength(6)
+        trf_lbl = QLabel("Font Family:")
+        trf_lbl.setObjectName("prop_label")
+        trf_lbl.setFixedWidth(90)
+        self.track_font_combo = SearchableFontComboBox(placeholder="Search track font…")
         self.track_font_combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.track_font_combo.view().setTextElideMode(Qt.TextElideMode.ElideRight)
         self.track_font_combo.currentTextChanged.connect(self._on_track_font_changed)
         self.track_font_browse_btn = QPushButton("Browse…")
         self.track_font_browse_btn.setToolTip("Select custom .ttf/.otf/.ttc font file from disk")
         self.track_font_browse_btn.clicked.connect(self.choose_custom_track_font)
+        trf_box.addWidget(trf_lbl)
         trf_box.addWidget(self.track_font_combo, 1)
         trf_box.addWidget(self.track_font_browse_btn)
-        layout.addLayout(trf_box)
+        sec_track.addLayout(trf_box)
 
-        tr_row = QHBoxLayout()
-        tr_row.setSpacing(6)
         self.track_style_combo = QComboBox()
         self.track_style_combo.currentTextChanged.connect(self._on_track_style_changed)
+        sec_track.addLayout(self._create_prop_row("Font Style:", self.track_style_combo))
+
         self.track_size_spin = QSpinBox()
         self.track_size_spin.setRange(12, 48)
         self.track_size_spin.setValue(22)
         self.track_size_spin.setSuffix(" px")
         self.track_size_spin.valueChanged.connect(self._on_track_size_changed)
-        tr_row.addWidget(self.track_style_combo, 2)
-        tr_row.addWidget(self.track_size_spin, 1)
-        layout.addLayout(tr_row)
+        sec_track.addLayout(self._create_prop_row("Font Size:", self.track_size_spin))
 
-        sp_row = QHBoxLayout()
-        sp_row.setSpacing(6)
-        sp_lbl = QLabel("Row Spacing:")
-        sp_lbl.setObjectName("muted")
         self.track_spacing_spin = QDoubleSpinBox()
         self.track_spacing_spin.setRange(1.2, 2.8)
         self.track_spacing_spin.setSingleStep(0.1)
         self.track_spacing_spin.setValue(1.85)
         self.track_spacing_spin.setSuffix("x")
         self.track_spacing_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
-        sp_row.addWidget(sp_lbl)
-        sp_row.addWidget(self.track_spacing_spin, 1)
-        layout.addLayout(sp_row)
+        sec_track.addLayout(self._create_prop_row("Row Spacing:", self.track_spacing_spin))
 
-        char_row = QHBoxLayout()
-        char_row.setSpacing(6)
-        char_lim_lbl = QLabel("Max Title Length:")
-        char_lim_lbl.setObjectName("muted")
         self.track_max_chars_spin = QSpinBox()
         self.track_max_chars_spin.setRange(0, 120)
         self.track_max_chars_spin.setValue(0)
@@ -1549,31 +1790,21 @@ class MainWindow(QMainWindow):
         self.track_max_chars_spin.setSuffix(" chars")
         self.track_max_chars_spin.setToolTip("Truncate titles after this many characters (0 = Auto fit to column)")
         self.track_max_chars_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
-        char_row.addWidget(char_lim_lbl)
-        char_row.addWidget(self.track_max_chars_spin, 1)
-        layout.addLayout(char_row)
+        sec_track.addLayout(self._create_prop_row("Max Chars:", self.track_max_chars_spin))
 
-        trop_row = QHBoxLayout()
-        trop_row.setSpacing(6)
-        trop_lbl = QLabel("Track Opacity:")
-        trop_lbl.setObjectName("muted")
         self.track_opacity_slider = QSlider(Qt.Orientation.Horizontal)
         self.track_opacity_slider.setRange(10, 100)
         self.track_opacity_slider.setValue(100)
         self.track_opacity_slider.setToolTip("Adjust playlist tracks transparency (10% - 100%)")
         self.track_opacity_val = QLabel("100%")
-        self.track_opacity_val.setMinimumWidth(40)
-        self.track_opacity_val.setObjectName("muted")
         self.track_opacity_slider.valueChanged.connect(self._on_track_opacity_changed)
-        trop_row.addWidget(trop_lbl)
-        trop_row.addWidget(self.track_opacity_slider, 1)
-        trop_row.addWidget(self.track_opacity_val)
-        layout.addLayout(trop_row)
+        sec_track.addLayout(self._create_slider_prop_row("Track Opacity:", self.track_opacity_slider, self.track_opacity_val))
 
         tr_col_row = QHBoxLayout()
         tr_col_row.setSpacing(6)
-        tr_col_lbl = QLabel("Track Text Color:")
-        tr_col_lbl.setObjectName("muted")
+        tr_col_lbl = QLabel("Text Color:")
+        tr_col_lbl.setObjectName("prop_label")
+        tr_col_lbl.setFixedWidth(90)
         self.track_color_btn = QPushButton("Choose color…")
         self.track_color_btn.clicked.connect(self.choose_track_color)
         self.track_color_reset_btn = QPushButton("Reset")
@@ -1582,12 +1813,8 @@ class MainWindow(QMainWindow):
         tr_col_row.addWidget(tr_col_lbl)
         tr_col_row.addWidget(self.track_color_btn, 1)
         tr_col_row.addWidget(self.track_color_reset_btn)
-        layout.addLayout(tr_col_row)
+        sec_track.addLayout(tr_col_row)
 
-        soft_row = QHBoxLayout()
-        soft_row.setSpacing(6)
-        soft_lbl = QLabel("Text Softening:")
-        soft_lbl.setObjectName("muted")
         self.text_softening_spin = QDoubleSpinBox()
         self.text_softening_spin.setRange(0.0, 3.0)
         self.text_softening_spin.setSingleStep(0.1)
@@ -1596,245 +1823,52 @@ class MainWindow(QMainWindow):
         self.text_softening_spin.setSuffix(" px")
         self.text_softening_spin.setToolTip("Subtle text-edge softening and background blending (0.0 px = crisp)")
         self.text_softening_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
-        soft_row.addWidget(soft_lbl, 1)
-        soft_row.addWidget(self.text_softening_spin, 1)
-        layout.addLayout(soft_row)
-
-        layout.addSpacing(4)
-        div2 = QFrame()
-        div2.setObjectName("hairline_h")
-        div2.setFrameShape(QFrame.Shape.HLine)
-        layout.addWidget(div2)
-        layout.addSpacing(4)
+        sec_track.addLayout(self._create_prop_row("Softening:", self.text_softening_spin))
 
         self.refresh_fonts_btn = QPushButton("Refresh system fonts")
         self.refresh_fonts_btn.setObjectName("quiet")
-        self.refresh_fonts_btn.setIcon(get_svg_icon("refresh", 13, "#95a399"))
+        self.refresh_fonts_btn.setIcon(get_svg_icon("refresh", 13, "#9CA3AF"))
         self.refresh_fonts_btn.clicked.connect(lambda: self._refresh_system_fonts(initial=False))
-        layout.addWidget(self.refresh_fonts_btn)
-
+        sec_track.addWidget(self.refresh_fonts_btn)
         self._refresh_system_fonts(initial=True)
-        layout.addStretch(1)
+        layout.addWidget(sec_track)
 
-    def _build_tab_indicator_watermark(self, layout: QVBoxLayout) -> None:
-        # Active track indicator
-        ind_sec = QLabel("ACTIVE TRACK INDICATOR")
-        ind_sec.setObjectName("section")
-        layout.addWidget(ind_sec)
-
-        self.indicator_combo = QComboBox()
-        self.indicator_combo.addItems([
-            "Both (Cursor & Highlight)",
-            "Cursor only",
-            "Highlight only",
-            "Neither (Clean)"
-        ])
-        self.indicator_combo.currentTextChanged.connect(self._on_indicator_changed)
-        layout.addWidget(self.indicator_combo)
-
-        self.cursor_label = self._make_asset_label("Default arrow cursor")
-        cur_row = QHBoxLayout()
-        cur_row.setSpacing(6)
-        cur_icon = QLabel()
-        cur_icon.setPixmap(get_svg_pixmap("tab_indicator", 14, "#95a399"))
-        self.cursor_btn = QPushButton("Choose cursor…")
-        self.cursor_btn.clicked.connect(self.choose_cursor)
-        self.cursor_reset_btn = QPushButton("Reset")
-        self.cursor_reset_btn.clicked.connect(self.reset_cursor)
-        cur_row.addWidget(cur_icon)
-        cur_row.addWidget(self.cursor_label, 1)
-        cur_row.addWidget(self.cursor_reset_btn)
-        layout.addLayout(cur_row)
-        layout.addWidget(self.cursor_btn)
-
-        sz_row = QHBoxLayout()
-        sz_lbl = QLabel("Cursor size:")
-        sz_lbl.setObjectName("muted")
-        self.cursor_size_spin = QSpinBox()
-        self.cursor_size_spin.setRange(16, 96)
-        self.cursor_size_spin.setValue(32)
-        self.cursor_size_spin.setSuffix(" px")
-        self.cursor_size_spin.valueChanged.connect(self._on_cursor_size_changed)
-        sz_row.addWidget(sz_lbl)
-        sz_row.addWidget(self.cursor_size_spin, 1)
-        layout.addLayout(sz_row)
-
-        cur_x_row = QHBoxLayout()
-        cur_x_row.setSpacing(6)
-        cur_x_lbl = QLabel("Cursor X-Offset:")
-        cur_x_lbl.setObjectName("muted")
-        self.cursor_x_offset_spin = QSpinBox()
-        self.cursor_x_offset_spin.setRange(-100, 100)
-        self.cursor_x_offset_spin.setValue(0)
-        self.cursor_x_offset_spin.setSuffix(" px")
-        self.cursor_x_offset_spin.setToolTip("Fine-tune horizontal positioning of the cursor relative to track text (-100 to +100 px)")
-        self.cursor_x_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
-        cur_x_row.addWidget(cur_x_lbl)
-        cur_x_row.addWidget(self.cursor_x_offset_spin, 1)
-        layout.addLayout(cur_x_row)
-
-        cur_y_row = QHBoxLayout()
-        cur_y_row.setSpacing(6)
-        cur_y_lbl = QLabel("Cursor Y-Offset:")
-        cur_y_lbl.setObjectName("muted")
-        self.cursor_y_offset_spin = QSpinBox()
-        self.cursor_y_offset_spin.setRange(-50, 50)
-        self.cursor_y_offset_spin.setValue(0)
-        self.cursor_y_offset_spin.setSuffix(" px")
-        self.cursor_y_offset_spin.setToolTip("Fine-tune vertical positioning of the cursor relative to track text (-50 to +50 px)")
-        self.cursor_y_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
-        cur_y_row.addWidget(cur_y_lbl)
-        cur_y_row.addWidget(self.cursor_y_offset_spin, 1)
-        layout.addLayout(cur_y_row)
-
-        hl_style_row = QHBoxLayout()
-        hl_style_row.setSpacing(6)
-        hl_style_lbl = QLabel("Highlight Style:")
-        hl_style_lbl.setObjectName("muted")
-        self.highlight_style_combo = QComboBox()
-        self.highlight_style_combo.addItems(["Pill", "Accent Bar", "Outline", "Underline"])
-        self.highlight_style_combo.currentTextChanged.connect(lambda _: self._on_layout_param_changed())
-        hl_style_row.addWidget(hl_style_lbl)
-        hl_style_row.addWidget(self.highlight_style_combo, 1)
-        layout.addLayout(hl_style_row)
-
-        hl_col_row = QHBoxLayout()
-        hl_col_row.setSpacing(6)
-        hl_col_lbl = QLabel("Highlight Color:")
-        hl_col_lbl.setObjectName("muted")
-        self.highlight_color_btn = QPushButton("Choose color…")
-        self.highlight_color_btn.clicked.connect(self.choose_highlight_color)
-        self.highlight_color_reset_btn = QPushButton("Reset")
-        self.highlight_color_reset_btn.setToolTip("Reset highlight color to default amber gold (#F8DC8B)")
-        self.highlight_color_reset_btn.clicked.connect(self.reset_highlight_color)
-        hl_col_row.addWidget(hl_col_lbl)
-        hl_col_row.addWidget(self.highlight_color_btn, 1)
-        hl_col_row.addWidget(self.highlight_color_reset_btn)
-        layout.addLayout(hl_col_row)
-
-        hl_op_row = QHBoxLayout()
-        hl_op_row.setSpacing(6)
-        hl_op_lbl = QLabel("Highlight Tint:")
-        hl_op_lbl.setObjectName("muted")
-        self.highlight_opacity_slider = QSlider(Qt.Orientation.Horizontal)
-        self.highlight_opacity_slider.setRange(5, 100)
-        self.highlight_opacity_slider.setValue(25)
-        self.highlight_opacity_val = QLabel("25%")
-        self.highlight_opacity_val.setObjectName("muted")
-        self.highlight_opacity_slider.valueChanged.connect(self._on_highlight_opacity_changed)
-        hl_op_row.addWidget(hl_op_lbl)
-        hl_op_row.addWidget(self.highlight_opacity_slider, 1)
-        hl_op_row.addWidget(self.highlight_opacity_val)
-        layout.addLayout(hl_op_row)
-
-        hl_thick_row = QHBoxLayout()
-        hl_thick_row.setSpacing(6)
-        hl_thick_lbl = QLabel("Outline Width:")
-        hl_thick_lbl.setObjectName("muted")
-        self.highlight_outline_spin = QSpinBox()
-        self.highlight_outline_spin.setRange(1, 16)
-        self.highlight_outline_spin.setValue(2)
-        self.highlight_outline_spin.setSuffix(" px")
-        self.highlight_outline_spin.setToolTip("Outline thickness for active track rectangle or pill")
-        self.highlight_outline_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
-        hl_thick_row.addWidget(hl_thick_lbl)
-        hl_thick_row.addWidget(self.highlight_outline_spin, 1)
-        layout.addLayout(hl_thick_row)
-
-        hl_corner_row = QHBoxLayout()
-        hl_corner_row.setSpacing(6)
-        hl_corner_lbl = QLabel("Corner Style:")
-        hl_corner_lbl.setObjectName("muted")
-        self.highlight_corner_combo = QComboBox()
-        self.highlight_corner_combo.addItems(["Rounded", "Square (Sharp)"])
-        self.highlight_corner_combo.setToolTip("Corner curvature of the active track outline or pill")
-        self.highlight_corner_combo.currentTextChanged.connect(lambda _: self._on_layout_param_changed())
-        hl_corner_row.addWidget(hl_corner_lbl)
-        hl_corner_row.addWidget(self.highlight_corner_combo, 1)
-        layout.addLayout(hl_corner_row)
-
-        hl_target_row = QHBoxLayout()
-        hl_target_row.setSpacing(6)
-        hl_target_lbl = QLabel("Highlight Target:")
-        hl_target_lbl.setObjectName("muted")
-        self.highlight_target_combo = QComboBox()
-        self.highlight_target_combo.addItems(["Full Row", "Surround Text"])
-        self.highlight_target_combo.setToolTip("Surround entire playlist row width or fit tightly around track text")
-        self.highlight_target_combo.currentTextChanged.connect(lambda _: self._on_layout_param_changed())
-        hl_target_row.addWidget(hl_target_lbl)
-        hl_target_row.addWidget(self.highlight_target_combo, 1)
-        layout.addLayout(hl_target_row)
-
-        hl_y_row = QHBoxLayout()
-        hl_y_row.setSpacing(6)
-        hl_y_lbl = QLabel("Highlight Y-Offset:")
-        hl_y_lbl.setObjectName("muted")
-        self.highlight_y_offset_spin = QSpinBox()
-        self.highlight_y_offset_spin.setRange(-50, 50)
-        self.highlight_y_offset_spin.setValue(0)
-        self.highlight_y_offset_spin.setSuffix(" px")
-        self.highlight_y_offset_spin.setToolTip("Fine-tune vertical positioning of highlight box/outline relative to track text (-50 to +50 px)")
-        self.highlight_y_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
-        hl_y_row.addWidget(hl_y_lbl)
-        hl_y_row.addWidget(self.highlight_y_offset_spin, 1)
-        layout.addLayout(hl_y_row)
-
-        layout.addSpacing(4)
-        div = QFrame()
-        div.setObjectName("hairline_h")
-        div.setFrameShape(QFrame.Shape.HLine)
-        layout.addWidget(div)
-        layout.addSpacing(4)
-
-        # Website Watermark
-        web_sec = QLabel("WEBSITE WATERMARK")
-        web_sec.setObjectName("section")
-        layout.addWidget(web_sec)
-
+        # 3. Watermark / Website Text (Moved from Tab 3)
+        sec_web = CollapsibleSection("Watermark & Website Text", collapsed=False)
         self.website_show_check = QCheckBox("Show Website Watermark")
         self.website_show_check.setChecked(True)
         self.website_show_check.toggled.connect(self._on_website_show_toggled)
-        layout.addWidget(self.website_show_check)
+        sec_web.addWidget(self.website_show_check)
 
         self.website_edit = QLineEdit()
         self.website_edit.setPlaceholderText("Optional: e.g. www.nasheedstudio.com")
         self.website_edit.textChanged.connect(self._on_website_text_changed)
-        layout.addWidget(self.website_edit)
+        sec_web.addWidget(self.website_edit)
 
-        pos_row = QHBoxLayout()
-        pos_row.setSpacing(6)
         self.website_pos_combo = QComboBox()
         self.website_pos_combo.addItems(["Top-Right", "Top-Left", "Bottom-Left", "Bottom-Right", "Bottom-Center", "Top-Center"])
         self.website_pos_combo.currentTextChanged.connect(self._on_website_pos_changed)
+        sec_web.addLayout(self._create_prop_row("Position:", self.website_pos_combo))
+
         self.website_size_spin = QSpinBox()
         self.website_size_spin.setRange(10, 48)
         self.website_size_spin.setValue(18)
         self.website_size_spin.setSuffix(" px")
         self.website_size_spin.valueChanged.connect(self._on_website_size_changed)
-        pos_row.addWidget(self.website_pos_combo, 2)
-        pos_row.addWidget(self.website_size_spin, 1)
-        layout.addLayout(pos_row)
+        sec_web.addLayout(self._create_prop_row("Font Size:", self.website_size_spin))
 
-        web_op_row = QHBoxLayout()
-        web_op_row.setSpacing(6)
-        web_op_lbl = QLabel("URL Opacity:")
-        web_op_lbl.setObjectName("muted")
         self.website_opacity_slider = QSlider(Qt.Orientation.Horizontal)
         self.website_opacity_slider.setRange(0, 100)
         self.website_opacity_slider.setValue(100)
         self.website_opacity_val = QLabel("100%")
-        self.website_opacity_val.setObjectName("muted")
-        self.website_opacity_val.setFixedWidth(40)
         self.website_opacity_slider.valueChanged.connect(self._on_website_opacity_changed)
-        web_op_row.addWidget(web_op_lbl)
-        web_op_row.addWidget(self.website_opacity_slider, 1)
-        web_op_row.addWidget(self.website_opacity_val)
-        layout.addLayout(web_op_row)
+        sec_web.addLayout(self._create_slider_prop_row("URL Opacity:", self.website_opacity_slider, self.website_opacity_val))
 
         web_col_row = QHBoxLayout()
         web_col_row.setSpacing(6)
         web_col_lbl = QLabel("Color:")
-        web_col_lbl.setObjectName("muted")
+        web_col_lbl.setObjectName("prop_label")
+        web_col_lbl.setFixedWidth(90)
         self.website_color_btn = QPushButton(" Auto (Adaptive)")
         self.website_color_btn.clicked.connect(self.choose_website_color)
         self.website_color_reset_btn = QPushButton("Reset")
@@ -1843,362 +1877,386 @@ class MainWindow(QMainWindow):
         web_col_row.addWidget(web_col_lbl)
         web_col_row.addWidget(self.website_color_btn, 1)
         web_col_row.addWidget(self.website_color_reset_btn)
-        layout.addLayout(web_col_row)
+        sec_web.addLayout(web_col_row)
 
-        web_x_row = QHBoxLayout()
-        web_x_row.setSpacing(6)
-        web_x_lbl = QLabel("Watermark X-Offset:")
-        web_x_lbl.setObjectName("muted")
         self.website_x_offset_spin = QSpinBox()
         self.website_x_offset_spin.setRange(-500, 500)
         self.website_x_offset_spin.setValue(0)
         self.website_x_offset_spin.setSuffix(" px")
         self.website_x_offset_spin.setToolTip("Fine-tune horizontal positioning of watermark from corner (-500 to +500 px)")
         self.website_x_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
-        web_x_row.addWidget(web_x_lbl)
-        web_x_row.addWidget(self.website_x_offset_spin, 1)
-        layout.addLayout(web_x_row)
 
-        web_y_row = QHBoxLayout()
-        web_y_row.setSpacing(6)
-        web_y_lbl = QLabel("Watermark Y-Offset:")
-        web_y_lbl.setObjectName("muted")
         self.website_y_offset_spin = QSpinBox()
         self.website_y_offset_spin.setRange(-500, 500)
         self.website_y_offset_spin.setValue(0)
         self.website_y_offset_spin.setSuffix(" px")
         self.website_y_offset_spin.setToolTip("Fine-tune vertical positioning of watermark from corner (-500 to +500 px)")
         self.website_y_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
-        web_y_row.addWidget(web_y_lbl)
-        web_y_row.addWidget(self.website_y_offset_spin, 1)
-        layout.addLayout(web_y_row)
+        sec_web.addLayout(self._create_prop_row("Watermark X-Offset:", self.website_x_offset_spin))
+        sec_web.addLayout(self._create_prop_row("Watermark Y-Offset:", self.website_y_offset_spin))
 
         self.overlap_warning = QLabel("Logo and website share the same corner. Position will adjust automatically.")
         self.overlap_warning.setObjectName("warning")
         self.overlap_warning.setWordWrap(True)
         self.overlap_warning.setVisible(False)
-        layout.addWidget(self.overlap_warning)
+        sec_web.addWidget(self.overlap_warning)
+        layout.addWidget(sec_web)
 
         layout.addStretch(1)
 
-    def _build_tab_intro_sound(self, layout: QVBoxLayout) -> None:
-        # Intro Presentation
-        intro_sec = QLabel("INTRO PRESENTATION")
-        intro_sec.setObjectName("section")
-        layout.addWidget(intro_sec)
+    _build_tab_text = _build_tab_typography_text  # Backward-compatibility alias
 
+    def _build_tab_track_indicator(self, layout: QVBoxLayout) -> None:
+        """Category C: Track Indicator (Behavior, cursor options, highlight styling)."""
+        # 1. Indicator Behavior
+        sec_ind = CollapsibleSection("Indicator Behavior", collapsed=False)
+        self.indicator_combo = QComboBox()
+        self.indicator_combo.addItems([
+            "Both (Cursor & Highlight)",
+            "Cursor only",
+            "Highlight only",
+            "Neither (Clean)"
+        ])
+        self.indicator_combo.currentTextChanged.connect(self._on_indicator_changed)
+        sec_ind.addLayout(self._create_prop_row("Mode:", self.indicator_combo))
+        layout.addWidget(sec_ind)
+
+        # 2. Cursor
+        sec_cur = CollapsibleSection("Cursor", collapsed=False)
+        self.cursor_label = self._make_asset_label("Default arrow cursor")
+        cur_row = QHBoxLayout()
+        cur_row.setSpacing(6)
+        cur_icon = QLabel()
+        cur_icon.setPixmap(get_svg_pixmap("tab_indicator", 14, "#9CA3AF"))
+        self.cursor_btn = QPushButton("Choose cursor…")
+        self.cursor_btn.setObjectName("outlined_accent")
+        self.cursor_btn.clicked.connect(self.choose_cursor)
+        self.cursor_reset_btn = QPushButton("Reset")
+        self.cursor_reset_btn.clicked.connect(self.reset_cursor)
+        cur_row.addWidget(cur_icon)
+        cur_row.addWidget(self.cursor_label, 1)
+        cur_row.addWidget(self.cursor_btn)
+        cur_row.addWidget(self.cursor_reset_btn)
+        sec_cur.addLayout(cur_row)
+
+        self.cursor_size_spin = QSpinBox()
+        self.cursor_size_spin.setRange(16, 96)
+        self.cursor_size_spin.setValue(32)
+        self.cursor_size_spin.setSuffix(" px")
+        self.cursor_size_spin.valueChanged.connect(self._on_cursor_size_changed)
+        sec_cur.addLayout(self._create_prop_row("Cursor Size:", self.cursor_size_spin))
+
+        self.cursor_x_offset_spin = QSpinBox()
+        self.cursor_x_offset_spin.setRange(-100, 100)
+        self.cursor_x_offset_spin.setValue(0)
+        self.cursor_x_offset_spin.setSuffix(" px")
+        self.cursor_x_offset_spin.setToolTip("Fine-tune horizontal positioning of the cursor relative to track text (-100 to +100 px)")
+        self.cursor_x_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
+
+        self.cursor_y_offset_spin = QSpinBox()
+        self.cursor_y_offset_spin.setRange(-50, 50)
+        self.cursor_y_offset_spin.setValue(0)
+        self.cursor_y_offset_spin.setSuffix(" px")
+        self.cursor_y_offset_spin.setToolTip("Fine-tune vertical positioning of the cursor relative to track text (-50 to +50 px)")
+        self.cursor_y_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
+        sec_cur.addLayout(self._create_prop_row("Cursor X-Offset:", self.cursor_x_offset_spin))
+        sec_cur.addLayout(self._create_prop_row("Cursor Y-Offset:", self.cursor_y_offset_spin))
+        layout.addWidget(sec_cur)
+
+        # 3. Highlight
+        sec_hl = CollapsibleSection("Highlight", collapsed=False)
+        self.highlight_style_combo = QComboBox()
+        self.highlight_style_combo.addItems(["Pill", "Accent Bar", "Outline", "Underline"])
+        self.highlight_style_combo.currentTextChanged.connect(lambda _: self._on_layout_param_changed())
+        sec_hl.addLayout(self._create_prop_row("Highlight Style:", self.highlight_style_combo))
+
+        hl_col_row = QHBoxLayout()
+        hl_col_row.setSpacing(6)
+        hl_col_lbl = QLabel("Color:")
+        hl_col_lbl.setObjectName("prop_label")
+        hl_col_lbl.setFixedWidth(90)
+        self.highlight_color_btn = QPushButton("Choose color…")
+        self.highlight_color_btn.clicked.connect(self.choose_highlight_color)
+        self.highlight_color_reset_btn = QPushButton("Reset")
+        self.highlight_color_reset_btn.setToolTip("Reset highlight color to default amber gold (#F8DC8B)")
+        self.highlight_color_reset_btn.clicked.connect(self.reset_highlight_color)
+        hl_col_row.addWidget(hl_col_lbl)
+        hl_col_row.addWidget(self.highlight_color_btn, 1)
+        hl_col_row.addWidget(self.highlight_color_reset_btn)
+        sec_hl.addLayout(hl_col_row)
+
+        self.highlight_opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.highlight_opacity_slider.setRange(5, 100)
+        self.highlight_opacity_slider.setValue(25)
+        self.highlight_opacity_val = QLabel("25%")
+        self.highlight_opacity_slider.valueChanged.connect(self._on_highlight_opacity_changed)
+        sec_hl.addLayout(self._create_slider_prop_row("Tint / Opacity:", self.highlight_opacity_slider, self.highlight_opacity_val))
+
+        self.highlight_outline_spin = QSpinBox()
+        self.highlight_outline_spin.setRange(1, 16)
+        self.highlight_outline_spin.setValue(2)
+        self.highlight_outline_spin.setSuffix(" px")
+        self.highlight_outline_spin.setToolTip("Outline thickness for active track rectangle or pill")
+        self.highlight_outline_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
+        sec_hl.addLayout(self._create_prop_row("Outline Width:", self.highlight_outline_spin))
+
+        self.highlight_corner_combo = QComboBox()
+        self.highlight_corner_combo.addItems(["Rounded", "Square (Sharp)"])
+        self.highlight_corner_combo.setToolTip("Corner curvature of the active track outline or pill")
+        self.highlight_corner_combo.currentTextChanged.connect(lambda _: self._on_layout_param_changed())
+        sec_hl.addLayout(self._create_prop_row("Corner Style:", self.highlight_corner_combo))
+
+        self.highlight_target_combo = QComboBox()
+        self.highlight_target_combo.addItems(["Full Row", "Surround Text"])
+        self.highlight_target_combo.setToolTip("Surround entire playlist row width or fit tightly around track text")
+        self.highlight_target_combo.currentTextChanged.connect(lambda _: self._on_layout_param_changed())
+        sec_hl.addLayout(self._create_prop_row("Target Area:", self.highlight_target_combo))
+
+        self.highlight_y_offset_spin = QSpinBox()
+        self.highlight_y_offset_spin.setRange(-50, 50)
+        self.highlight_y_offset_spin.setValue(0)
+        self.highlight_y_offset_spin.setSuffix(" px")
+        self.highlight_y_offset_spin.setToolTip("Fine-tune vertical positioning of highlight box/outline relative to track text (-50 to +50 px)")
+        self.highlight_y_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
+        sec_hl.addLayout(self._create_prop_row("Y-Offset:", self.highlight_y_offset_spin))
+        layout.addWidget(sec_hl)
+
+        layout.addStretch(1)
+
+    _build_tab_indicator_watermark = _build_tab_track_indicator  # Backward-compatibility alias
+
+    def _build_tab_intro_presentation(self, layout: QVBoxLayout) -> None:
+        """Category D: Intro & Presentation (Intro sequence, card visuals, independent intro typography, logo & audio)."""
+        # 1. Intro Sequence
+        sec_intro = CollapsibleSection("Intro Sequence", collapsed=False)
         self.intro_check = QCheckBox("Enable intro sequence")
         self.intro_enabled_check = self.intro_check
         self.intro_check.toggled.connect(self._on_intro_toggled)
-        layout.addWidget(self.intro_check)
+        sec_intro.addWidget(self.intro_check)
 
-        dur_row = QHBoxLayout()
-        dur_lbl = QLabel("Duration:")
-        dur_lbl.setObjectName("muted")
         self.intro_dur_spin = QDoubleSpinBox()
         self.intro_dur_spin.setRange(1.0, 10.0)
         self.intro_dur_spin.setValue(3.0)
         self.intro_dur_spin.setSingleStep(0.5)
         self.intro_dur_spin.setSuffix(" s")
         self.intro_dur_spin.valueChanged.connect(self._on_intro_dur_changed)
-        dur_row.addWidget(dur_lbl)
-        dur_row.addWidget(self.intro_dur_spin, 1)
-        layout.addLayout(dur_row)
+        sec_intro.addLayout(self._create_prop_row("Duration:", self.intro_dur_spin))
 
-        anim_row = QHBoxLayout()
-        anim_lbl = QLabel("Animation:")
-        anim_lbl.setObjectName("muted")
         self.intro_anim_combo = QComboBox()
         self.intro_anim_combo.addItems(["Fade in / out", "Zoom in", "Slide"])
         self.intro_anim_combo.currentTextChanged.connect(self._on_intro_anim_changed)
-        anim_row.addWidget(anim_lbl)
-        anim_row.addWidget(self.intro_anim_combo, 1)
-        layout.addLayout(anim_row)
+        sec_intro.addLayout(self._create_prop_row("Animation:", self.intro_anim_combo))
+        layout.addWidget(sec_intro)
 
-        # Intro Presentation Card Visual Controls
-        layout.addSpacing(6)
-        card_sec = QLabel("PRESENTATION CARD VISUALS")
-        card_sec.setObjectName("section")
-        layout.addWidget(card_sec)
-
-        # Blur and Frosted Plate Opacity
-        blur_row = QHBoxLayout()
-        blur_lbl = QLabel("Card Blur:")
-        blur_lbl.setObjectName("muted")
+        # 2. Presentation Card Visuals
+        sec_card = CollapsibleSection("Presentation Card", collapsed=False)
         self.intro_blur_spin = QSpinBox()
         self.intro_blur_spin.setRange(0, 60)
         self.intro_blur_spin.setValue(28)
         self.intro_blur_spin.setSuffix(" px")
         self.intro_blur_spin.setToolTip("Gaussian blur radius for the presentation card background (0-60 px)")
         self.intro_blur_spin.valueChanged.connect(self._on_intro_param_changed)
-        blur_row.addWidget(blur_lbl)
-        blur_row.addWidget(self.intro_blur_spin, 1)
-        layout.addLayout(blur_row)
+        sec_card.addLayout(self._create_prop_row("Card Blur:", self.intro_blur_spin))
 
-        card_op_row = QHBoxLayout()
-        card_op_lbl = QLabel("Plate Tint:")
-        card_op_lbl.setObjectName("muted")
         self.intro_card_opacity_slider = QSlider(Qt.Orientation.Horizontal)
         self.intro_card_opacity_slider.setRange(0, 100)
         self.intro_card_opacity_slider.setValue(70)
         self.intro_card_opacity_slider.valueChanged.connect(self._on_intro_card_opacity_changed)
         self.intro_card_opacity_val = QLabel("70%")
-        self.intro_card_opacity_val.setMinimumWidth(36)
-        card_op_row.addWidget(card_op_lbl)
-        card_op_row.addWidget(self.intro_card_opacity_slider, 1)
-        card_op_row.addWidget(self.intro_card_opacity_val)
-        layout.addLayout(card_op_row)
+        sec_card.addLayout(self._create_slider_prop_row("Plate Tint:", self.intro_card_opacity_slider, self.intro_card_opacity_val))
+        layout.addWidget(sec_card)
 
-        # Intro Title Typography (Independent of Main Video)
-        layout.addSpacing(4)
-        intro_title_sec = QLabel("INTRO TITLE TYPOGRAPHY")
-        intro_title_sec.setObjectName("muted")
-        layout.addWidget(intro_title_sec)
-
+        # 3. Intro Title Typography
+        sec_intro_title = CollapsibleSection("Intro Title", collapsed=False)
         self.intro_title_edit = QLineEdit()
         self.intro_title_edit.setPlaceholderText("Custom title (blank uses project title)")
         self.intro_title_edit.setToolTip("Independent title for the intro card. Leave blank to match collection title.")
         self.intro_title_edit.textChanged.connect(self._on_intro_param_changed)
-        layout.addWidget(self.intro_title_edit)
+        sec_intro_title.addWidget(self.intro_title_edit)
 
-        intro_font_row = QHBoxLayout()
-        self.intro_title_font_combo = QComboBox()
-        self.intro_title_font_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        self.intro_title_font_combo.setMinimumContentsLength(6)
+        self.intro_title_font_combo = SearchableFontComboBox(placeholder="Search intro font…")
         self.intro_title_font_combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.intro_title_font_combo.view().setTextElideMode(Qt.TextElideMode.ElideRight)
         self.intro_title_font_combo.currentTextChanged.connect(self._on_intro_title_font_changed)
+
         self.intro_title_style_combo = QComboBox()
         self.intro_title_style_combo.currentTextChanged.connect(self._on_intro_param_changed)
-        intro_font_row.addWidget(self.intro_title_font_combo, 2)
-        intro_font_row.addWidget(self.intro_title_style_combo, 1)
-        layout.addLayout(intro_font_row)
 
-        intro_title_style_row = QHBoxLayout()
-        intro_title_sz_lbl = QLabel("Size:")
-        intro_title_sz_lbl.setObjectName("muted")
+        sec_intro_title.addLayout(self._create_prop_row("Font Family:", self.intro_title_font_combo))
+        sec_intro_title.addLayout(self._create_prop_row("Font Style:", self.intro_title_style_combo))
+
         self.intro_title_size_spin = QSpinBox()
         self.intro_title_size_spin.setRange(16, 160)
         self.intro_title_size_spin.setValue(56)
         self.intro_title_size_spin.setSuffix(" pt")
         self.intro_title_size_spin.setToolTip("Intro card title font size in points (independent of playlist title)")
         self.intro_title_size_spin.valueChanged.connect(self._on_intro_param_changed)
+        sec_intro_title.addLayout(self._create_prop_row("Font Size:", self.intro_title_size_spin))
+
         self.intro_title_color_btn = QPushButton(" #FFFFFF")
         self.intro_title_color_btn.clicked.connect(self.choose_intro_title_color)
-        intro_title_style_row.addWidget(intro_title_sz_lbl)
-        intro_title_style_row.addWidget(self.intro_title_size_spin, 1)
-        intro_title_style_row.addWidget(self.intro_title_color_btn, 1)
-        layout.addLayout(intro_title_style_row)
+        sec_intro_title.addLayout(self._create_prop_row("Text Color:", self.intro_title_color_btn))
 
-        intro_title_offset_row = QHBoxLayout()
-        intro_title_y_lbl = QLabel("Y Offset:")
-        intro_title_y_lbl.setObjectName("muted")
         self.intro_title_y_offset_spin = QSpinBox()
         self.intro_title_y_offset_spin.setRange(-500, 500)
         self.intro_title_y_offset_spin.setValue(0)
         self.intro_title_y_offset_spin.setSuffix(" px")
         self.intro_title_y_offset_spin.setToolTip("Vertical Y-offset for intro title (-500 to +500 px)")
         self.intro_title_y_offset_spin.valueChanged.connect(self._on_intro_param_changed)
-        intro_title_offset_row.addWidget(intro_title_y_lbl)
-        intro_title_offset_row.addWidget(self.intro_title_y_offset_spin, 1)
-        layout.addLayout(intro_title_offset_row)
+        sec_intro_title.addLayout(self._create_prop_row("Y-Offset:", self.intro_title_y_offset_spin))
+        layout.addWidget(sec_intro_title)
 
-        # Intro Logo Controls
-        layout.addSpacing(4)
-        intro_logo_sec = QLabel("INTRO LOGO")
-        intro_logo_sec.setObjectName("muted")
-        layout.addWidget(intro_logo_sec)
-
-        intro_logo_row = QHBoxLayout()
+        # 4. Intro Logo
+        sec_intro_logo = CollapsibleSection("Intro Logo", collapsed=False)
         self.intro_logo_show_check = QCheckBox("Show Logo")
         self.intro_logo_show_check.setChecked(True)
         self.intro_logo_show_check.toggled.connect(self._on_intro_param_changed)
-        intro_logo_scale_lbl = QLabel("Scale:")
-        intro_logo_scale_lbl.setObjectName("muted")
+        sec_intro_logo.addWidget(self.intro_logo_show_check)
+
         self.intro_logo_scale_spin = QSpinBox()
         self.intro_logo_scale_spin.setRange(20, 300)
         self.intro_logo_scale_spin.setValue(100)
         self.intro_logo_scale_spin.setSuffix("%")
         self.intro_logo_scale_spin.setToolTip("Intro card logo scale percentage (independent of main video logo)")
         self.intro_logo_scale_spin.valueChanged.connect(self._on_intro_param_changed)
-        intro_logo_row.addWidget(self.intro_logo_show_check)
-        intro_logo_row.addWidget(intro_logo_scale_lbl)
-        intro_logo_row.addWidget(self.intro_logo_scale_spin, 1)
-        layout.addLayout(intro_logo_row)
+        sec_intro_logo.addLayout(self._create_prop_row("Scale:", self.intro_logo_scale_spin))
 
-        intro_logo_offset_row = QHBoxLayout()
-        intro_logo_y_lbl = QLabel("Y Offset:")
-        intro_logo_y_lbl.setObjectName("muted")
         self.intro_logo_y_offset_spin = QSpinBox()
         self.intro_logo_y_offset_spin.setRange(-500, 500)
         self.intro_logo_y_offset_spin.setValue(0)
         self.intro_logo_y_offset_spin.setSuffix(" px")
         self.intro_logo_y_offset_spin.setToolTip("Vertical Y-offset for intro logo (-500 to +500 px)")
         self.intro_logo_y_offset_spin.valueChanged.connect(self._on_intro_param_changed)
-        intro_logo_offset_row.addWidget(intro_logo_y_lbl)
-        intro_logo_offset_row.addWidget(self.intro_logo_y_offset_spin, 1)
-        layout.addLayout(intro_logo_offset_row)
+        sec_intro_logo.addLayout(self._create_prop_row("Y-Offset:", self.intro_logo_y_offset_spin))
+        layout.addWidget(sec_intro_logo)
 
-        # Intro Watermark / Website Controls
-        layout.addSpacing(4)
-        intro_web_sec = QLabel("INTRO WATERMARK / WEBSITE")
-        intro_web_sec.setObjectName("muted")
-        layout.addWidget(intro_web_sec)
-
+        # 5. Intro Watermark
+        sec_intro_web = CollapsibleSection("Intro Watermark", collapsed=False)
         self.intro_website_show_check = QCheckBox("Show Watermark / URL")
         self.intro_website_show_check.setChecked(True)
         self.intro_website_show_check.toggled.connect(self._on_intro_param_changed)
-        layout.addWidget(self.intro_website_show_check)
+        sec_intro_web.addWidget(self.intro_website_show_check)
 
         self.intro_website_edit = QLineEdit()
         self.intro_website_edit.setPlaceholderText("Custom watermark (blank uses project watermark)")
         self.intro_website_edit.setToolTip("Override watermark on intro card. Blank uses general watermark text.")
         self.intro_website_edit.textChanged.connect(self._on_intro_param_changed)
-        layout.addWidget(self.intro_website_edit)
+        sec_intro_web.addWidget(self.intro_website_edit)
 
-        intro_web_opt_row = QHBoxLayout()
-        intro_web_sz_lbl = QLabel("Size:")
-        intro_web_sz_lbl.setObjectName("muted")
         self.intro_website_size_spin = QSpinBox()
         self.intro_website_size_spin.setRange(10, 60)
         self.intro_website_size_spin.setValue(20)
         self.intro_website_size_spin.setSuffix(" pt")
         self.intro_website_size_spin.setToolTip("Intro watermark font size in points")
         self.intro_website_size_spin.valueChanged.connect(self._on_intro_param_changed)
+        sec_intro_web.addLayout(self._create_prop_row("Font Size:", self.intro_website_size_spin))
+
         self.intro_website_color_btn = QPushButton(" #CCCCCC")
         self.intro_website_color_btn.clicked.connect(self.choose_intro_website_color)
-        intro_web_opt_row.addWidget(intro_web_sz_lbl)
-        intro_web_opt_row.addWidget(self.intro_website_size_spin, 1)
-        intro_web_opt_row.addWidget(self.intro_website_color_btn, 1)
-        layout.addLayout(intro_web_opt_row)
+        sec_intro_web.addLayout(self._create_prop_row("Text Color:", self.intro_website_color_btn))
 
-        intro_web_op_row = QHBoxLayout()
-        intro_web_op_lbl = QLabel("Opacity:")
-        intro_web_op_lbl.setObjectName("muted")
         self.intro_website_opacity_slider = QSlider(Qt.Orientation.Horizontal)
         self.intro_website_opacity_slider.setRange(0, 100)
         self.intro_website_opacity_slider.setValue(90)
         self.intro_website_opacity_slider.valueChanged.connect(self._on_intro_website_opacity_changed)
         self.intro_website_opacity_val = QLabel("90%")
-        self.intro_website_opacity_val.setMinimumWidth(36)
-        intro_web_op_row.addWidget(intro_web_op_lbl)
-        intro_web_op_row.addWidget(self.intro_website_opacity_slider, 1)
-        intro_web_op_row.addWidget(self.intro_website_opacity_val)
-        layout.addLayout(intro_web_op_row)
+        sec_intro_web.addLayout(self._create_slider_prop_row("Opacity:", self.intro_website_opacity_slider, self.intro_website_opacity_val))
 
-        intro_web_offset_row = QHBoxLayout()
-        intro_web_y_lbl = QLabel("Y Offset:")
-        intro_web_y_lbl.setObjectName("muted")
         self.intro_website_y_offset_spin = QSpinBox()
         self.intro_website_y_offset_spin.setRange(-500, 500)
         self.intro_website_y_offset_spin.setValue(0)
         self.intro_website_y_offset_spin.setSuffix(" px")
         self.intro_website_y_offset_spin.setToolTip("Vertical Y-offset for intro watermark (-500 to +500 px)")
         self.intro_website_y_offset_spin.valueChanged.connect(self._on_intro_param_changed)
-        intro_web_offset_row.addWidget(intro_web_y_lbl)
-        intro_web_offset_row.addWidget(self.intro_website_y_offset_spin, 1)
-        layout.addLayout(intro_web_offset_row)
+        sec_intro_web.addLayout(self._create_prop_row("Y-Offset:", self.intro_website_y_offset_spin))
+        layout.addWidget(sec_intro_web)
 
-        layout.addSpacing(6)
-        # Intro Audio (Prompt 11)
-        layout.addSpacing(4)
-        intro_audio_sec = QLabel("INTRO AUDIO")
-        intro_audio_sec.setObjectName("muted")
-        layout.addWidget(intro_audio_sec)
-
+        # 6. Intro Audio
+        sec_intro_audio = CollapsibleSection("Intro Audio", collapsed=False)
         self.intro_audio_label = self._make_asset_label("No intro audio selected")
         intro_audio_row = QHBoxLayout()
         intro_audio_row.setSpacing(6)
         intro_audio_icon = QLabel()
-        intro_audio_icon.setPixmap(get_svg_pixmap("tab_intro", 14, "#95a399"))
+        intro_audio_icon.setPixmap(get_svg_pixmap("tab_intro", 14, "#9CA3AF"))
         self.intro_audio_play_btn = QPushButton("Play")
         self.intro_audio_play_btn.clicked.connect(self.toggle_intro_audio_preview)
         self.intro_audio_clear_btn = QPushButton("Clear")
         self.intro_audio_clear_btn.clicked.connect(self.clear_intro_audio)
         self.intro_audio_btn = QPushButton("Choose Intro Audio…")
+        self.intro_audio_btn.setObjectName("outlined_accent")
         self.intro_audio_btn.clicked.connect(self.choose_intro_audio)
 
         intro_audio_row.addWidget(intro_audio_icon)
         intro_audio_row.addWidget(self.intro_audio_label, 1)
+        intro_audio_row.addWidget(self.intro_audio_btn)
         intro_audio_row.addWidget(self.intro_audio_play_btn)
         intro_audio_row.addWidget(self.intro_audio_clear_btn)
-        layout.addLayout(intro_audio_row)
-        layout.addWidget(self.intro_audio_btn)
+        sec_intro_audio.addLayout(intro_audio_row)
 
-        fade_row = QHBoxLayout()
-        fade_row.setSpacing(6)
-        fade_in_lbl = QLabel("Fade In:")
-        fade_in_lbl.setObjectName("muted")
         self.intro_fade_in_spin = QDoubleSpinBox()
         self.intro_fade_in_spin.setRange(0.0, 10.0)
         self.intro_fade_in_spin.setValue(0.5)
         self.intro_fade_in_spin.setSingleStep(0.1)
         self.intro_fade_in_spin.setSuffix(" s")
-        self.intro_fade_in_spin.setMinimumWidth(65)
         self.intro_fade_in_spin.valueChanged.connect(self._on_intro_fade_changed)
+        sec_intro_audio.addLayout(self._create_prop_row("Fade In:", self.intro_fade_in_spin))
 
-        fade_out_lbl = QLabel("Fade Out:")
-        fade_out_lbl.setObjectName("muted")
         self.intro_fade_out_spin = QDoubleSpinBox()
         self.intro_fade_out_spin.setRange(0.0, 10.0)
         self.intro_fade_out_spin.setValue(0.5)
         self.intro_fade_out_spin.setSingleStep(0.1)
         self.intro_fade_out_spin.setSuffix(" s")
-        self.intro_fade_out_spin.setMinimumWidth(65)
         self.intro_fade_out_spin.valueChanged.connect(self._on_intro_fade_changed)
+        sec_intro_audio.addLayout(self._create_prop_row("Fade Out:", self.intro_fade_out_spin))
+        layout.addWidget(sec_intro_audio)
 
-        fade_row.addWidget(fade_in_lbl)
-        fade_row.addWidget(self.intro_fade_in_spin, 1)
-        fade_row.addWidget(fade_out_lbl)
-        fade_row.addWidget(self.intro_fade_out_spin, 1)
-        layout.addLayout(fade_row)
+        layout.addStretch(1)
 
-        layout.addSpacing(4)
-        div = QFrame()
-        div.setObjectName("hairline_h")
-        div.setFrameShape(QFrame.Shape.HLine)
-        layout.addWidget(div)
-        layout.addSpacing(4)
+    _build_tab_intro_sound = _build_tab_intro_presentation  # Backward-compatibility alias
 
-        # Transition Sound Effects
-        sfx_sec = QLabel("TRANSITION SOUND EFFECT")
-        sfx_sec.setObjectName("section")
-        layout.addWidget(sfx_sec)
+    def _build_tab_audio(self, layout: QVBoxLayout) -> None:
+        """Category E: Audio (Track transition sound effects & audio normalizer)."""
+        # 1. Audio Normalization (Feature A)
+        sec_norm = CollapsibleSection("Audio Normalization", collapsed=False)
+        self.audio_normalize_check = QCheckBox("Enable Audio Normalization (EBU R128)")
+        self.audio_normalize_check.setToolTip("Normalizes per-track loudness to -16 LUFS with true-peak limiting (-1.5 dBTP) before concatenation.")
+        self.audio_normalize_check.stateChanged.connect(self._on_audio_normalize_changed)
+        sec_norm.addWidget(self.audio_normalize_check)
+        norm_info = QLabel("Applies EBU R128 loudnorm filter per-track during export.")
+        norm_info.setObjectName("subtle")
+        sec_norm.addWidget(norm_info)
+        layout.addWidget(sec_norm)
 
+        # 2. Track Transition Sound Effects
+        sec_sfx = CollapsibleSection("Track Transition Sound Effects", collapsed=False)
         self.sfx_check = QCheckBox("Enable track transition SFX")
         self.sfx_check.toggled.connect(self._on_sfx_toggled)
-        layout.addWidget(self.sfx_check)
+        sec_sfx.addWidget(self.sfx_check)
 
         self.sfx_label = self._make_asset_label("No sound effect selected")
         sfx_row = QHBoxLayout()
         sfx_row.setSpacing(6)
         sfx_icon = QLabel()
-        sfx_icon.setPixmap(get_svg_pixmap("tab_intro", 14, "#95a399"))
+        sfx_icon.setPixmap(get_svg_pixmap("tab_audio", 14, "#9CA3AF"))
         self.sfx_reset_btn = QPushButton("Reset")
         self.sfx_reset_btn.clicked.connect(self.reset_sfx)
         self.sfx_btn = QPushButton("Choose SFX…")
+        self.sfx_btn.setObjectName("outlined_accent")
         self.sfx_btn.clicked.connect(self.choose_sfx)
 
         sfx_row.addWidget(sfx_icon)
         sfx_row.addWidget(self.sfx_label, 1)
+        sfx_row.addWidget(self.sfx_btn)
         sfx_row.addWidget(self.sfx_reset_btn)
-        layout.addLayout(sfx_row)
-        layout.addWidget(self.sfx_btn)
+        sec_sfx.addLayout(sfx_row)
 
-        vol_row = QHBoxLayout()
-        vol_row.setSpacing(6)
-        vol_lbl = QLabel("Volume:")
-        vol_lbl.setObjectName("muted")
         self.sfx_vol_slider = QSlider(Qt.Orientation.Horizontal)
         self.sfx_vol_slider.setRange(0, 100)
         self.sfx_vol_slider.setValue(70)
         self.sfx_vol_slider.valueChanged.connect(self._on_sfx_vol_changed)
         self.sfx_vol_label = QLabel("70%")
-        self.sfx_vol_label.setMinimumWidth(36)
-        vol_row.addWidget(vol_lbl)
-        vol_row.addWidget(self.sfx_vol_slider, 1)
-        vol_row.addWidget(self.sfx_vol_label)
-        layout.addLayout(vol_row)
+        sec_sfx.addLayout(self._create_slider_prop_row("Volume:", self.sfx_vol_slider, self.sfx_vol_label))
+        layout.addWidget(sec_sfx)
 
         layout.addStretch(1)
 
@@ -2498,6 +2556,15 @@ class MainWindow(QMainWindow):
             "cursor_x_offset": self.cursor_x_offset_spin.value() if hasattr(self, "cursor_x_offset_spin") else 0,
             "cursor_y_offset": self.cursor_y_offset_spin.value() if hasattr(self, "cursor_y_offset_spin") else 0,
             "highlight_y_offset": self.highlight_y_offset_spin.value() if hasattr(self, "highlight_y_offset_spin") else 0,
+            "audio_normalize_enabled": self.audio_normalize_check.isChecked() if hasattr(self, "audio_normalize_check") else False,
+            "particles_enabled": self.particles_check.isChecked() if hasattr(self, "particles_check") else False,
+            "particles_style": self.particles_style_combo.currentText() if hasattr(self, "particles_style_combo") else "Wind Streaks",
+            "particles_layer": self.particles_layer_combo.currentText() if hasattr(self, "particles_layer_combo") else "Below Text",
+            "particles_quantity": self.particles_count_spin.value() if hasattr(self, "particles_count_spin") else 80,
+            "particles_color": getattr(self, "particles_color", (56, 189, 248)),
+            "particles_speed": self.particles_speed_spin.value() if hasattr(self, "particles_speed_spin") else 2,
+            "particles_size": self.particles_size_spin.value() if hasattr(self, "particles_size_spin") else (self.particles_size_slider.value() if hasattr(self, "particles_size_slider") else 5),
+            "particles_angle": self.particles_angle_spin.value() if hasattr(self, "particles_angle_spin") else 225,
             "output_path": self.output_edit.text().strip(),
         }
 
@@ -3243,6 +3310,7 @@ class MainWindow(QMainWindow):
         self._mark_dirty()
 
     def _on_intro_param_changed(self, *args) -> None:
+        self._cached_intro_pixmap = None
         self._mark_dirty()
         self._schedule_preview(150)
 
@@ -3383,6 +3451,8 @@ class MainWindow(QMainWindow):
 
     def _toggle_intro_preview(self) -> None:
         self._previewing_intro = not getattr(self, "_previewing_intro", False)
+        if hasattr(self, "particle_overlay"):
+            self.particle_overlay.set_text_pixmap(None)
         if hasattr(self, "preview_intro_btn"):
             if self._previewing_intro:
                 self.preview_intro_btn.setText("Preview Playlist")
@@ -3568,6 +3638,33 @@ class MainWindow(QMainWindow):
             self._cached_intro_pixmap = None
             return None
 
+    def _scale_preview_pixmap(self, pix: Optional[QPixmap], target_size: QSize) -> QPixmap:
+        """
+        Scale a pixmap for preview display with full device-pixel-ratio awareness
+        and smooth bicubic filtering to eliminate pixelation and blur.
+        Caches scaled pixmaps to prevent redundant re-scaling during animation.
+        """
+        if not pix or pix.isNull():
+            return QPixmap()
+        dpr = float(self.devicePixelRatioF() if hasattr(self, "devicePixelRatioF") else self.devicePixelRatio())
+        pw = max(10, int(round(target_size.width() * dpr)))
+        ph = max(10, int(round(target_size.height() * dpr)))
+        cache_key = (id(pix), pw, ph, dpr)
+        if not hasattr(self, "_scaled_pixmap_cache"):
+            self._scaled_pixmap_cache = {}
+        if cache_key in self._scaled_pixmap_cache:
+            return self._scaled_pixmap_cache[cache_key]
+        scaled = pix.scaled(
+            QSize(pw, ph),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        scaled.setDevicePixelRatio(dpr)
+        if len(self._scaled_pixmap_cache) > 64:
+            self._scaled_pixmap_cache.clear()
+        self._scaled_pixmap_cache[cache_key] = scaled
+        return scaled
+
     def _refresh_preview(self) -> None:
         self._update_resolution_badge()
         target_size = self.preview_frame.size()
@@ -3656,28 +3753,20 @@ class MainWindow(QMainWindow):
 
         if getattr(self, "_cached_preview_key", None) == cache_key and self._cached_preview_pixmap:
             if not getattr(self, "_is_preview_playing", False):
-                scaled_pix = self._cached_preview_pixmap.scaled(
-                    target_size,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-                self.preview_image.setPixmap(scaled_pix)
-                self.preview_image.setText("")
+                self._refresh_particles_preview_state()
             return
 
-        # Pre-render intro card if intro enabled or user is previewing intro
+        # Pre-render intro card if user is previewing intro or cached intro pixmap doesn't exist yet
         intro_enabled = (hasattr(self, "intro_enabled_check") and self.intro_enabled_check.isChecked())
-        if intro_enabled or getattr(self, "_previewing_intro", False):
+        if getattr(self, "_previewing_intro", False) or (intro_enabled and getattr(self, "_cached_intro_pixmap", None) is None):
             self._render_intro_card_pixmap(valid_bg)
 
         # If user explicitly toggled "Preview Intro Card", display intro card and return
         if getattr(self, "_previewing_intro", False):
+            if hasattr(self, "particle_overlay"):
+                self.particle_overlay.set_text_pixmap(None)
             if self._cached_intro_pixmap and not self._cached_intro_pixmap.isNull():
-                scaled_pix = self._cached_intro_pixmap.scaled(
-                    target_size,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
+                scaled_pix = self._scale_preview_pixmap(self._cached_intro_pixmap, target_size)
                 self.preview_image.setPixmap(scaled_pix)
                 self.preview_image.setText("")
             else:
@@ -3771,6 +3860,8 @@ class MainWindow(QMainWindow):
 
                 fg_path = Path(tmp) / "composition_fg.png"
                 fg_img = Image.open(fg_path).convert("RGBA") if fg_path.is_file() else None
+                clean_bg_path = Path(tmp) / "composition_bg.png"
+                clean_bg_img = Image.open(clean_bg_path).convert("RGBA") if clean_bg_path.is_file() else None
                 base_img = Image.open(base).convert("RGBA")
 
                 self._cached_composition_pixmaps = []
@@ -3782,6 +3873,8 @@ class MainWindow(QMainWindow):
                     data = im.tobytes("raw", "RGBA")
                     qimg = QImage(data, im.width, im.height, QImage.Format.Format_RGBA8888).copy()
                     return QPixmap.fromImage(qimg)
+
+                self._cached_bg_pixmap = _pil_to_pixmap(clean_bg_img or base_img)
 
                 if overlays:
                     for ov_p in overlays:
@@ -3819,16 +3912,10 @@ class MainWindow(QMainWindow):
                     tm, ts = divmod(int(tot_d), 60)
                     self.scrubber_total_label.setText(f"{tm:02d}:{ts:02d}")
 
-                if not getattr(self, "_is_preview_playing", False):
-                    pix = self._cached_preview_pixmap
-                    if pix and not pix.isNull():
-                        scaled_pix = pix.scaled(
-                            target_size,
-                            Qt.AspectRatioMode.KeepAspectRatio,
-                            Qt.TransformationMode.SmoothTransformation,
-                        )
-                        self.preview_image.setPixmap(scaled_pix)
-                        self.preview_image.setText("")
+                self._static_layer_render_count = getattr(self, "_static_layer_render_count", 0) + 1
+                if hasattr(self, "_scaled_pixmap_cache"):
+                    self._scaled_pixmap_cache.clear()
+                self._refresh_particles_preview_state()
         except Exception as exc:
             self.preview_image.setPixmap(QPixmap())
             self.preview_image.setText(f"Preview unavailable: {exc}")
@@ -3853,9 +3940,9 @@ class MainWindow(QMainWindow):
         self._is_preview_playing = True
         if hasattr(self, "play_preview_btn"):
             self.play_preview_btn.setText("Pause Preview")
-            self.play_preview_btn.setIcon(get_svg_icon("pause", 13, "#edf2ee"))
+            self.play_preview_btn.setIcon(get_svg_icon("pause", 13, "#F0F2F5"))
         if hasattr(self, "scrubber_play_btn"):
-            self.scrubber_play_btn.setIcon(get_svg_icon("pause", 13, "#edf2ee"))
+            self.scrubber_play_btn.setIcon(get_svg_icon("pause", 13, "#F0F2F5"))
         if hasattr(self, "preview_badge"):
             self.preview_badge.setText("PREVIEW · Interactive (Approximate)")
 
@@ -3894,9 +3981,9 @@ class MainWindow(QMainWindow):
 
         if hasattr(self, "play_preview_btn"):
             self.play_preview_btn.setText("Play Preview")
-            self.play_preview_btn.setIcon(get_svg_icon("play", 13, "#edf2ee"))
+            self.play_preview_btn.setIcon(get_svg_icon("play", 13, "#F0F2F5"))
         if hasattr(self, "scrubber_play_btn"):
-            self.scrubber_play_btn.setIcon(get_svg_icon("play", 13, "#edf2ee"))
+            self.scrubber_play_btn.setIcon(get_svg_icon("play", 13, "#F0F2F5"))
         self._update_resolution_badge()
 
         if hasattr(self, "_preview_audio_player") and self._preview_audio_player:
@@ -3919,6 +4006,7 @@ class MainWindow(QMainWindow):
         """Stop preview playback, reset timeline to beginning, and update view."""
         self._pause_preview_playback()
         self._seek_preview(0.0)
+        self._preview_audio_pending_seek = None
         if hasattr(self, "_preview_audio_player") and self._preview_audio_player:
             try:
                 self._preview_audio_player.stop()
@@ -3951,6 +4039,7 @@ class MainWindow(QMainWindow):
             self._preview_audio_player = None
             self._preview_audio_output = None
         self._is_preview_playing = False
+        self._preview_audio_pending_seek = None
         self._preview_audio_current_src = ""
         self._preview_audio_current_track_idx = None
 
@@ -4020,29 +4109,38 @@ class MainWindow(QMainWindow):
             trk_idx = getattr(self, "_preview_audio_current_track_idx", None)
 
             if player_state == QMediaPlayer.PlaybackState.PlayingState or media_status == QMediaPlayer.MediaStatus.LoadingMedia:
-                if trk_idx == -1:
-                    if cur_pos_ms > 0:
-                        calc_t = cur_pos_ms / 1000.0
-                        self._preview_current_time = max(self._preview_current_time, calc_t)
+                if self._preview_audio_pending_seek is not None:
+                    if abs(cur_pos_ms - self._preview_audio_pending_seek) < 250:
+                        self._preview_audio_pending_seek = None
+                    elif now - getattr(self, "_preview_audio_buffer_start", now) < 1.5:
                         audio_synced = True
-                    elif cur_pos_ms == 0:
-                        audio_buffering_age = now - getattr(self, "_preview_audio_buffer_start", now)
-                        if audio_buffering_age < 1.5:
+                    else:
+                        self._preview_audio_pending_seek = None
+
+                if not audio_synced:
+                    if trk_idx == -1:
+                        if cur_pos_ms > 0:
+                            calc_t = cur_pos_ms / 1000.0
+                            self._preview_current_time = max(self._preview_current_time, calc_t)
                             audio_synced = True
-                elif trk_idx is not None and 0 <= trk_idx < len(self.tracks):
-                    accum = sum(float(self.tracks[i].get("duration", 0.0)) for i in range(trk_idx))
-                    trk_dur = float(self.tracks[trk_idx].get("duration", 0.0))
-                    if media_status == QMediaPlayer.MediaStatus.EndOfMedia or (trk_dur > 0 and cur_pos_ms / 1000.0 >= trk_dur - 0.05):
-                        self._preview_current_time = intro_dur + accum + trk_dur + 0.02
-                        audio_synced = True
-                    elif cur_pos_ms > 0:
-                        calc_t = intro_dur + accum + (cur_pos_ms / 1000.0)
-                        self._preview_current_time = max(self._preview_current_time, calc_t)
-                        audio_synced = True
-                    elif cur_pos_ms == 0:
-                        audio_buffering_age = now - getattr(self, "_preview_audio_buffer_start", now)
-                        if audio_buffering_age < 1.5:
+                        elif cur_pos_ms == 0:
+                            audio_buffering_age = now - getattr(self, "_preview_audio_buffer_start", now)
+                            if audio_buffering_age < 1.5:
+                                audio_synced = True
+                    elif trk_idx is not None and 0 <= trk_idx < len(self.tracks):
+                        accum = sum(float(self.tracks[i].get("duration", 0.0)) for i in range(trk_idx))
+                        trk_dur = float(self.tracks[trk_idx].get("duration", 0.0))
+                        if media_status == QMediaPlayer.MediaStatus.EndOfMedia or (trk_dur > 0 and cur_pos_ms / 1000.0 >= trk_dur - 0.05):
+                            self._preview_current_time = intro_dur + accum + trk_dur + 0.02
                             audio_synced = True
+                        elif cur_pos_ms > 0:
+                            calc_t = intro_dur + accum + (cur_pos_ms / 1000.0)
+                            self._preview_current_time = max(self._preview_current_time, calc_t)
+                            audio_synced = True
+                        elif cur_pos_ms == 0:
+                            audio_buffering_age = now - getattr(self, "_preview_audio_buffer_start", now)
+                            if audio_buffering_age < 1.5:
+                                audio_synced = True
 
         if not audio_synced:
             self._preview_current_time += dt
@@ -4079,12 +4177,12 @@ class MainWindow(QMainWindow):
         if value <= 0:
             self._preview_is_muted = True
             if hasattr(self, "preview_volume_btn"):
-                self.preview_volume_btn.setIcon(get_svg_icon("volume_mute", 13, "#edf2ee"))
+                self.preview_volume_btn.setIcon(get_svg_icon("volume_mute", 13, "#F0F2F5"))
                 self.preview_volume_btn.setToolTip("Unmute preview audio")
         else:
             self._preview_is_muted = False
             if hasattr(self, "preview_volume_btn"):
-                self.preview_volume_btn.setIcon(get_svg_icon("volume_high", 13, "#edf2ee"))
+                self.preview_volume_btn.setIcon(get_svg_icon("volume_high", 13, "#F0F2F5"))
                 self.preview_volume_btn.setToolTip("Mute preview audio")
         if hasattr(self, "preview_volume_label"):
             self.preview_volume_label.setText(f"{value}%")
@@ -4105,6 +4203,16 @@ class MainWindow(QMainWindow):
             self._preview_is_muted = True
             self.preview_volume_slider.setValue(0)
 
+    def _on_preview_audio_media_status_changed(self, status: QMediaPlayer.MediaStatus) -> None:
+        if status in (QMediaPlayer.MediaStatus.LoadedMedia, QMediaPlayer.MediaStatus.BufferedMedia):
+            if self._preview_audio_pending_seek is not None and self._preview_audio_player:
+                seek_ms = self._preview_audio_pending_seek
+                self._preview_audio_pending_seek = None
+                self._preview_audio_player.setPosition(seek_ms)
+            if getattr(self, "_is_preview_playing", False) and self._preview_audio_player:
+                if self._preview_audio_player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
+                    self._preview_audio_player.play()
+
     def _sync_playback_state(self, time_sec: float, is_playing: bool, is_seek: bool = False) -> None:
         intro_enabled = (hasattr(self, "intro_enabled_check") and self.intro_enabled_check.isChecked())
         intro_dur = float(self.intro_dur_spin.value()) if (intro_enabled and hasattr(self, "intro_dur_spin")) else 0.0
@@ -4113,6 +4221,7 @@ class MainWindow(QMainWindow):
             self._preview_audio_player = QMediaPlayer(self)
             self._preview_audio_output = QAudioOutput(self)
             self._preview_audio_player.setAudioOutput(self._preview_audio_output)
+            self._preview_audio_player.mediaStatusChanged.connect(self._on_preview_audio_media_status_changed)
             self._preview_audio_output.setVolume(self._get_effective_preview_volume())
 
         if time_sec < intro_dur:
@@ -4126,13 +4235,17 @@ class MainWindow(QMainWindow):
                     self._preview_audio_current_track_idx = -1
                     self._preview_audio_buffer_start = time.monotonic()
                     if time_sec > 0.05:
+                        self._preview_audio_pending_seek = int(time_sec * 1000)
                         self._preview_audio_player.setPosition(int(time_sec * 1000))
+                    else:
+                        self._preview_audio_pending_seek = None
                     if self._preview_audio_output:
                         self._preview_audio_output.setVolume(self._get_effective_preview_volume())
                     if is_playing:
                         self._preview_audio_player.play()
                 elif is_seek:
                     self._preview_audio_buffer_start = time.monotonic()
+                    self._preview_audio_pending_seek = int(time_sec * 1000)
                     self._preview_audio_player.setPosition(int(time_sec * 1000))
                     if self._preview_audio_output:
                         self._preview_audio_output.setVolume(self._get_effective_preview_volume())
@@ -4159,6 +4272,9 @@ class MainWindow(QMainWindow):
             else:
                 if self._preview_audio_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
                     self._preview_audio_player.pause()
+                self._preview_audio_current_track_idx = -1
+                self._preview_audio_current_src = ""
+                self._preview_audio_pending_seek = None
         else:
             playlist_t = max(0.0, time_sec - intro_dur)
             active_idx = 0
@@ -4187,13 +4303,17 @@ class MainWindow(QMainWindow):
                         self._preview_audio_current_track_idx = active_idx
                         self._preview_audio_buffer_start = time.monotonic()
                         if track_offset > 0.05:
+                            self._preview_audio_pending_seek = int(track_offset * 1000)
                             self._preview_audio_player.setPosition(int(track_offset * 1000))
+                        else:
+                            self._preview_audio_pending_seek = None
                         if self._preview_audio_output:
                             self._preview_audio_output.setVolume(self._get_effective_preview_volume())
                         if is_playing:
                             self._preview_audio_player.play()
                     elif is_seek:
                         self._preview_audio_buffer_start = time.monotonic()
+                        self._preview_audio_pending_seek = int(track_offset * 1000)
                         self._preview_audio_player.setPosition(int(track_offset * 1000))
                         if self._preview_audio_output:
                             self._preview_audio_output.setVolume(self._get_effective_preview_volume())
@@ -4222,12 +4342,10 @@ class MainWindow(QMainWindow):
             target_size = QSize(640, 360)
 
         if time_sec < intro_dur:
+            if hasattr(self, "particle_overlay"):
+                self.particle_overlay.set_text_pixmap(None)
             if getattr(self, "_cached_intro_pixmap", None) and not self._cached_intro_pixmap.isNull():
-                scaled_pix = self._cached_intro_pixmap.scaled(
-                    target_size,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
+                scaled_pix = self._scale_preview_pixmap(self._cached_intro_pixmap, target_size)
                 self.preview_image.setPixmap(scaled_pix)
                 self.preview_image.setText("")
         else:
@@ -4252,22 +4370,30 @@ class MainWindow(QMainWindow):
                     sel_idx = min(active_idx, len(self._cached_video_overlays) - 1)
                     self._current_overlay_pixmap = self._cached_video_overlays[sel_idx]
             else:
+                part_enabled = hasattr(self, "particles_check") and self.particles_check.isChecked()
+                part_style = self.particles_style_combo.currentText() if hasattr(self, "particles_style_combo") else "Wind Streaks"
+                part_layer = self.particles_layer_combo.currentText() if hasattr(self, "particles_layer_combo") else "Below Text"
+                is_wind = ("wind" in str(part_style).lower())
+
                 if getattr(self, "_cached_composition_pixmaps", None) and self._cached_composition_pixmaps:
                     sel_idx = min(active_idx, len(self._cached_composition_pixmaps) - 1)
                     pix = self._cached_composition_pixmaps[sel_idx]
-                    scaled_pix = pix.scaled(
-                        target_size,
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation,
-                    )
-                    self.preview_image.setPixmap(scaled_pix)
-                    self.preview_image.setText("")
+                    if part_enabled and part_layer == "Below Text":
+                        bg_pix = getattr(self, "_cached_bg_pixmap", None) or pix
+                        scaled_bg = self._scale_preview_pixmap(bg_pix, target_size)
+                        self.preview_image.setPixmap(scaled_bg)
+                        self.preview_image.setText("")
+                        if getattr(self, "_cached_video_overlays", None):
+                            sel_ov = self._cached_video_overlays[min(active_idx, len(self._cached_video_overlays) - 1)]
+                            scaled_ov = self._scale_preview_pixmap(sel_ov, target_size)
+                            self.particle_overlay.set_text_pixmap(scaled_ov)
+                    else:
+                        self.particle_overlay.set_text_pixmap(None)
+                        scaled_pix = self._scale_preview_pixmap(pix, target_size)
+                        self.preview_image.setPixmap(scaled_pix)
+                        self.preview_image.setText("")
                 elif getattr(self, "_cached_preview_pixmap", None) and not self._cached_preview_pixmap.isNull():
-                    scaled_pix = self._cached_preview_pixmap.scaled(
-                        target_size,
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation,
-                    )
+                    scaled_pix = self._scale_preview_pixmap(self._cached_preview_pixmap, target_size)
                     self.preview_image.setPixmap(scaled_pix)
                     self.preview_image.setText("")
 
@@ -4298,11 +4424,7 @@ class MainWindow(QMainWindow):
 
         if getattr(self, "_preview_current_time", 0.0) < intro_dur:
             if getattr(self, "_cached_intro_pixmap", None) and not self._cached_intro_pixmap.isNull():
-                scaled_intro = self._cached_intro_pixmap.scaled(
-                    target_size,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
+                scaled_intro = self._scale_preview_pixmap(self._cached_intro_pixmap, target_size)
                 self.preview_image.setPixmap(scaled_intro)
                 self.preview_image.setText("")
                 return
@@ -4311,26 +4433,37 @@ class MainWindow(QMainWindow):
         if qimg.isNull():
             return
 
+        dpr = float(self.devicePixelRatioF() if hasattr(self, "devicePixelRatioF") else self.devicePixelRatio())
+        phys_target = QSize(int(round(target_size.width() * dpr)), int(round(target_size.height() * dpr)))
+        w, h = phys_target.width(), phys_target.height()
         fit = self.video_fit_combo.currentText().lower() if hasattr(self, "video_fit_combo") else "fill"
-        w, h = target_size.width(), target_size.height()
 
         if "pad" in fit or "letterbox" in fit:
-            scaled = qimg.scaled(target_size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.FastTransformation)
-            canvas = QImage(target_size, QImage.Format.Format_ARGB32_Premultiplied)
+            scaled = qimg.scaled(phys_target, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            canvas = QImage(phys_target, QImage.Format.Format_ARGB32_Premultiplied)
             canvas.fill(Qt.GlobalColor.black)
             p = QPainter(canvas)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
             ox = (w - scaled.width()) // 2
             oy = (h - scaled.height()) // 2
             p.drawImage(ox, oy, scaled)
         elif "stretch" in fit:
-            canvas = qimg.scaled(target_size, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.FastTransformation)
+            canvas = qimg.scaled(phys_target, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
             p = QPainter(canvas)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         else:  # "fill / crop (cover)"
-            scaled = qimg.scaled(target_size, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.FastTransformation)
+            scaled = qimg.scaled(phys_target, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
             ox = max(0, (scaled.width() - w) // 2)
             oy = max(0, (scaled.height() - h) // 2)
             canvas = scaled.copy(ox, oy, w, h)
             p = QPainter(canvas)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
         active_idx = getattr(self, "_preview_active_visual_idx", 0)
         ov_pix = None
@@ -4340,20 +4473,26 @@ class MainWindow(QMainWindow):
         elif getattr(self, "_current_overlay_pixmap", None) and not self._current_overlay_pixmap.isNull():
             ov_pix = self._current_overlay_pixmap
 
+        part_enabled = hasattr(self, "particles_check") and self.particles_check.isChecked()
+        part_layer = self.particles_layer_combo.currentText() if hasattr(self, "particles_layer_combo") else "Below Text"
+
         if ov_pix and not ov_pix.isNull():
-            ov_cache_key = (id(ov_pix), w, h)
-            if getattr(self, "_scaled_overlay_cache_key", None) != ov_cache_key or not hasattr(self, "_scaled_overlay_pixmap"):
-                self._scaled_overlay_cache_key = ov_cache_key
-                self._scaled_overlay_pixmap = ov_pix.scaled(
-                    target_size,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-            p.drawPixmap(0, 0, self._scaled_overlay_pixmap)
+            scaled_ov = self._scale_preview_pixmap(ov_pix, target_size)
+            self._scaled_overlay_pixmap = scaled_ov
+            if not (part_enabled and part_layer == "Below Text"):
+                # Draw high-res overlay scaled to canvas
+                p.drawPixmap(0, 0, scaled_ov)
         p.end()
 
-        self.preview_image.setPixmap(QPixmap.fromImage(canvas))
+        out_pixmap = QPixmap.fromImage(canvas)
+        out_pixmap.setDevicePixelRatio(dpr)
+        self.preview_image.setPixmap(out_pixmap)
         self.preview_image.setText("")
+
+        if part_enabled and part_layer == "Below Text":
+            self.particle_overlay.set_text_pixmap(getattr(self, "_scaled_overlay_pixmap", None))
+        else:
+            self.particle_overlay.set_text_pixmap(None)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -4364,6 +4503,10 @@ class MainWindow(QMainWindow):
             if event.key() == Qt.Key.Key_Escape:
                 self._cancel_title_draft()
                 return True
+        if hasattr(self, "preview_frame") and obj == self.preview_frame and event.type() == QEvent.Type.Resize:
+            if hasattr(self, "particle_overlay"):
+                self.particle_overlay.setGeometry(self.preview_frame.rect())
+                self.particle_overlay.raise_()
         return super().eventFilter(obj, event)
 
     # ------------------------------------------------------------------
@@ -4440,11 +4583,16 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Cannot start export", str(exc))
             return
 
+        total_duration = sum(float(t.get("duration", 0) or 0.0) for t in project.get("tracks", []))
+        if project.get("intro_enabled"):
+            total_duration += float(project.get("intro_duration", 3.0) or 3.0)
+
         self._job = ExportJob(
             command, work_dir, out_path,
             staging_path=staging_path,
             overwrite=overwrite,
             job_id=job_id,
+            total_duration=total_duration,
             on_progress=self._bridge.progress.emit,
             on_done=self._bridge.done.emit,
             on_failed=self._bridge.failed.emit,
@@ -4464,7 +4612,14 @@ class MainWindow(QMainWindow):
         self.cancel_btn.setVisible(running)
         self.cancel_btn.setEnabled(running)
         self.progress.setVisible(running)
+        if hasattr(self, "particle_overlay"):
+            if running:
+                self.particle_overlay.pause()
+            else:
+                self.particle_overlay.resume()
         if running:
+            self.progress.setRange(0, 100)
+            self.progress.setValue(0)
             self.status_label.setText("Preparing render…")
 
     # -- Export callbacks (received on main thread via Qt signals) --
@@ -4475,9 +4630,12 @@ class MainWindow(QMainWindow):
             import re
             m = re.search(r"(\d+)%", message)
             if m:
+                self.progress.setRange(0, 100)
                 self.progress.setValue(int(m.group(1)))
 
     def _render_complete(self, path: str) -> None:
+        if hasattr(self, "progress"):
+            self.progress.setValue(100)
         self._set_ui_running(False)
         p = Path(path)
         sz_mb = p.stat().st_size / (1024 * 1024) if p.exists() else 0.0
@@ -5149,6 +5307,52 @@ class MainWindow(QMainWindow):
             elif not sp:
                 self.sfx_path = ""
                 self._set_asset_label(self.sfx_label, "")
+
+        if "audio_normalize_enabled" in tmpl and hasattr(self, "audio_normalize_check"):
+            self.audio_normalize_check.setChecked(bool(tmpl["audio_normalize_enabled"]))
+
+        if "particles_enabled" in tmpl and hasattr(self, "particles_check"):
+            self.particles_check.setChecked(bool(tmpl["particles_enabled"]))
+        if "particles_style" in tmpl and hasattr(self, "particles_style_combo"):
+            self.particles_style_combo.setCurrentText(str(tmpl["particles_style"]))
+        if "particles_layer" in tmpl and hasattr(self, "particles_layer_combo"):
+            self.particles_layer_combo.setCurrentText(str(tmpl["particles_layer"]))
+        if "particles_quantity" in tmpl and hasattr(self, "particles_count_spin"):
+            self.particles_count_spin.setValue(int(tmpl["particles_quantity"]))
+        if "particles_color" in tmpl:
+            raw_pc = tmpl["particles_color"]
+            self.particles_color = tuple(raw_pc) if isinstance(raw_pc, (list, tuple)) else raw_pc
+            self._update_particles_color_btn()
+        if "particles_speed" in tmpl and hasattr(self, "particles_speed_spin"):
+            self.particles_speed_spin.setValue(int(tmpl["particles_speed"]))
+        if "particles_angle" in tmpl and hasattr(self, "particles_angle_spin"):
+            self.particles_angle_spin.setValue(int(tmpl["particles_angle"]))
+        if hasattr(self, "particles_size_slider") or hasattr(self, "particles_size_spin"):
+            raw_sz = tmpl.get("particles_size")
+            if raw_sz is not None and 1 <= int(raw_sz) <= 20:
+                sz = int(raw_sz)
+            elif raw_sz is not None and int(raw_sz) > 20:
+                sz = max(1, min(20, int(round(int(raw_sz) / 20.0))))
+            else:
+                sz = 5
+            if hasattr(self, "particles_size_slider"):
+                self.particles_size_slider.setValue(sz)
+            if hasattr(self, "particles_size_spin"):
+                self.particles_size_spin.setValue(sz)
+            if hasattr(self, "particles_size_val_lbl"):
+                self.particles_size_val_lbl.setText(str(sz))
+        if hasattr(self, "particle_overlay"):
+            self.particle_overlay.set_particle_style(self.particles_style_combo.currentText() if hasattr(self, "particles_style_combo") else "Wind Streaks")
+            self.particle_overlay.set_particle_layer(self.particles_layer_combo.currentText() if hasattr(self, "particles_layer_combo") else "Below Text")
+            self.particle_overlay.set_particle_count(self.particles_count_spin.value() if hasattr(self, "particles_count_spin") else 80)
+            self.particle_overlay.set_particle_speed(self.particles_speed_spin.value() if hasattr(self, "particles_speed_spin") else 2)
+            self.particle_overlay.set_particle_size(self.particles_size_spin.value() if hasattr(self, "particles_size_spin") else 5)
+            if hasattr(self, "particles_angle_spin"):
+                self.particle_overlay.set_particle_angle(self.particles_angle_spin.value())
+            self.particle_overlay.set_particle_color(self.particles_color)
+            self.particle_overlay.set_enabled(self.particles_check.isChecked() if hasattr(self, "particles_check") else False)
+        if hasattr(self, "_update_particles_controls_visibility"):
+            self._update_particles_controls_visibility()
         if "intro_audio_path" in tmpl and hasattr(self, "intro_audio_label"):
             iap = tmpl["intro_audio_path"]
             if iap and Path(iap).is_file():
@@ -5336,6 +5540,7 @@ class MainWindow(QMainWindow):
 
     def _load_project_file(self, path: str) -> None:
         try:
+            self._stop_preview_playback()
             data = json.loads(Path(path).read_text(encoding="utf-8"))
             if data.get("type") == "template":
                 self._apply_template_data(data)
@@ -5629,6 +5834,54 @@ class MainWindow(QMainWindow):
             if "output_path" in data and data["output_path"]:
                 self.output_edit.setText(data["output_path"])
 
+            # Sound normalization (Feature A)
+            if hasattr(self, "audio_normalize_check"):
+                self.audio_normalize_check.setChecked(bool(data.get("audio_normalize_enabled", False)))
+
+            # Ambient particles (Feature D)
+            if hasattr(self, "particles_check"):
+                self.particles_check.setChecked(bool(data.get("particles_enabled", False)))
+            if hasattr(self, "particles_style_combo") and "particles_style" in data:
+                self.particles_style_combo.setCurrentText(str(data["particles_style"]))
+            if hasattr(self, "particles_layer_combo") and "particles_layer" in data:
+                self.particles_layer_combo.setCurrentText(str(data["particles_layer"]))
+            if hasattr(self, "particles_count_spin") and "particles_quantity" in data:
+                self.particles_count_spin.setValue(int(data["particles_quantity"]))
+            if "particles_color" in data:
+                raw_pc = data["particles_color"]
+                self.particles_color = tuple(raw_pc) if isinstance(raw_pc, (list, tuple)) else raw_pc
+                self._update_particles_color_btn()
+            if hasattr(self, "particles_speed_spin") and "particles_speed" in data:
+                self.particles_speed_spin.setValue(int(data["particles_speed"]))
+            if hasattr(self, "particles_angle_spin") and "particles_angle" in data:
+                self.particles_angle_spin.setValue(int(data["particles_angle"]))
+            if hasattr(self, "particles_size_slider") or hasattr(self, "particles_size_spin"):
+                raw_sz = data.get("particles_size")
+                if raw_sz is not None and 1 <= int(raw_sz) <= 20:
+                    sz = int(raw_sz)
+                elif raw_sz is not None and int(raw_sz) > 20:
+                    sz = max(1, min(20, int(round(int(raw_sz) / 20.0))))
+                else:
+                    sz = 5
+                if hasattr(self, "particles_size_slider"):
+                    self.particles_size_slider.setValue(sz)
+                if hasattr(self, "particles_size_spin"):
+                    self.particles_size_spin.setValue(sz)
+                if hasattr(self, "particles_size_val_lbl"):
+                    self.particles_size_val_lbl.setText(str(sz))
+            if hasattr(self, "particle_overlay"):
+                self.particle_overlay.set_particle_style(self.particles_style_combo.currentText() if hasattr(self, "particles_style_combo") else "Wind Streaks")
+                self.particle_overlay.set_particle_layer(self.particles_layer_combo.currentText() if hasattr(self, "particles_layer_combo") else "Below Text")
+                self.particle_overlay.set_particle_count(self.particles_count_spin.value() if hasattr(self, "particles_count_spin") else 80)
+                self.particle_overlay.set_particle_speed(self.particles_speed_spin.value() if hasattr(self, "particles_speed_spin") else 2)
+                self.particle_overlay.set_particle_size(self.particles_size_spin.value() if hasattr(self, "particles_size_spin") else 5)
+                if hasattr(self, "particles_angle_spin"):
+                    self.particle_overlay.set_particle_angle(self.particles_angle_spin.value())
+                self.particle_overlay.set_particle_color(self.particles_color)
+                self.particle_overlay.set_enabled(self.particles_check.isChecked() if hasattr(self, "particles_check") else False)
+            if hasattr(self, "_update_particles_controls_visibility"):
+                self._update_particles_controls_visibility()
+
             self._check_logo_website_overlap()
             self._refresh_tracks()
             self._refresh_preview()
@@ -5770,3 +6023,146 @@ class MainWindow(QMainWindow):
             event.accept()
             return
         super().keyPressEvent(event)
+
+    def changeEvent(self, event: QEvent) -> None:
+        if event.type() == QEvent.Type.WindowStateChange:
+            if hasattr(self, "particle_overlay"):
+                if self.isMinimized():
+                    self.particle_overlay.pause()
+                else:
+                    self.particle_overlay.resume()
+        super().changeEvent(event)
+
+    def _on_audio_normalize_changed(self) -> None:
+        self._mark_dirty()
+        self._push_undo_snapshot()
+        state_str = "enabled" if self.audio_normalize_check.isChecked() else "disabled"
+        self.status_label.setText(f"Audio normalization {state_str}")
+
+    def _on_particles_size_slider_changed(self, val: int) -> None:
+        if hasattr(self, "particles_size_spin") and self.particles_size_spin.value() != val:
+            self.particles_size_spin.blockSignals(True)
+            self.particles_size_spin.setValue(val)
+            self.particles_size_spin.blockSignals(False)
+        if hasattr(self, "particles_size_val_lbl"):
+            self.particles_size_val_lbl.setText(str(val))
+        self._on_particles_param_changed()
+
+    def _on_particles_size_spin_changed(self, val: int) -> None:
+        if hasattr(self, "particles_size_slider") and self.particles_size_slider.value() != val:
+            self.particles_size_slider.blockSignals(True)
+            self.particles_size_slider.setValue(val)
+            self.particles_size_slider.blockSignals(False)
+        if hasattr(self, "particles_size_val_lbl"):
+            self.particles_size_val_lbl.setText(str(val))
+        self._on_particles_param_changed()
+
+    def _update_particles_controls_visibility(self) -> None:
+        """Show only the controls relevant to the selected particle style."""
+        if not hasattr(self, "particles_style_combo"):
+            return
+        style = self.particles_style_combo.currentText()
+        is_wind = ("wind" in style.lower())
+        if hasattr(self, "_particles_angle_row"):
+            self._particles_angle_row.setVisible(is_wind)
+        if hasattr(self, "_particles_color_row"):
+            self._particles_color_row.setVisible(not is_wind)
+        if hasattr(self, "_particles_layer_row"):
+            self._particles_layer_row.setVisible(not is_wind)
+
+    def _on_particles_param_changed(self) -> None:
+        if hasattr(self, "_update_particles_controls_visibility"):
+            self._update_particles_controls_visibility()
+        if hasattr(self, "particle_overlay"):
+            enabled = self.particles_check.isChecked()
+            spd = self.particles_speed_spin.value() if hasattr(self, "particles_speed_spin") else 2
+            style = self.particles_style_combo.currentText() if hasattr(self, "particles_style_combo") else "Wind Streaks"
+            layer = self.particles_layer_combo.currentText() if hasattr(self, "particles_layer_combo") else "Below Text"
+            count = self.particles_count_spin.value() if hasattr(self, "particles_count_spin") else 80
+            sz = self.particles_size_spin.value() if hasattr(self, "particles_size_spin") else (self.particles_size_slider.value() if hasattr(self, "particles_size_slider") else 5)
+            ang = self.particles_angle_spin.value() if hasattr(self, "particles_angle_spin") else 225
+            self.particle_overlay.set_particle_style(style)
+            self.particle_overlay.set_particle_layer(layer)
+            self.particle_overlay.set_particle_count(count)
+            self.particle_overlay.set_particle_speed(spd)
+            self.particle_overlay.set_particle_size(sz)
+            if hasattr(self.particle_overlay, "set_particle_angle"):
+                self.particle_overlay.set_particle_angle(ang)
+            self.particle_overlay.set_enabled(enabled)
+            self._refresh_particles_preview_state()
+        self._mark_dirty()
+        self._push_undo_snapshot()
+
+    def _refresh_particles_preview_state(self) -> None:
+        if getattr(self, "_is_preview_playing", False):
+            return
+        target_size = self.preview_frame.size() if hasattr(self, "preview_frame") else QSize(640, 360)
+        if target_size.width() <= 10 or target_size.height() <= 10:
+            target_size = QSize(640, 360)
+
+        # If user explicitly toggled "Preview Intro Card", show intro card and ensure no text overlay lingers
+        if getattr(self, "_previewing_intro", False):
+            if hasattr(self, "particle_overlay"):
+                self.particle_overlay.set_text_pixmap(None)
+            intro_pix = getattr(self, "_cached_intro_pixmap", None)
+            if intro_pix and not intro_pix.isNull():
+                scaled_intro = self._scale_preview_pixmap(intro_pix, target_size)
+                self.preview_image.setPixmap(scaled_intro)
+                self.preview_image.setText("")
+            return
+
+        part_enabled = hasattr(self, "particles_check") and self.particles_check.isChecked()
+        part_style = self.particles_style_combo.currentText() if hasattr(self, "particles_style_combo") else "Wind Streaks"
+        part_layer = self.particles_layer_combo.currentText() if hasattr(self, "particles_layer_combo") else "Below Text"
+        is_wind = ("wind" in str(part_style).lower())
+
+        if part_enabled and part_layer == "Below Text":
+            # In Below Text mode, background ONLY goes to preview_image, and text/overlay goes to particle_overlay
+            bg_pix = getattr(self, "_cached_bg_pixmap", None)
+            if bg_pix and not bg_pix.isNull():
+                scaled_bg = self._scale_preview_pixmap(bg_pix, target_size)
+                self.preview_image.setPixmap(scaled_bg)
+                self.preview_image.setText("")
+            else:
+                self.preview_image.setPixmap(QPixmap())
+
+            ov_pix = getattr(self, "_current_overlay_pixmap", None)
+            if ov_pix and not ov_pix.isNull():
+                scaled_ov = self._scale_preview_pixmap(ov_pix, target_size)
+                self.particle_overlay.set_text_pixmap(scaled_ov)
+            else:
+                self.particle_overlay.set_text_pixmap(None)
+        else:
+            self.particle_overlay.set_text_pixmap(None)
+            pix = getattr(self, "_cached_preview_pixmap", None)
+            if pix and not pix.isNull():
+                scaled_pix = self._scale_preview_pixmap(pix, target_size)
+                self.preview_image.setPixmap(scaled_pix)
+                self.preview_image.setText("")
+
+    def _choose_particles_color(self) -> None:
+        cur_rgb = _hex_or_tuple_to_rgb(getattr(self, "particles_color", (56, 189, 248)))
+        init_col = QColor(cur_rgb[0], cur_rgb[1], cur_rgb[2])
+        col = QColorDialog.getColor(init_col, self, "Select Particle Color")
+        if col.isValid():
+            self.particles_color = (col.red(), col.green(), col.blue())
+            self._update_particles_color_btn()
+            if hasattr(self, "particle_overlay"):
+                self.particle_overlay.set_particle_color(col)
+            self._mark_dirty()
+            self._push_undo_snapshot()
+
+    def _update_particles_color_btn(self) -> None:
+        if hasattr(self, "particles_color_btn"):
+            cur_rgb = _hex_or_tuple_to_rgb(getattr(self, "particles_color", (56, 189, 248)))
+            hex_c = f"#{cur_rgb[0]:02x}{cur_rgb[1]:02x}{cur_rgb[2]:02x}"
+            self.particles_color_btn.setStyleSheet(
+                f"background-color: {hex_c}; border: 1px solid #334155; border-radius: 4px;"
+            )
+
+    def _standardize_numeric_controls(self) -> None:
+        """Standardize all QSpinBox and QDoubleSpinBox controls for consistent arrow stepping and conflict-free typing."""
+        for attr in dir(self):
+            obj = getattr(self, attr, None)
+            if isinstance(obj, (QSpinBox, QDoubleSpinBox)):
+                obj.setKeyboardTracking(False)

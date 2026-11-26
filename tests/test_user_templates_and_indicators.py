@@ -23,7 +23,9 @@ from src.services.compositor import (
 
 
 def test_discover_user_templates():
-    templates = discover_user_templates()
+    fixtures_dir = Path(__file__).resolve().parent / "fixtures"
+    mock_root = fixtures_dir / "mock_user_templates_root"
+    templates = discover_user_templates(project_root=mock_root)
     user_tmpls = [t for t in templates if t["category"] == "User Template"]
     assert len(user_tmpls) >= 2
 
@@ -33,8 +35,8 @@ def test_discover_user_templates():
 
 
 def test_load_all_user_templates():
-    root = Path(__file__).resolve().parent.parent
-    tmpl_dir = root / "user_templates"
+    fixtures_dir = Path(__file__).resolve().parent / "fixtures"
+    tmpl_dir = fixtures_dir / "templates"
     for tmpl_file in tmpl_dir.glob("*.json"):
         data = load_template(str(tmpl_file))
         assert "collection_title" in data
@@ -44,6 +46,7 @@ def test_load_all_user_templates():
 
 
 def test_template_preserves_user_audio_tracks():
+    fixtures_dir = Path(__file__).resolve().parent / "fixtures"
     base_project = {
         "collection_title": "My Original Project",
         "tracks": [
@@ -52,7 +55,7 @@ def test_template_preserves_user_audio_tracks():
         ],
         "template": "Minimal",
     }
-    tmpl = load_template("user_templates/04_sad_nasheeds_glass_highlight.json")
+    tmpl = load_template(str(fixtures_dir / "templates" / "04_sad_nasheeds_glass_highlight.json"))
     merged = apply_template_to_project(base_project, tmpl)
 
     # Content preserved
@@ -70,19 +73,22 @@ def test_template_preserves_user_audio_tracks():
 
 def test_cursor_and_text_vertical_alignment():
     """Verify that custom and arrow cursors are vertically aligned with the active track text visual center."""
+    fixtures_dir = Path(__file__).resolve().parent / "fixtures"
+    cursor_fixture = str(fixtures_dir / "cursors" / "test_paw_cursor.png")
+    bg_fixture = str(fixtures_dir / "images" / "sample_bg.png")
     tracks = ["1. Whispers of Salah", "2. Peaceful Reflection"]
     with tempfile.TemporaryDirectory() as tmp:
         base, overlays = create_composition(
             width=1920,
             height=1080,
-            background_path="assets/lion_clean_bg.png",
+            background_path=bg_fixture,
             logo_path=None,
             track_titles=tracks,
             collection_title="Test Title",
             template="Cinematic",
             out_dir=tmp,
             indicator_mode="cursor_only",
-            cursor_path="assets/paw_cursor.png",
+            cursor_path=cursor_fixture,
             cursor_size=42,
             preview_only_first_overlay=True,
             active_track_index=0,
@@ -128,7 +134,7 @@ def test_cursor_and_text_vertical_alignment():
         expected_text_visual_cy = item0["y"] + (tb[1] + tb[3]) // 2
 
         # Verify cursor center matches expected_text_visual_cy
-        cursor_img = load_cursor_image("assets/paw_cursor.png", 42)
+        cursor_img = load_cursor_image(cursor_fixture, 42)
         ch = cursor_img.size[1]
         cursor_placed_y = expected_text_visual_cy - ch // 2
         cursor_placed_cy = cursor_placed_y + ch // 2

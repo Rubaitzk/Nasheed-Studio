@@ -27,8 +27,13 @@ __pycache__/
 *.webp
 *.tiff
 assets/
+!assets/icons/**
 user_templates/
 Documentation/
+
+# Allow deterministic test fixtures and theme artifacts
+!tests/fixtures/**
+!tests/artifacts/theme/**
 
 # Build artifacts & packages
 build/
@@ -54,10 +59,12 @@ pictur e_of_video_playlist_display/
 picture_for_improving_layout/
 last_improvements/
 reference/
+final_delivery_proof/
 
 # Render work directories & logs
 *_render_work/
 *.log
+dev_test_samples/
 
 # Executables & archives
 tools/*.exe

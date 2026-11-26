@@ -274,6 +274,47 @@ def build_render_command(
     command = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
                "-progress", "pipe:1", "-nostats"]
 
+    # Feature D: Ambient Particle Effects Video Sequence (Export rendering)
+    particles_enabled = bool(project.get("particles_enabled", False))
+    particles_style = project.get("particles_style", "Wind Streaks")
+    particles_layer = project.get("particles_layer", "Below Text")
+    particles_quantity = int(project.get("particles_quantity", 80) or 80)
+    particles_color = project.get("particles_color", (56, 189, 248))
+    particles_speed = int(project.get("particles_speed", 2) or 2)
+    raw_size = project.get("particles_size")
+    if raw_size is not None and 1 <= int(raw_size) <= 20:
+        particles_size = int(raw_size)
+    elif raw_size is not None and int(raw_size) > 20:
+        particles_size = max(1, min(20, int(round(int(raw_size) / 20.0))))
+    else:
+        particles_size = 5
+    particles_angle = float(project.get("particles_angle", 225.0) or 225.0)
+    particle_input_idx = None
+
+    if particles_enabled:
+        from src.services.particle_service import generate_particle_loop_video
+        particle_mov = Path(work_dir) / "particles_loop.mov"
+        try:
+            if progress_callback:
+                progress_callback("Generating ambient particle sequence…")
+            generate_particle_loop_video(
+                output_path=particle_mov,
+                width=width,
+                height=height,
+                fps=30,
+                duration=6.0,
+                style=particles_style,
+                quantity=particles_quantity,
+                color=particles_color,
+                speed=particles_speed,
+                size=particles_size,
+                angle=particles_angle,
+                ffmpeg_bin=ffmpeg,
+            )
+        except Exception as p_err:
+            # Fallback gracefully if particle generation fails so export does not abort
+            particle_mov = None
+
     fg_input_idx = None
     if bg_is_video:
         if video_loop:
@@ -289,8 +330,23 @@ def build_render_command(
             fg_input_idx = current_input_idx
             current_input_idx += 1
     else:
-        command += ["-loop", "1", "-framerate", "30", "-i", base]
-        current_input_idx = 1
+        bg_clean_file = Path(work_dir) / "composition_bg.png"
+        fg_file = Path(work_dir) / "composition_fg.png"
+        if particles_enabled and particles_style != "Wind Streaks" and particles_layer == "Below Text" and bg_clean_file.is_file() and fg_file.is_file():
+            command += ["-loop", "1", "-framerate", "30", "-i", str(bg_clean_file)]
+            current_input_idx = 1
+            command += ["-loop", "1", "-framerate", "1", "-i", str(fg_file)]
+            fg_input_idx = current_input_idx
+            current_input_idx += 1
+        else:
+            command += ["-loop", "1", "-framerate", "30", "-i", base]
+            current_input_idx = 1
+
+    # Ambient particles input
+    if particles_enabled and particle_mov and particle_mov.is_file():
+        command += ["-stream_loop", "-1", "-i", str(particle_mov)]
+        particle_input_idx = current_input_idx
+        current_input_idx += 1
 
     # Overlays
     overlay_input_indices = []
@@ -415,14 +471,20 @@ def build_render_command(
         if not video_loop:
             filters.append(f"[{v_bg_stream}]tpad=stop_mode=clone:stop=-1[v_bg_held]")
             v_bg_stream = "v_bg_held"
-
-        if fg_input_idx is not None:
-            filters.append(f"[{v_bg_stream}][{fg_input_idx}:v]overlay=0:0[v_base]")
-            current_v = "v_base"
-        else:
-            current_v = v_bg_stream
     else:
-        current_v = "0:v"
+        v_bg_stream = "0:v"
+
+    # Feature D: Ambient particles (Layer: Below Text - beneath typography & tracklist)
+    # Wind Streaks is strictly foreground overlay, so it is rendered above text at the final step
+    if particle_input_idx is not None and particles_style != "Wind Streaks" and particles_layer == "Below Text":
+        filters.append(f"[{v_bg_stream}][{particle_input_idx}:v]overlay=0:0:format=auto:shortest=1[v_bg_part]")
+        v_bg_stream = "v_bg_part"
+
+    if fg_input_idx is not None:
+        filters.append(f"[{v_bg_stream}][{fg_input_idx}:v]overlay=0:0[v_base]")
+        current_v = "v_base"
+    else:
+        current_v = v_bg_stream
 
     # Intro presentation overlay
     if intro_enabled and intro_input_idx is not None:
@@ -485,17 +547,27 @@ def build_render_command(
             )
             current_v = next_label
 
+    # Feature D: Ambient particles (Layer: Above Text - floats over all visual layers)
+    if particle_input_idx is not None and (particles_style == "Wind Streaks" or particles_layer != "Below Text"):
+        filters.append(f"[{current_v}][{particle_input_idx}:v]overlay=0:0:format=auto:shortest=1[v_final_part]")
+        current_v = "v_final_part"
+
     video_out = f"[{current_v}]" if current_v != "0:v" else "0:v"
 
     # ------------------------------------------------------------------
     # 2. Audio Filter Graph Construction
     # ------------------------------------------------------------------
     # Normalize each track to 44.1kHz stereo with exact presentation timestamps and boundary padding/trimming
+    # Feature A: Sound Normalization via loudnorm (EBU R128: -16 LUFS, -1.5 dBTP)
+    audio_norm_enabled = bool(project.get("audio_normalize_enabled", False))
+    norm_clause = "loudnorm=I=-16.0:TP=-1.5:LRA=11.0," if audio_norm_enabled else ""
+
     for i, in_idx in enumerate(track_input_indices):
         track_dur = float(tracks[i].get("duration", 0) or 0.0)
         dur_clause = f",apad=whole_dur={track_dur:.3f},atrim=0:{track_dur:.3f}" if track_dur > 0 else ""
         filters.append(
             f"[{in_idx}:a:0]asetpts=PTS-STARTPTS{dur_clause},"
+            f"{norm_clause}"
             f"aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a_norm_{i}]"
         )
 
@@ -524,6 +596,8 @@ def build_render_command(
                 intro_filter_chain.append(f"afade=t=in:st=0:d={fade_in:.3f}")
             if fade_out > 0:
                 intro_filter_chain.append(f"afade=t=out:st={fade_out_st:.3f}:d={fade_out:.3f}")
+            if audio_norm_enabled:
+                intro_filter_chain.append("loudnorm=I=-16.0:TP=-1.5:LRA=11.0")
             intro_filter_chain.append("aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a_intro_prep]")
 
             filters.append(",".join(intro_filter_chain))
@@ -544,7 +618,7 @@ def build_render_command(
 
     # Transition Sound Effects (SFX) Mixing
     final_audio = f"[{concat_label}]"
-    if sfx_enabled and sfx_input_idx is not None:
+    if sfx_enabled and sfx_input_idx is not None and len(tracks) > 1:
         num_transitions = len(tracks) - 1
         # Trim SFX to maximum 2.5s with a 0.5s fade-out so it never bleeds across subsequent track audio
         filters.append(
@@ -659,7 +733,7 @@ def build_render_command(
         "-c:v", "libx264", "-preset", profile_preset, "-threads", str(profile_threads),
         *command_video_rate,
         "-pix_fmt", "yuv420p", "-r", "30",
-        "-c:a", "aac", "-b:a", audio_bitrate,
+        "-c:a", "aac", "-b:a", audio_bitrate, "-ar", "44100",
         "-movflags", "+faststart", "-shortest",
         str(effective_out),
     ]

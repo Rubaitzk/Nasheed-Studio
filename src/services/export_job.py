@@ -189,6 +189,7 @@ class ExportJob:
         overwrite: bool = False,
         job_id: Optional[str] = None,
         resource_profile: str = "Balanced",
+        total_duration: float = 0.0,
         on_progress: Optional[Callable[[str], None]] = None,
         on_done: Optional[Callable[[str], None]] = None,
         on_failed: Optional[Callable[[str], None]] = None,
@@ -201,6 +202,7 @@ class ExportJob:
         self._overwrite = overwrite
         self._job_id = job_id
         self._resource_profile = resource_profile
+        self._total_duration = float(total_duration or 0.0)
         self._on_progress = on_progress or (lambda _: None)
         self._on_done = on_done or (lambda _: None)
         self._on_failed = on_failed or (lambda _: None)
@@ -323,14 +325,30 @@ class ExportJob:
             if has_progress and proc.stdout is not None:
                 speed_str = ""
                 out_time_str = ""
+                out_time_us = 0
                 for line in proc.stdout:
                     line = line.strip()
                     if line.startswith("speed="):
                         speed_str = line.split("=", 1)[1].strip()
+                    elif line.startswith("out_time_us="):
+                        try:
+                            out_time_us = int(line.split("=", 1)[1].strip())
+                        except ValueError:
+                            pass
                     elif line.startswith("out_time="):
                         out_time_str = line.split("=", 1)[1].strip()
                     elif line.startswith("progress="):
                         status_parts = []
+                        if self._total_duration > 0:
+                            cur_sec = out_time_us / 1_000_000.0 if out_time_us > 0 else 0.0
+                            if cur_sec <= 0.0 and out_time_str and ":" in out_time_str:
+                                try:
+                                    parts = out_time_str.split(":")
+                                    cur_sec = float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
+                                except Exception:
+                                    pass
+                            pct = min(99, max(0, int((cur_sec / self._total_duration) * 100)))
+                            status_parts.append(f"{pct}%")
                         if out_time_str and out_time_str != "N/A":
                             status_parts.append(out_time_str[:8])
                         if speed_str and speed_str != "N/A":

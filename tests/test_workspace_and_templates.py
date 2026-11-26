@@ -516,7 +516,14 @@ class TestMainWindowTemplateUI(unittest.TestCase):
         self.assertEqual(self.win.template_combo.currentText(), "Two-column")
         self.assertEqual(self.win.playlist_cols_spin.value(), 2)
         self.assertEqual(self.win.highlight_style_combo.currentText(), "Pill")
-        self.assertIn(self.win.title_font_combo.currentText().lower(), ["montserrat", "cinzel decorative"])
+        
+        # Verify font selection: if preset font is installed on host OS it must match; otherwise fallback is valid
+        title_fonts_available = [self.win.title_font_combo.itemText(i).lower() for i in range(self.win.title_font_combo.count())]
+        if any(f in title_fonts_available for f in ["montserrat", "cinzel decorative"]):
+            self.assertIn(self.win.title_font_combo.currentText().lower(), ["montserrat", "cinzel decorative"])
+        else:
+            self.assertTrue(len(self.win.title_font_combo.currentText().strip()) > 0)
+
         self.assertIn("Abu Ali", self.win.status_label.text())
 
         self.win._apply_built_in_preset("refer3_slave_of_allah_outline.json")

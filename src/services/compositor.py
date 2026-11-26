@@ -176,6 +176,35 @@ def _cover(image: Image.Image, size: tuple[int, int]) -> Image.Image:
 
 
 _BG_CACHE: dict[tuple, tuple[Image.Image, Image.Image]] = {}
+_LOGO_CLEAN_CACHE: dict[tuple, Image.Image] = {}
+
+
+def clear_logo_cache() -> None:
+    """Clear cached cleaned logos."""
+    _LOGO_CLEAN_CACHE.clear()
+
+
+def get_cleaned_logo(logo_path: str, mode: str = "auto") -> Optional[Image.Image]:
+    """Return cached cleaned RGBA logo image or load, clean, and cache."""
+    if not logo_path or not Path(logo_path).is_file():
+        return None
+    try:
+        mtime = Path(logo_path).stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    mode_str = str(mode or "auto").lower()
+    cache_key = (str(logo_path), mtime, mode_str)
+    if cache_key in _LOGO_CLEAN_CACHE:
+        return _LOGO_CLEAN_CACHE[cache_key].copy()
+    try:
+        with Image.open(logo_path) as logo_src:
+            cleaned = clean_logo_image(logo_src, mode=mode_str).convert("RGBA")
+            if len(_LOGO_CLEAN_CACHE) >= 8:
+                _LOGO_CLEAN_CACHE.pop(next(iter(_LOGO_CLEAN_CACHE)))
+            _LOGO_CLEAN_CACHE[cache_key] = cleaned.copy()
+            return cleaned.copy()
+    except Exception:
+        return None
 
 
 def clear_background_cache() -> None:
@@ -258,6 +287,9 @@ def render_svg_to_image(svg_path: str, target_w: int, target_h: int) -> Image.Im
     qimg = QImage(target_w, target_h, QImage.Format.Format_ARGB32_Premultiplied)
     qimg.fill(QColor(0, 0, 0, 0))
     painter = QPainter(qimg)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
     renderer.render(painter, QRectF(0, 0, target_w, target_h))
     painter.end()
 
@@ -1041,8 +1073,8 @@ def create_intro_card(
     logo_bottom = card_y + int(card_h * 0.12)
     if logo_show and logo_path and Path(logo_path).is_file():
         try:
-            with Image.open(logo_path) as logo_src:
-                logo = clean_logo_image(logo_src).convert("RGBA")
+            logo = get_cleaned_logo(logo_path, mode="auto")
+            if logo is not None:
                 eff_scale = max(0.1, float(logo_scale))
                 max_w = int(card_w * 0.35 * eff_scale)
                 max_h = int(card_h * 0.30 * eff_scale)
@@ -1336,6 +1368,7 @@ def create_composition(
         wash_alpha=wash_alpha,
         bg_is_video=bg_is_video,
     )
+    clean_bg = bg.copy()
     draw = ImageDraw.Draw(bg, "RGBA")
 
     # Dynamic Typography Scaling
@@ -1361,8 +1394,8 @@ def create_composition(
     logo_rect: Optional[Tuple[int, int, int, int]] = None
     if logo_path and Path(logo_path).is_file():
         try:
-            with Image.open(logo_path) as logo_src:
-                raw_logo = clean_logo_image(logo_src, mode=logo_cleanup_mode)
+            raw_logo = get_cleaned_logo(logo_path, mode=logo_cleanup_mode)
+            if raw_logo is not None:
                 eff_scale = max(0.1, min(5.0, float(logo_scale or 1.0)))
                 orig_w, orig_h = raw_logo.size
                 aspect = orig_w / max(1, orig_h)
@@ -1627,6 +1660,7 @@ def create_composition(
         fg = Image.alpha_composite(fg, tracks_layer)
         fg_path = str(out / "composition_fg.png")
         fg.save(fg_path)
+        clean_bg.save(str(out / "composition_bg.png"))
         base_path = str(out / "composition.png")
         base.save(base_path)
         return base_path, []
@@ -1634,6 +1668,7 @@ def create_composition(
     # When overlays are enabled, save base without playlist text to avoid duplicate/ghosted rendering
     fg_path = str(out / "composition_fg.png")
     fg.save(fg_path)
+    clean_bg.save(str(out / "composition_bg.png"))
     base_path = str(out / "composition.png")
     base.save(base_path)
 

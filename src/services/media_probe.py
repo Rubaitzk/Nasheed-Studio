@@ -36,9 +36,10 @@ def find_tool(name: str) -> str:
         candidates.append(Path(sys._MEIPASS) / "tools" / filename)
         candidates.append(Path(sys._MEIPASS) / filename)
 
-    # 2. Directory adjacent to the running executable / script
+    # 2. Directory adjacent to the running executable / script or inside _internal
     exe_dir = Path(sys.executable).parent
     candidates.append(exe_dir / "tools" / filename)
+    candidates.append(exe_dir / "_internal" / "tools" / filename)
     candidates.append(exe_dir / filename)
 
     # 3. Development project directory (2 levels up from services/)
