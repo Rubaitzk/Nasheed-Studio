@@ -1562,7 +1562,7 @@ class MainWindow(QMainWindow):
         sec_particles.addLayout(self._create_prop_row("Style:", self.particles_style_combo))
 
         self.particles_layer_combo = QComboBox()
-        self.particles_layer_combo.addItems(["Below Text", "Above Text"])
+        self.particles_layer_combo.addItems(["Above Text", "Below Text"])
         self.particles_layer_combo.setToolTip("Particle layering: 'Below Text' keeps playlist typography crisp and visible; 'Above Text' floats over all layers")
         self.particles_layer_combo.currentTextChanged.connect(self._on_particles_param_changed)
         self._particles_layer_row = QWidget()
@@ -4371,7 +4371,7 @@ class MainWindow(QMainWindow):
                 if getattr(self, "_cached_composition_pixmaps", None) and self._cached_composition_pixmaps:
                     sel_idx = min(active_idx, len(self._cached_composition_pixmaps) - 1)
                     pix = self._cached_composition_pixmaps[sel_idx]
-                    if part_enabled and part_layer == "Below Text" and not is_wind:
+                    if part_enabled and part_layer == "Below Text":
                         bg_pix = getattr(self, "_cached_bg_pixmap", None) or pix
                         scaled_bg = self._scale_preview_pixmap(bg_pix, target_size)
                         self.preview_image.setPixmap(scaled_bg)
@@ -6109,7 +6109,7 @@ class MainWindow(QMainWindow):
         part_layer = self.particles_layer_combo.currentText() if hasattr(self, "particles_layer_combo") else "Below Text"
         is_wind = ("wind" in str(part_style).lower())
 
-        if part_enabled and part_layer == "Below Text" and not is_wind:
+        if part_enabled and part_layer == "Below Text":
             # In Below Text mode, background ONLY goes to preview_image, and text/overlay goes to particle_overlay
             bg_pix = getattr(self, "_cached_bg_pixmap", None)
             if bg_pix and not bg_pix.isNull():

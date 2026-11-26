@@ -144,6 +144,7 @@ def test_text_region_pixel_consistency_particles_on_vs_off(populated_window, qap
     # Switch particles ON in foreground overlay mode
     win.particles_check.setChecked(True)
     win.particles_style_combo.setCurrentText("Wind Streaks")
+    win.particles_layer_combo.setCurrentText("Above Text")
     win._on_particles_param_changed()
     win._refresh_preview()
     qapp.processEvents()
