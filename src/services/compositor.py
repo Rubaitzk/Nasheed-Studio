@@ -287,6 +287,9 @@ def render_svg_to_image(svg_path: str, target_w: int, target_h: int) -> Image.Im
     qimg = QImage(target_w, target_h, QImage.Format.Format_ARGB32_Premultiplied)
     qimg.fill(QColor(0, 0, 0, 0))
     painter = QPainter(qimg)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
     renderer.render(painter, QRectF(0, 0, target_w, target_h))
     painter.end()
 

@@ -674,6 +674,8 @@ class ParticleOverlayWidget(QWidget):
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
         # 1. Draw particles
         if self._particles:
@@ -774,8 +776,11 @@ class ParticleOverlayWidget(QWidget):
         # 2. If 'Below Text' layer is active and text pixmap is present, draw text on top of particles
         # Wind Streaks is strictly foreground overlay above text, so skip drawing text over particles
         if self._layer == LAYER_BELOW_TEXT and self._text_pixmap and not self._text_pixmap.isNull():
-            ox = max(0, (self.width() - self._text_pixmap.width()) // 2)
-            oy = max(0, (self.height() - self._text_pixmap.height()) // 2)
+            dpr = self._text_pixmap.devicePixelRatio() or 1.0
+            log_w = int(round(self._text_pixmap.width() / dpr))
+            log_h = int(round(self._text_pixmap.height() / dpr))
+            ox = max(0, (self.width() - log_w) // 2)
+            oy = max(0, (self.height() - log_h) // 2)
             painter.drawPixmap(ox, oy, self._text_pixmap)
 
         painter.end()

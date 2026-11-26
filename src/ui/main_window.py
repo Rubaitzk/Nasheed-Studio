@@ -251,7 +251,9 @@ class PlaylistDelegate(QStyledItemDelegate):
         opt.state &= ~QStyle.StateFlag.State_HasFocus
 
         painter.save()
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
         rect = opt.rect.adjusted(2, 2, -2, -2)
         is_selected = bool(opt.state & QStyle.StateFlag.State_Selected)
@@ -532,6 +534,8 @@ class MainWindow(QMainWindow):
         # Preview cache
         self._cached_preview_key = None
         self._cached_preview_pixmap: Optional[QPixmap] = None
+        self._static_layer_render_count: int = 0
+        self._scaled_pixmap_cache: dict = {}
 
         # Timers
         self._title_timer = QTimer(self)
@@ -3627,6 +3631,33 @@ class MainWindow(QMainWindow):
             self._cached_intro_pixmap = None
             return None
 
+    def _scale_preview_pixmap(self, pix: Optional[QPixmap], target_size: QSize) -> QPixmap:
+        """
+        Scale a pixmap for preview display with full device-pixel-ratio awareness
+        and smooth bicubic filtering to eliminate pixelation and blur.
+        Caches scaled pixmaps to prevent redundant re-scaling during animation.
+        """
+        if not pix or pix.isNull():
+            return QPixmap()
+        dpr = float(self.devicePixelRatioF() if hasattr(self, "devicePixelRatioF") else self.devicePixelRatio())
+        pw = max(10, int(round(target_size.width() * dpr)))
+        ph = max(10, int(round(target_size.height() * dpr)))
+        cache_key = (id(pix), pw, ph, dpr)
+        if not hasattr(self, "_scaled_pixmap_cache"):
+            self._scaled_pixmap_cache = {}
+        if cache_key in self._scaled_pixmap_cache:
+            return self._scaled_pixmap_cache[cache_key]
+        scaled = pix.scaled(
+            QSize(pw, ph),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        scaled.setDevicePixelRatio(dpr)
+        if len(self._scaled_pixmap_cache) > 64:
+            self._scaled_pixmap_cache.clear()
+        self._scaled_pixmap_cache[cache_key] = scaled
+        return scaled
+
     def _refresh_preview(self) -> None:
         self._update_resolution_badge()
         target_size = self.preview_frame.size()
@@ -3728,11 +3759,7 @@ class MainWindow(QMainWindow):
             if hasattr(self, "particle_overlay"):
                 self.particle_overlay.set_text_pixmap(None)
             if self._cached_intro_pixmap and not self._cached_intro_pixmap.isNull():
-                scaled_pix = self._cached_intro_pixmap.scaled(
-                    target_size,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
+                scaled_pix = self._scale_preview_pixmap(self._cached_intro_pixmap, target_size)
                 self.preview_image.setPixmap(scaled_pix)
                 self.preview_image.setText("")
             else:
@@ -3878,6 +3905,9 @@ class MainWindow(QMainWindow):
                     tm, ts = divmod(int(tot_d), 60)
                     self.scrubber_total_label.setText(f"{tm:02d}:{ts:02d}")
 
+                self._static_layer_render_count = getattr(self, "_static_layer_render_count", 0) + 1
+                if hasattr(self, "_scaled_pixmap_cache"):
+                    self._scaled_pixmap_cache.clear()
                 self._refresh_particles_preview_state()
         except Exception as exc:
             self.preview_image.setPixmap(QPixmap())
@@ -4308,11 +4338,7 @@ class MainWindow(QMainWindow):
             if hasattr(self, "particle_overlay"):
                 self.particle_overlay.set_text_pixmap(None)
             if getattr(self, "_cached_intro_pixmap", None) and not self._cached_intro_pixmap.isNull():
-                scaled_pix = self._cached_intro_pixmap.scaled(
-                    target_size,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
+                scaled_pix = self._scale_preview_pixmap(self._cached_intro_pixmap, target_size)
                 self.preview_image.setPixmap(scaled_pix)
                 self.preview_image.setText("")
         else:
@@ -4338,43 +4364,29 @@ class MainWindow(QMainWindow):
                     self._current_overlay_pixmap = self._cached_video_overlays[sel_idx]
             else:
                 part_enabled = hasattr(self, "particles_check") and self.particles_check.isChecked()
+                part_style = self.particles_style_combo.currentText() if hasattr(self, "particles_style_combo") else "Wind Streaks"
                 part_layer = self.particles_layer_combo.currentText() if hasattr(self, "particles_layer_combo") else "Below Text"
+                is_wind = ("wind" in str(part_style).lower())
 
                 if getattr(self, "_cached_composition_pixmaps", None) and self._cached_composition_pixmaps:
                     sel_idx = min(active_idx, len(self._cached_composition_pixmaps) - 1)
                     pix = self._cached_composition_pixmaps[sel_idx]
-                    if part_enabled and part_layer == "Below Text":
+                    if part_enabled and part_layer == "Below Text" and not is_wind:
                         bg_pix = getattr(self, "_cached_bg_pixmap", None) or pix
-                        scaled_bg = bg_pix.scaled(
-                            target_size,
-                            Qt.AspectRatioMode.KeepAspectRatio,
-                            Qt.TransformationMode.SmoothTransformation,
-                        )
+                        scaled_bg = self._scale_preview_pixmap(bg_pix, target_size)
                         self.preview_image.setPixmap(scaled_bg)
                         self.preview_image.setText("")
                         if getattr(self, "_cached_video_overlays", None):
                             sel_ov = self._cached_video_overlays[min(active_idx, len(self._cached_video_overlays) - 1)]
-                            scaled_ov = sel_ov.scaled(
-                                target_size,
-                                Qt.AspectRatioMode.KeepAspectRatio,
-                                Qt.TransformationMode.SmoothTransformation,
-                            )
+                            scaled_ov = self._scale_preview_pixmap(sel_ov, target_size)
                             self.particle_overlay.set_text_pixmap(scaled_ov)
                     else:
                         self.particle_overlay.set_text_pixmap(None)
-                        scaled_pix = pix.scaled(
-                            target_size,
-                            Qt.AspectRatioMode.KeepAspectRatio,
-                            Qt.TransformationMode.SmoothTransformation,
-                        )
+                        scaled_pix = self._scale_preview_pixmap(pix, target_size)
                         self.preview_image.setPixmap(scaled_pix)
                         self.preview_image.setText("")
                 elif getattr(self, "_cached_preview_pixmap", None) and not self._cached_preview_pixmap.isNull():
-                    scaled_pix = self._cached_preview_pixmap.scaled(
-                        target_size,
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation,
-                    )
+                    scaled_pix = self._scale_preview_pixmap(self._cached_preview_pixmap, target_size)
                     self.preview_image.setPixmap(scaled_pix)
                     self.preview_image.setText("")
 
@@ -4405,11 +4417,7 @@ class MainWindow(QMainWindow):
 
         if getattr(self, "_preview_current_time", 0.0) < intro_dur:
             if getattr(self, "_cached_intro_pixmap", None) and not self._cached_intro_pixmap.isNull():
-                scaled_intro = self._cached_intro_pixmap.scaled(
-                    target_size,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
+                scaled_intro = self._scale_preview_pixmap(self._cached_intro_pixmap, target_size)
                 self.preview_image.setPixmap(scaled_intro)
                 self.preview_image.setText("")
                 return
@@ -4418,26 +4426,37 @@ class MainWindow(QMainWindow):
         if qimg.isNull():
             return
 
+        dpr = float(self.devicePixelRatioF() if hasattr(self, "devicePixelRatioF") else self.devicePixelRatio())
+        phys_target = QSize(int(round(target_size.width() * dpr)), int(round(target_size.height() * dpr)))
+        w, h = phys_target.width(), phys_target.height()
         fit = self.video_fit_combo.currentText().lower() if hasattr(self, "video_fit_combo") else "fill"
-        w, h = target_size.width(), target_size.height()
 
         if "pad" in fit or "letterbox" in fit:
-            scaled = qimg.scaled(target_size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.FastTransformation)
-            canvas = QImage(target_size, QImage.Format.Format_ARGB32_Premultiplied)
+            scaled = qimg.scaled(phys_target, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            canvas = QImage(phys_target, QImage.Format.Format_ARGB32_Premultiplied)
             canvas.fill(Qt.GlobalColor.black)
             p = QPainter(canvas)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
             ox = (w - scaled.width()) // 2
             oy = (h - scaled.height()) // 2
             p.drawImage(ox, oy, scaled)
         elif "stretch" in fit:
-            canvas = qimg.scaled(target_size, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.FastTransformation)
+            canvas = qimg.scaled(phys_target, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
             p = QPainter(canvas)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         else:  # "fill / crop (cover)"
-            scaled = qimg.scaled(target_size, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.FastTransformation)
+            scaled = qimg.scaled(phys_target, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
             ox = max(0, (scaled.width() - w) // 2)
             oy = max(0, (scaled.height() - h) // 2)
             canvas = scaled.copy(ox, oy, w, h)
             p = QPainter(canvas)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
         active_idx = getattr(self, "_preview_active_visual_idx", 0)
         ov_pix = None
@@ -4451,19 +4470,16 @@ class MainWindow(QMainWindow):
         part_layer = self.particles_layer_combo.currentText() if hasattr(self, "particles_layer_combo") else "Below Text"
 
         if ov_pix and not ov_pix.isNull():
-            ov_cache_key = (id(ov_pix), w, h)
-            if getattr(self, "_scaled_overlay_cache_key", None) != ov_cache_key or not hasattr(self, "_scaled_overlay_pixmap"):
-                self._scaled_overlay_cache_key = ov_cache_key
-                self._scaled_overlay_pixmap = ov_pix.scaled(
-                    target_size,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
+            scaled_ov = self._scale_preview_pixmap(ov_pix, target_size)
+            self._scaled_overlay_pixmap = scaled_ov
             if not (part_enabled and part_layer == "Below Text"):
-                p.drawPixmap(0, 0, self._scaled_overlay_pixmap)
+                # Draw high-res overlay scaled to canvas
+                p.drawPixmap(0, 0, scaled_ov)
         p.end()
 
-        self.preview_image.setPixmap(QPixmap.fromImage(canvas))
+        out_pixmap = QPixmap.fromImage(canvas)
+        out_pixmap.setDevicePixelRatio(dpr)
+        self.preview_image.setPixmap(out_pixmap)
         self.preview_image.setText("")
 
         if part_enabled and part_layer == "Below Text":
@@ -6083,11 +6099,7 @@ class MainWindow(QMainWindow):
                 self.particle_overlay.set_text_pixmap(None)
             intro_pix = getattr(self, "_cached_intro_pixmap", None)
             if intro_pix and not intro_pix.isNull():
-                scaled_intro = intro_pix.scaled(
-                    target_size,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
+                scaled_intro = self._scale_preview_pixmap(intro_pix, target_size)
                 self.preview_image.setPixmap(scaled_intro)
                 self.preview_image.setText("")
             return
@@ -6095,16 +6107,13 @@ class MainWindow(QMainWindow):
         part_enabled = hasattr(self, "particles_check") and self.particles_check.isChecked()
         part_style = self.particles_style_combo.currentText() if hasattr(self, "particles_style_combo") else "Wind Streaks"
         part_layer = self.particles_layer_combo.currentText() if hasattr(self, "particles_layer_combo") else "Below Text"
+        is_wind = ("wind" in str(part_style).lower())
 
-        if part_enabled and part_layer == "Below Text":
+        if part_enabled and part_layer == "Below Text" and not is_wind:
             # In Below Text mode, background ONLY goes to preview_image, and text/overlay goes to particle_overlay
             bg_pix = getattr(self, "_cached_bg_pixmap", None)
             if bg_pix and not bg_pix.isNull():
-                scaled_bg = bg_pix.scaled(
-                    target_size,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
+                scaled_bg = self._scale_preview_pixmap(bg_pix, target_size)
                 self.preview_image.setPixmap(scaled_bg)
                 self.preview_image.setText("")
             else:
@@ -6112,11 +6121,7 @@ class MainWindow(QMainWindow):
 
             ov_pix = getattr(self, "_current_overlay_pixmap", None)
             if ov_pix and not ov_pix.isNull():
-                scaled_ov = ov_pix.scaled(
-                    target_size,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
+                scaled_ov = self._scale_preview_pixmap(ov_pix, target_size)
                 self.particle_overlay.set_text_pixmap(scaled_ov)
             else:
                 self.particle_overlay.set_text_pixmap(None)
@@ -6124,11 +6129,7 @@ class MainWindow(QMainWindow):
             self.particle_overlay.set_text_pixmap(None)
             pix = getattr(self, "_cached_preview_pixmap", None)
             if pix and not pix.isNull():
-                scaled_pix = pix.scaled(
-                    target_size,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
+                scaled_pix = self._scale_preview_pixmap(pix, target_size)
                 self.preview_image.setPixmap(scaled_pix)
                 self.preview_image.setText("")
 
