@@ -40,6 +40,8 @@ from src.services.particle_service import (
     wind_streak_state,
     create_wind_streak_particles,
     draw_particle_shape,
+    particle_state,
+    ParticleState,
 )
 
 math_sin = math.sin
@@ -516,157 +518,53 @@ class ParticleOverlayWidget(QWidget):
     def _speed_multiplier(self) -> float:
         return _speed_multiplier(self._speed_level)
 
+    def seek(self, t: float) -> None:
+        """Seek particle animation to a specific timestamp in seconds."""
+        self._time_counter = float(t)
+        self.update()
+
     def _ensure_particles(self) -> None:
         w = max(100, self.width())
         h = max(100, self.height())
         sm = self._speed_multiplier()
         size_factor = self._size_factor()
-        if len(self._particles) != self._num_particles:
-            rng = random.Random(42 + self._num_particles + self._speed_level)
-            self._particles = [
-                Particle(w, h, self._style, sm, size_factor=size_factor, rng=rng, angle=getattr(self, "_angle", 225.0))
-                for _ in range(self._num_particles)
-            ]
-            if "glint" in self._style.lower() or "twinkle" in self._style.lower():
-                for p in self._particles:
-                    p.width = w
-                    p.height = h
-                    x, y, alpha_factor = glint_state(p, self._time_counter, self._duration)
-                    p.x = x
-                    p.y = y
-                    p.base_alpha = alpha_factor
+        params = {
+            "count": self._num_particles,
+            "speed": self._speed_level,
+            "size": self._size_val,
+            "angle": getattr(self, "_angle", 225.0),
+            "duration": getattr(self, "_duration", 6.0),
+            "color": (self._color.red(), self._color.green(), self._color.blue()),
+        }
+        seed = 42 + self._num_particles + self._speed_level + int(getattr(self, "_angle", 225.0))
+        p_state = particle_state(self._style, params, seed, self._time_counter, (w, h))
+
+        self._particles = []
+        for p in p_state.particles:
+            part = Particle(w, h, self._style, sm, size_factor=size_factor, angle=getattr(self, "_angle", 225.0))
+            part.x = p["x"]
+            part.y = p["y"]
+            part.radius = p.get("radius", getattr(part, "radius", 0.0))
+            part.length = p.get("length", getattr(part, "length", 0.0))
+            part.thickness = p.get("thickness", getattr(part, "thickness", 0.0))
+            part.angle_deg = p.get("angle_deg", getattr(part, "angle_deg", 0.0))
+            part.base_alpha = p.get("alpha", getattr(part, "base_alpha", 1.0))
+            part.sub_type = p.get("sub_type", getattr(part, "sub_type", "default"))
+            part.rot = p.get("rot_rad", getattr(part, "rot", 0.0))
+            part.glint_width = p.get("glint_width", getattr(part, "glint_width", 0.0))
+            self._particles.append(part)
 
     def _reseed_velocities(self) -> None:
-        sm = self._speed_multiplier()
-        s = self._style.lower()
-        res_scale = max(10, self.height()) / 1080.0
-        if "wind" in s:
-            rad = math.radians(getattr(self, "_angle", 225.0))
-            cos_a = math.cos(rad)
-            sin_a = math.sin(rad)
-            speed_mag_ref = 254.558441227 * sm
-            for p in self._particles:
-                p.base_speed_x = speed_mag_ref * cos_a
-                p.base_speed_y = -speed_mag_ref * sin_a
-                var = getattr(p, "speed_var", 1.0)
-                p.vx = p.base_speed_x * var * res_scale
-                p.vy = p.base_speed_y * var * res_scale
-                p.speed_x = p.vx
-                p.speed_y = p.vy
-                p.rot = math.atan2(p.vy, p.vx)
-                p.angle_deg = math.degrees(p.rot)
-        elif "fleck" in s:
-            for p in self._particles:
-                p.base_speed_x = (4.5 + p.depth * 6.6) * sm
-                p.speed_x = p.base_speed_x * res_scale
-                p.sway_speed = random.uniform(0.015, 0.04) * sm
-        elif "glint" in s or "twinkle" in s:
-            kx_choices = [1] if sm <= 1.0 else ([1, 2] if sm <= 3.0 else [2, 3])
-            ky_choices = [-1] if sm <= 1.0 else ([-2, -1] if sm <= 3.0 else [-3, -2])
-            duration = getattr(self, "_duration", 6.0)
-            for p in self._particles:
-                kx = random.choice(kx_choices)
-                ky = random.choice(ky_choices)
-                p.vx = kx * p.width / duration
-                p.vy = ky * p.height / duration
-        elif "bokeh" in s:
-            for p in self._particles:
-                p.base_speed_y = (0.75 + p.depth * 1.8) * sm
-                p.speed_y = p.base_speed_y * res_scale
-                p.sway_speed = random.uniform(0.01, 0.03) * sm
-        elif "crescent" in s:
-            for p in self._particles:
-                p.base_speed_y = (0.9 + p.depth * 1.8) * sm
-                p.speed_y = p.base_speed_y * res_scale
-                p.sway_speed = random.uniform(0.015, 0.035) * sm
-        elif "eight" in s:
-            for p in self._particles:
-                p.base_speed_y = (0.75 + p.depth * 1.5) * sm
-                p.speed_y = p.base_speed_y * res_scale
-                p.sway_speed = random.uniform(0.015, 0.035) * sm
-        else:
-            for p in self._particles:
-                p.base_speed_y = (1.5 + p.depth * 3.0) * sm
-                p.speed_y = p.base_speed_y * res_scale
-                p.sway_speed = random.uniform(0.015, 0.045) * sm
+        self._ensure_particles()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        w = max(100, self.width())
-        h = max(100, self.height())
-        for p in self._particles:
-            p.width = w
-            p.height = h
-        self._rescale_particles()
         self._ensure_particles()
 
     def _update_particles(self) -> None:
         if not self._enabled or self._is_paused:
             return
-
-        w = self.width()
-        h = self.height()
-        if w <= 10 or h <= 10:
-            return
-
-        sm = self._speed_multiplier()
-        s = self._style.lower()
-
-        if "wind" in s:
-            dt = 1.0 / 30.0
-            self._time_counter += dt
-            for p in self._particles:
-                p.width = w
-                p.height = h
-                tau = (p.phase + self._time_counter) % p.t_life
-                p.x = p.spawn_x + p.vx * tau
-                p.y = p.spawn_y + p.vy * tau
-            self.update()
-            return
-
-        if "glint" in s or "twinkle" in s:
-            dt = 1.0 / 30.0
-            self._time_counter = (self._time_counter + dt) % self._duration
-            for p in self._particles:
-                p.width = w
-                p.height = h
-                x, y, alpha_factor = glint_state(p, self._time_counter, self._duration)
-                p.x = x
-                p.y = y
-                p.base_alpha = alpha_factor
-            self.update()
-            return
-
-        is_flecks = ("fleck" in s)
-
-        for p in self._particles:
-            if is_flecks:
-                p.x += p.speed_x
-                p.sway_phase += p.sway_speed
-                p.y = p.base_y + math_sin(p.sway_phase) * p.sway_amp
-
-                if p.x > w + 15:
-                    p.x = -10
-                    p.base_y = random.uniform(h * 0.05, h * 0.95)
-                    p.y = p.base_y
-            else:
-                p.sway_phase += p.sway_speed
-                dx = math_sin(p.sway_phase) * p.sway_amp * sm
-                dy = p.speed_y
-                p.x += dx
-                p.y += dy
-
-                if p.y > h + 15:
-                    p.y = -10
-                    p.x = random.uniform(0, w)
-                elif p.y < -20:
-                    p.y = h + 10
-
-                if p.x < -20:
-                    p.x = w + 10
-                elif p.x > w + 20:
-                    p.x = -10
-
+        self._time_counter += 1.0 / 30.0
         self.update()
 
     def paintEvent(self, event: QPaintEvent) -> None:
@@ -678,100 +576,68 @@ class ParticleOverlayWidget(QWidget):
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
-        # 1. Draw particles using unified anti-aliased vector drawer
-        if self._particles:
-            base_col = (self._color.red(), self._color.green(), self._color.blue())
-            sz_fac = self._size_factor()
-            h_val = max(10, self.height())
-            s = self._style.lower()
+        w = max(10, self.width())
+        h = max(10, self.height())
+        params = {
+            "count": self._num_particles,
+            "speed": self._speed_level,
+            "size": self._size_val,
+            "angle": getattr(self, "_angle", 225.0),
+            "duration": getattr(self, "_duration", 6.0),
+            "color": (self._color.red(), self._color.green(), self._color.blue()),
+        }
+        seed = 42 + self._num_particles + self._speed_level + int(getattr(self, "_angle", 225.0))
 
-            for p in self._particles:
-                if "wind" in s:
-                    draw_particle_shape(
-                        painter,
-                        self._style,
-                        p.x,
-                        p.y,
-                        length=p.length,
-                        thickness=p.thickness,
-                        rot_rad=p.rot,
-                        color_rgb=p.color_rgb,
-                        alpha=p.base_alpha,
-                    )
-                elif "glint" in s:
-                    eff_alpha = p.peak_alpha * p.base_alpha
-                    draw_particle_shape(
-                        painter,
-                        self._style,
-                        p.x,
-                        p.y,
-                        length=p.length,
-                        glint_width=p.glint_width,
-                        angle_deg=p.angle_deg,
-                        alpha=eff_alpha,
-                        base_color_rgb=base_col,
-                    )
-                elif "twinkle" in s:
-                    eff_alpha = p.peak_alpha * p.base_alpha
-                    draw_particle_shape(
-                        painter,
-                        self._style,
-                        p.x,
-                        p.y,
-                        radius=p.radius,
-                        angle_deg=p.angle_deg,
-                        alpha=eff_alpha,
-                        base_color_rgb=base_col,
-                    )
-                elif "bokeh" in s:
-                    draw_particle_shape(
-                        painter,
-                        self._style,
-                        p.x,
-                        p.y,
-                        radius=p.radius,
-                        base_color_rgb=base_col,
-                        size_factor=sz_fac,
-                        canvas_height=h_val,
-                    )
-                elif "crescent" in s:
-                    draw_particle_shape(
-                        painter,
-                        self._style,
-                        p.x,
-                        p.y,
-                        radius=p.radius,
-                        angle_deg=p.angle_deg,
-                        alpha=p.base_alpha,
-                        sub_type=p.sub_type,
-                        base_color_rgb=base_col,
-                    )
-                elif "eight" in s:
-                    draw_particle_shape(
-                        painter,
-                        self._style,
-                        p.x,
-                        p.y,
-                        radius=p.radius,
-                        angle_deg=p.angle_deg,
-                        alpha=p.base_alpha,
-                        base_color_rgb=base_col,
-                    )
-                else:
-                    # Flecks & Orbs
-                    draw_particle_shape(
-                        painter,
-                        self._style,
-                        p.x,
-                        p.y,
-                        radius=p.radius,
-                        alpha=p.base_alpha,
-                        base_color_rgb=base_col,
-                    )
+        # 1. Evaluate particle state using unified mathematical engine
+        p_state = particle_state(self._style, params, seed, self._time_counter, (w, h))
+
+        # Sync self._particles positions for external inspectors/tests
+        if len(self._particles) == len(p_state.particles):
+            for i, p_info in enumerate(p_state.particles):
+                self._particles[i].x = p_info["x"]
+                self._particles[i].y = p_info["y"]
+                self._particles[i].base_alpha = p_info.get("alpha", 1.0)
+                if "radius" in p_info:
+                    self._particles[i].radius = p_info["radius"]
+                if "length" in p_info:
+                    self._particles[i].length = p_info["length"]
+                if "thickness" in p_info:
+                    self._particles[i].thickness = p_info["thickness"]
+
+        base_col = (self._color.red(), self._color.green(), self._color.blue())
+        sz_fac = self._size_factor()
+
+        for p in p_state.particles:
+            L = p.get("length", 0.0)
+            T = p.get("thickness", 0.0)
+            margin_check = L + T + 10.0
+            cur_x = p["x"]
+            cur_y = p["y"]
+            if cur_x < -margin_check or cur_x > w + margin_check or cur_y < -margin_check or cur_y > h + margin_check:
+                continue
+
+            draw_particle_shape(
+                painter,
+                self._style,
+                cur_x,
+                cur_y,
+                length=L,
+                thickness=T,
+                radius=p.get("radius", 0.0),
+                glint_width=p.get("glint_width", 0.0),
+                angle_deg=p.get("angle_deg", 0.0),
+                rot_rad=p.get("rot_rad", 0.0),
+                color_rgb=p.get("color_rgb", base_col),
+                alpha=p.get("alpha", 1.0),
+                sub_type=p.get("sub_type", "default"),
+                base_color_rgb=base_col,
+                size_factor=sz_fac,
+                canvas_height=h,
+            )
 
         # 2. If 'Below Text' layer is active and text pixmap is present, draw text on top of particles
         # Wind Streaks is strictly foreground overlay above text, so skip drawing text over particles
-        if self._layer == LAYER_BELOW_TEXT and self._text_pixmap and not self._text_pixmap.isNull():
+        if "wind" not in self._style.lower() and self._layer == LAYER_BELOW_TEXT and self._text_pixmap and not self._text_pixmap.isNull():
             dpr = self._text_pixmap.devicePixelRatio() or 1.0
             log_w = int(round(self._text_pixmap.width() / dpr))
             log_h = int(round(self._text_pixmap.height() / dpr))

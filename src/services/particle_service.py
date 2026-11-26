@@ -11,12 +11,13 @@ Supports:
 
 from __future__ import annotations
 
+import functools
 import math
 import os
 import random
 import subprocess
 from pathlib import Path
-from typing import Any, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 from PIL import Image, ImageDraw
 
 from PySide6.QtCore import Qt, QPointF
@@ -512,6 +513,492 @@ def create_wind_streak_particles(
     return particles
 
 
+class ParticleState:
+    """
+    Structured particle state container representing all particle states at timestamp t.
+    Can be unpacked as a 4-tuple: positions, angles, sizes, alphas = particle_state(...)
+    or accessed directly via .positions, .angles, .sizes, .alphas, .particles.
+    """
+    __slots__ = ("positions", "angles", "sizes", "alphas", "particles")
+
+    def __init__(
+        self,
+        positions: List[Tuple[float, float]],
+        angles: List[float],
+        sizes: List[float],
+        alphas: List[float],
+        particles: List[dict],
+    ):
+        self.positions = positions
+        self.angles = angles
+        self.sizes = sizes
+        self.alphas = alphas
+        self.particles = particles
+
+    def __iter__(self):
+        return iter((self.positions, self.angles, self.sizes, self.alphas))
+
+    def __getitem__(self, idx):
+        return (self.positions, self.angles, self.sizes, self.alphas)[idx]
+
+    def __len__(self):
+        return 4
+
+
+@functools.lru_cache(maxsize=64)
+def _get_base_particle_descriptors(
+    style: str,
+    count: int,
+    speed_level: int,
+    size_val: int,
+    angle_deg: float,
+    seed: int,
+    duration: float,
+) -> Tuple[dict, ...]:
+    count = max(1, min(50000, int(count)))
+    sm = _speed_multiplier(speed_level)
+    size_factor = (size_val / 5.0) if (1 <= size_val <= 20) else (size_val / 100.0)
+    rng = random.Random(seed)
+    W_ref = 1920.0
+    H_ref = 1080.0
+    two_pi = 2.0 * math.pi
+    s = str(style).lower()
+
+    if "wind" in s:
+        ws_particles = create_wind_streak_particles(
+            count=count,
+            width=W_ref,
+            height=H_ref,
+            angle_deg=angle_deg,
+            speed_level=speed_level,
+            size_factor=size_factor,
+            seed=seed,
+        )
+        return tuple(ws_particles)
+
+    elif "fleck" in s:
+        descriptors = []
+        for _ in range(count):
+            depth = rng.uniform(0.35, 1.0)
+            base_rad = (1.2 + depth * 1.8) * size_factor
+            k_choices = [1, 2] if sm <= 1.0 else ([1, 2, 3] if sm <= 2.0 else [2, 3, 4])
+            k = rng.choice(k_choices)
+            vx = k * W_ref / duration
+            m = rng.choice([1, 2, 3])
+            A = rng.uniform(15.0, 45.0) * sm
+            phi = rng.uniform(0.0, two_pi)
+            x0 = rng.uniform(0.0, W_ref)
+            y0 = rng.uniform(H_ref * 0.05, H_ref * 0.95)
+            alpha = int(round(rng.uniform(120, 245) * (0.4 + 0.6 * depth)))
+            descriptors.append({
+                "x0": x0, "y0": y0, "vx": vx, "m": m, "A": A, "phi": phi,
+                "base_radius": base_rad, "alpha": alpha, "depth": depth,
+            })
+        return tuple(descriptors)
+
+    elif "glint" in s:
+        descriptors = []
+        kx_choices = [1] if sm <= 1.0 else ([1, 2] if sm <= 3.0 else [2, 3])
+        ky_choices = [-1] if sm <= 1.0 else ([-2, -1] if sm <= 3.0 else [-3, -2])
+        for _ in range(count):
+            depth = rng.uniform(0.35, 1.0)
+            base_len = rng.uniform(14.0, 48.0) * size_factor
+            w_ratio = rng.uniform(7.0, 11.0)
+            base_glint_w = base_len / w_ratio
+            angle = -60.0 + rng.uniform(-14.0, 14.0)
+            n_val = rng.choice([2, 3, 4])
+            phase = rng.uniform(0.0, 1.0)
+            peak_alpha = int(round(rng.uniform(150, 255) * (0.5 + 0.5 * depth)))
+            positions = tuple((rng.uniform(0.0, W_ref), rng.uniform(0.0, H_ref)) for _ in range(n_val))
+            kx = rng.choice(kx_choices)
+            ky = rng.choice(ky_choices)
+            vx = kx * W_ref / duration
+            vy = ky * H_ref / duration
+            descriptors.append({
+                "n": n_val, "phase": phase, "positions": positions,
+                "vx": vx, "vy": vy, "peak_alpha": peak_alpha,
+                "base_length": base_len, "base_glint_width": base_glint_w,
+                "angle_deg": angle, "width": W_ref, "height": H_ref,
+                "depth": depth,
+            })
+        return tuple(descriptors)
+
+    elif "twinkle" in s:
+        descriptors = []
+        kx_choices = [1] if sm <= 1.0 else ([1, 2] if sm <= 3.0 else [2, 3])
+        ky_choices = [-1, 0, 1]
+        for _ in range(count):
+            depth = rng.uniform(0.35, 1.0)
+            base_rad = rng.uniform(8.0, 24.0) * size_factor
+            angle = rng.uniform(0.0, 45.0)
+            n_val = rng.choice([2, 3, 4])
+            phase = rng.uniform(0.0, 1.0)
+            peak_alpha = int(round(rng.uniform(150, 255) * (0.5 + 0.5 * depth)))
+            positions = tuple((rng.uniform(0.0, W_ref), rng.uniform(0.0, H_ref)) for _ in range(n_val))
+            kx = rng.choice(kx_choices)
+            ky = rng.choice(ky_choices)
+            vx = kx * W_ref / duration
+            vy = ky * H_ref / duration
+            descriptors.append({
+                "n": n_val, "phase": phase, "positions": positions,
+                "vx": vx, "vy": vy, "peak_alpha": peak_alpha,
+                "base_radius": base_rad, "angle_deg": angle,
+                "width": W_ref, "height": H_ref, "depth": depth,
+            })
+        return tuple(descriptors)
+
+    elif "bokeh" in s:
+        descriptors = []
+        for _ in range(count):
+            depth = rng.uniform(0.35, 1.0)
+            base_rad = rng.uniform(6.0, 22.0) * size_factor
+            k_choices = [1] if sm <= 1.5 else [1, 2]
+            k = rng.choice(k_choices)
+            vy = k * H_ref / duration
+            m = rng.choice([1, 2])
+            A_sway = rng.uniform(90.0, 200.0) * sm
+            phi = rng.uniform(0.0, two_pi)
+            x0 = rng.uniform(0.0, W_ref)
+            y0 = rng.uniform(0.0, H_ref)
+            descriptors.append({
+                "x0": x0, "y0": y0, "vy": vy, "m": m,
+                "A_sway": A_sway, "phi": phi,
+                "base_radius": base_rad, "depth": depth,
+            })
+        return tuple(descriptors)
+
+    elif "crescent" in s:
+        descriptors = []
+        cresc_count = max(8, int(count * 0.7))
+        for i in range(cresc_count):
+            depth = rng.uniform(0.35, 1.0)
+            is_cresc = (i % 2 == 0)
+            base_rad = (rng.uniform(7.0, 15.0) if is_cresc else rng.uniform(4.0, 9.0)) * size_factor
+            angle = rng.uniform(-15.0, 35.0) if is_cresc else rng.uniform(0.0, 72.0)
+            k_choices = [1] if sm <= 1.5 else [1, 2]
+            k = rng.choice(k_choices)
+            vy = k * H_ref / duration
+            m1 = rng.choice([1, 2])
+            m2 = rng.choice([2, 3])
+            A_sway = rng.uniform(120.0, 260.0) * sm
+            A_swirl = rng.uniform(60.0, 140.0) * sm
+            phi1 = rng.uniform(0.0, two_pi)
+            phi2 = rng.uniform(0.0, two_pi)
+            x0 = rng.uniform(0.0, W_ref)
+            y0 = rng.uniform(0.0, H_ref)
+            alpha = int(round(rng.uniform(160, 245) * (0.5 + 0.5 * depth)))
+            descriptors.append({
+                "x0": x0, "y0": y0, "vy": vy, "m1": m1, "m2": m2,
+                "A_sway": A_sway, "A_swirl": A_swirl, "phi1": phi1, "phi2": phi2,
+                "base_radius": base_rad, "angle_deg": angle, "alpha": alpha,
+                "sub_type": "crescent" if is_cresc else "star5",
+                "depth": depth,
+            })
+        return tuple(descriptors)
+
+    elif "eight" in s:
+        descriptors = []
+        count_8 = max(8, int(count * 0.65))
+        for _ in range(count_8):
+            depth = rng.uniform(0.35, 1.0)
+            base_rad = rng.uniform(5.0, 13.0) * size_factor
+            angle = rng.uniform(0.0, 45.0)
+            k_choices = [1] if sm <= 1.5 else [1, 2]
+            k = rng.choice(k_choices)
+            vy = k * H_ref / duration
+            m1 = rng.choice([1, 2])
+            m2 = rng.choice([2, 3])
+            A_sway = rng.uniform(120.0, 260.0) * sm
+            A_swirl = rng.uniform(60.0, 140.0) * sm
+            phi1 = rng.uniform(0.0, two_pi)
+            phi2 = rng.uniform(0.0, two_pi)
+            x0 = rng.uniform(0.0, W_ref)
+            y0 = rng.uniform(0.0, H_ref)
+            alpha = int(round(rng.uniform(160, 245) * (0.5 + 0.5 * depth)))
+            descriptors.append({
+                "x0": x0, "y0": y0, "vy": vy, "m1": m1, "m2": m2,
+                "A_sway": A_sway, "A_swirl": A_swirl, "phi1": phi1, "phi2": phi2,
+                "base_radius": base_rad, "angle_deg": angle, "alpha": alpha,
+                "sub_type": "star8",
+                "depth": depth,
+            })
+        return tuple(descriptors)
+
+    else:  # Floating Orbs
+        descriptors = []
+        for _ in range(count):
+            depth = rng.uniform(0.3, 1.0)
+            base_rad = (1.8 + depth * 3.2) * size_factor
+            k_choices = [1, 2] if sm <= 1.0 else ([1, 2, 3] if sm <= 2.0 else [2, 3, 4])
+            k = rng.choice(k_choices)
+            vy = k * H_ref / duration
+            m1 = rng.choice([1, 2])
+            m2 = rng.choice([2, 3])
+            A_sway = rng.uniform(80.0, 180.0) * sm
+            A_drift = rng.uniform(30.0, 80.0) * sm
+            phi1 = rng.uniform(0.0, two_pi)
+            phi2 = rng.uniform(0.0, two_pi)
+            x0 = rng.uniform(0.0, W_ref)
+            y0 = rng.uniform(0.0, H_ref)
+            alpha = int(round(rng.uniform(100, 225) * (0.35 + 0.65 * depth)))
+            descriptors.append({
+                "x0": x0, "y0": y0, "vy": vy, "m1": m1, "m2": m2,
+                "A_sway": A_sway, "A_drift": A_drift, "phi1": phi1, "phi2": phi2,
+                "base_radius": base_rad, "alpha": alpha, "depth": depth,
+            })
+        return tuple(descriptors)
+
+
+def particle_state(
+    style: str,
+    params: Optional[dict] = None,
+    seed: Optional[int] = None,
+    t: float = 0.0,
+    canvas_size: Tuple[float, float] = (1920.0, 1080.0),
+) -> ParticleState:
+    """
+    Unified stateless particle motion engine used by both the in-app preview
+    and the MP4 render export.
+
+    Returns ParticleState with positions, angles, sizes, alphas, and particles.
+    Can be unpacked as: positions, angles, sizes, alphas = particle_state(...)
+    """
+    if params is None:
+        params = {}
+
+    count = int(params.get("count", params.get("quantity", 80)) or 80)
+    speed_level = int(params.get("speed", 2) or 2)
+    raw_size = params.get("size")
+    if raw_size is not None and 1 <= int(raw_size) <= 20:
+        size_val = int(raw_size)
+    elif raw_size is not None and int(raw_size) > 20:
+        size_val = max(1, min(20, int(round(int(raw_size) / 20.0))))
+    else:
+        size_val = 5
+
+    angle_deg = float(params.get("angle", 225.0) or 225.0)
+    duration = float(params.get("duration", 6.0) or 6.0)
+    raw_color = params.get("color", (56, 189, 248))
+    if isinstance(raw_color, str):
+        c_str = raw_color.lstrip("#")
+        if len(c_str) == 6:
+            color_rgb = (int(c_str[0:2], 16), int(c_str[2:4], 16), int(c_str[4:6], 16))
+        else:
+            color_rgb = (56, 189, 248)
+    elif isinstance(raw_color, (tuple, list)) and len(raw_color) >= 3:
+        color_rgb = (int(raw_color[0]), int(raw_color[1]), int(raw_color[2]))
+    else:
+        color_rgb = (56, 189, 248)
+
+    if seed is None:
+        seed = int(params.get("seed", 42 + count + speed_level + int(angle_deg)))
+
+    canvas_w, canvas_h = canvas_size
+    scale_x = float(canvas_w) / 1920.0
+    scale_y = float(canvas_h) / 1080.0
+    W_ref = 1920.0
+    H_ref = 1080.0
+    two_pi = 2.0 * math.pi
+
+    descriptors = _get_base_particle_descriptors(
+        style=str(style),
+        count=count,
+        speed_level=speed_level,
+        size_val=size_val,
+        angle_deg=angle_deg,
+        seed=seed,
+        duration=duration,
+    )
+
+    positions: List[Tuple[float, float]] = []
+    angles: List[float] = []
+    sizes: List[float] = []
+    alphas: List[float] = []
+    particles: List[dict] = []
+
+    s = str(style).lower()
+
+    if "wind" in s:
+        for p in descriptors:
+            cur_x_c, cur_y_c, alpha_val, rot = wind_streak_state(p, t)
+            x = cur_x_c * scale_x
+            y = cur_y_c * scale_y
+            L = p["length"] * scale_y
+            T = p["thickness"] * scale_y
+            ang = math.degrees(rot)
+            positions.append((x, y))
+            angles.append(ang)
+            sizes.append(L)
+            alphas.append(alpha_val)
+            particles.append({
+                "x": x,
+                "y": y,
+                "length": L,
+                "thickness": T,
+                "rot_rad": rot,
+                "angle_deg": ang,
+                "color_rgb": p.get("color_rgb", (255, 255, 255)),
+                "alpha": alpha_val,
+                "size": L,
+                "radius": T,
+            })
+    elif "fleck" in s:
+        for p in descriptors:
+            cur_x_c = (p["x0"] + p["vx"] * t) % W_ref
+            cur_y_c = p["y0"] + p["A"] * math.sin(two_pi * p["m"] * t / duration + p["phi"])
+            x = cur_x_c * scale_x
+            y = cur_y_c * scale_y
+            rad = p["base_radius"] * scale_y
+            alp = p["alpha"] / 255.0
+            positions.append((x, y))
+            angles.append(0.0)
+            sizes.append(rad)
+            alphas.append(alp)
+            particles.append({
+                "x": x,
+                "y": y,
+                "radius": rad,
+                "alpha": alp,
+                "color_rgb": color_rgb,
+                "size": rad,
+            })
+    elif "glint" in s:
+        for p in descriptors:
+            cur_x_c, cur_y_c, alpha_factor = glint_state(p, t, duration)
+            x = cur_x_c * scale_x
+            y = cur_y_c * scale_y
+            L = p["base_length"] * scale_y
+            gw = p["base_glint_width"] * scale_y
+            eff_alpha = (p["peak_alpha"] * alpha_factor) / 255.0
+            ang = p["angle_deg"]
+            positions.append((x, y))
+            angles.append(ang)
+            sizes.append(L)
+            alphas.append(eff_alpha)
+            particles.append({
+                "x": x,
+                "y": y,
+                "length": L,
+                "glint_width": gw,
+                "radius": gw,
+                "angle_deg": ang,
+                "alpha": eff_alpha,
+                "color_rgb": color_rgb,
+                "size": L,
+            })
+    elif "twinkle" in s:
+        for p in descriptors:
+            cur_x_c, cur_y_c, alpha_factor = glint_state(p, t, duration)
+            x = cur_x_c * scale_x
+            y = cur_y_c * scale_y
+            rad = p["base_radius"] * scale_y
+            eff_alpha = (p["peak_alpha"] * alpha_factor) / 255.0
+            ang = p["angle_deg"]
+            positions.append((x, y))
+            angles.append(ang)
+            sizes.append(rad)
+            alphas.append(eff_alpha)
+            particles.append({
+                "x": x,
+                "y": y,
+                "radius": rad,
+                "angle_deg": ang,
+                "alpha": eff_alpha,
+                "color_rgb": color_rgb,
+                "size": rad,
+            })
+    elif "bokeh" in s:
+        for p in descriptors:
+            cur_x_c = (p["x0"] + p["A_sway"] * math.sin(two_pi * p["m"] * t / duration + p["phi"])) % W_ref
+            cur_y_c = (p["y0"] + p["vy"] * t) % H_ref
+            x = cur_x_c * scale_x
+            y = cur_y_c * scale_y
+            rad = p["base_radius"] * scale_y
+            positions.append((x, y))
+            angles.append(0.0)
+            sizes.append(rad)
+            alphas.append(1.0)
+            particles.append({
+                "x": x,
+                "y": y,
+                "radius": rad,
+                "alpha": 1.0,
+                "color_rgb": color_rgb,
+                "size": rad,
+            })
+    elif "crescent" in s:
+        for p in descriptors:
+            cur_x_c = (p["x0"] + p["A_sway"] * math.sin(two_pi * p["m1"] * t / duration + p["phi1"]) +
+                       p["A_swirl"] * math.cos(two_pi * p["m2"] * t / duration + p["phi2"])) % W_ref
+            cur_y_c = (p["y0"] + p["vy"] * t) % H_ref
+            x = cur_x_c * scale_x
+            y = cur_y_c * scale_y
+            rad = p["base_radius"] * scale_y
+            ang = p["angle_deg"]
+            alp = p["alpha"] / 255.0
+            positions.append((x, y))
+            angles.append(ang)
+            sizes.append(rad)
+            alphas.append(alp)
+            particles.append({
+                "x": x,
+                "y": y,
+                "radius": rad,
+                "angle_deg": ang,
+                "alpha": alp,
+                "sub_type": p["sub_type"],
+                "color_rgb": color_rgb,
+                "size": rad,
+            })
+    elif "eight" in s:
+        for p in descriptors:
+            cur_x_c = (p["x0"] + p["A_sway"] * math.sin(two_pi * p["m1"] * t / duration + p["phi1"]) +
+                       p["A_swirl"] * math.cos(two_pi * p["m2"] * t / duration + p["phi2"])) % W_ref
+            cur_y_c = (p["y0"] + p["vy"] * t) % H_ref
+            x = cur_x_c * scale_x
+            y = cur_y_c * scale_y
+            rad = p["base_radius"] * scale_y
+            ang = p["angle_deg"]
+            alp = p["alpha"] / 255.0
+            positions.append((x, y))
+            angles.append(ang)
+            sizes.append(rad)
+            alphas.append(alp)
+            particles.append({
+                "x": x,
+                "y": y,
+                "radius": rad,
+                "angle_deg": ang,
+                "alpha": alp,
+                "sub_type": "star8",
+                "color_rgb": color_rgb,
+                "size": rad,
+            })
+    else:  # Floating Orbs
+        for p in descriptors:
+            cur_x_c = (p["x0"] + p["A_sway"] * math.sin(two_pi * p["m1"] * t / duration + p["phi1"]) +
+                       p["A_drift"] * math.cos(two_pi * p["m2"] * t / duration + p["phi2"])) % W_ref
+            cur_y_c = (p["y0"] + p["vy"] * t) % H_ref
+            x = cur_x_c * scale_x
+            y = cur_y_c * scale_y
+            rad = p["base_radius"] * scale_y
+            alp = p["alpha"] / 255.0
+            positions.append((x, y))
+            angles.append(0.0)
+            sizes.append(rad)
+            alphas.append(alp)
+            particles.append({
+                "x": x,
+                "y": y,
+                "radius": rad,
+                "alpha": alp,
+                "color_rgb": color_rgb,
+                "size": rad,
+            })
+
+    return ParticleState(positions, angles, sizes, alphas, particles)
+
+
 def _speed_multiplier(speed_level: int) -> float:
     # 1: 0.5x, 2: 1.0x, 3: 1.6x, 4: 2.4x, 5: 3.5x
     multipliers = {1: 0.5, 2: 1.0, 3: 1.6, 4: 2.4, 5: 3.5}
@@ -535,6 +1022,7 @@ def generate_particle_loop_video(
     """
     Generate a seamless looping transparent QuickTime Animation (qtrle) video file.
     The video has full alpha transparency and loops mathematically without seam artifacts.
+    Uses unified particle_state engine to ensure 100% motion parity with preview.
     """
     out_file = Path(output_path).resolve()
     out_file.parent.mkdir(parents=True, exist_ok=True)
@@ -556,327 +1044,18 @@ def generate_particle_loop_video(
         num_frames = 30
         duration = num_frames / float(fps)
 
-    res_scale = height / 1080.0
-    size_factor = (size / 5.0) if (1 <= size <= 20) else (size / 100.0)
-    geom_scale = res_scale * size_factor
-    sm = _speed_multiplier(speed)
     count = max(10, min(300, int(quantity)))
+    size_factor = (size / 5.0) if (1 <= size <= 20) else (size / 100.0)
 
-    # Seed deterministic pseudo-random sequence for repeatability per project settings
-    rng = random.Random(42 + count + speed)
-
-    particles = []
-    is_wind = (style == STYLE_WIND_STREAKS or "wind" in str(style).lower())
-    is_glints = (style == STYLE_LIGHT_GLINTS or "glint" in str(style).lower())
-    is_stars = (style == STYLE_TWINKLE_STARS or "twinkle" in str(style).lower())
-    is_bokeh = (style == STYLE_BOKEH_RINGS or "bokeh" in str(style).lower())
-    is_crescents = (style == STYLE_CRESCENTS_AND_STARS or "crescent" in str(style).lower())
-    is_eight_stars = (style == STYLE_EIGHT_POINT_STARS or "eight" in str(style).lower())
-    is_flecks = (style == STYLE_DRIFTING_FLECKS or "fleck" in str(style).lower())
-
-    base_sprites = {}
-    alpha_cache = {}
-
-    if is_wind:
-        particles = create_wind_streak_particles(
-            count=count,
-            width=width,
-            height=height,
-            angle_deg=angle,
-            speed_level=speed,
-            size_factor=size_factor,
-            seed=42 + count + speed + int(angle),
-        )
-    elif is_glints:
-        # Light Glints: thin tapered white sliver / flick drifting slowly with flashing glint
-        r_out = int(round(r * 0.4 + 255 * 0.6))
-        g_out = int(round(g * 0.4 + 255 * 0.6))
-        b_out = int(round(b * 0.4 + 255 * 0.6))
-
-        kx_choices = [1] if sm <= 1.0 else ([1, 2] if sm <= 3.0 else [2, 3])
-        ky_choices = [-1] if sm <= 1.0 else ([-2, -1] if sm <= 3.0 else [-3, -2])
-
-        for _ in range(count):
-            depth = rng.uniform(0.35, 1.0)
-            length = rng.uniform(14.0, 48.0) * geom_scale
-            w_ratio = rng.uniform(7.0, 11.0)
-            g_width = length / w_ratio
-            angle = -60.0 + rng.uniform(-14.0, 14.0)
-            n_val = rng.choice([2, 3, 4])
-            phase = rng.uniform(0.0, 1.0)
-            peak_alpha = int(round(rng.uniform(150, 255) * (0.5 + 0.5 * depth)))
-
-            positions = [
-                (rng.uniform(0, width), rng.uniform(0, height))
-                for _ in range(n_val)
-            ]
-            kx = rng.choice(kx_choices)
-            ky = rng.choice(ky_choices)
-            vx = kx * width / duration
-            vy = ky * height / duration
-
-            # Quantize length and angle into buckets to maximize sprite reuse
-            len_b = int(round(length / 2.0)) * 2
-            ang_b = int(round(angle / 2.0)) * 2
-            b_key = ("glint", len_b, ang_b)
-
-            if b_key not in base_sprites:
-                b_width = len_b / 9.0
-                pad = int(math.ceil(max(len_b, b_width))) + 8
-                SS = 4
-                im_ss = Image.new("RGBA", (pad * SS, pad * SS), (0, 0, 0, 0))
-                d_ss = ImageDraw.Draw(im_ss)
-                cx_ss = pad * SS / 2.0
-                cy_ss = pad * SS / 2.0
-                p_out = lens_polygon(cx_ss, cy_ss, len_b * SS, b_width * SS, ang_b)
-                d_ss.polygon(p_out, fill=(r_out, g_out, b_out, 255))
-                p_in = lens_polygon(cx_ss, cy_ss, len_b * SS * 0.65, b_width * SS * 0.45, ang_b)
-                d_ss.polygon(p_in, fill=(255, 255, 255, 255))
-                spr = im_ss.resize((pad, pad), Image.Resampling.LANCZOS)
-                base_sprites[b_key] = (spr, pad)
-
-            particles.append({
-                "n": n_val,
-                "phase": phase,
-                "positions": positions,
-                "vx": vx,
-                "vy": vy,
-                "width": width,
-                "height": height,
-                "peak_alpha": peak_alpha,
-                "b_key": b_key,
-                "length": length,
-                "glint_width": g_width,
-                "angle_deg": angle,
-            })
-    elif is_stars:
-        # Twinkle Stars: 4-point diamond star with long thin arms flashing in and out
-        r_out = int(round(r * 0.4 + 255 * 0.6))
-        g_out = int(round(g * 0.4 + 255 * 0.6))
-        b_out = int(round(b * 0.4 + 255 * 0.6))
-
-        kx_choices = [1] if sm <= 1.0 else ([1, 2] if sm <= 3.0 else [2, 3])
-        ky_choices = [-1, 0, 1]
-
-        for _ in range(count):
-            depth = rng.uniform(0.35, 1.0)
-            radius = rng.uniform(8.0, 24.0) * geom_scale
-            angle = rng.uniform(0.0, 45.0)
-            n_val = rng.choice([2, 3, 4])
-            phase = rng.uniform(0.0, 1.0)
-            peak_alpha = int(round(rng.uniform(150, 255) * (0.5 + 0.5 * depth)))
-
-            positions = [
-                (rng.uniform(0, width), rng.uniform(0, height))
-                for _ in range(n_val)
-            ]
-            kx = rng.choice(kx_choices)
-            ky = rng.choice(ky_choices)
-            vx = kx * width / duration
-            vy = ky * height / duration
-
-            r_b = int(round(radius / 2.0)) * 2
-            ang_b = int(round(angle / 5.0)) * 5
-            b_key = ("star", r_b, ang_b)
-
-            if b_key not in base_sprites:
-                pad = r_b * 2 + 10
-                SS = 4
-                im_ss = Image.new("RGBA", (pad * SS, pad * SS), (0, 0, 0, 0))
-                d_ss = ImageDraw.Draw(im_ss)
-                cx_ss = pad * SS / 2.0
-                cy_ss = pad * SS / 2.0
-                p_out = star_4point_polygon(cx_ss, cy_ss, r_b * SS, r_b * SS * 0.18, ang_b)
-                d_ss.polygon(p_out, fill=(r_out, g_out, b_out, 255))
-                p_in = star_4point_polygon(cx_ss, cy_ss, r_b * SS * 0.45, r_b * SS * 0.10, ang_b)
-                d_ss.polygon(p_in, fill=(255, 255, 255, 255))
-                spr = im_ss.resize((pad, pad), Image.Resampling.LANCZOS)
-                base_sprites[b_key] = (spr, pad)
-
-            particles.append({
-                "n": n_val,
-                "phase": phase,
-                "positions": positions,
-                "vx": vx,
-                "vy": vy,
-                "width": width,
-                "height": height,
-                "peak_alpha": peak_alpha,
-                "b_key": b_key,
-                "radius": radius,
-                "angle_deg": angle,
-            })
-    elif is_bokeh:
-        # Bokeh Rings: soft translucent circle with a brighter edge ring, larger and slower
-        r_edge = int(round(r * 0.3 + 255 * 0.7))
-        g_edge = int(round(g * 0.3 + 255 * 0.7))
-        b_edge = int(round(b * 0.3 + 255 * 0.7))
-
-        for _ in range(count):
-            depth = rng.uniform(0.35, 1.0)
-            radius = rng.uniform(6.0, 22.0) * geom_scale
-            k_choices = [1] if sm <= 1.5 else [1, 2]
-            k = rng.choice(k_choices)
-            vy = k * height / duration
-            m = rng.choice([1, 2])
-            A = rng.uniform(5.0, 16.0) * res_scale
-            x0 = rng.uniform(0, width)
-            y0 = rng.uniform(0, height)
-
-            r_b = int(round(radius / 2.0)) * 2
-            b_key = ("bokeh", r_b)
-
-            if b_key not in base_sprites:
-                pad = r_b * 2 + 10
-                SS = 4
-                im_ss = Image.new("RGBA", (pad * SS, pad * SS), (0, 0, 0, 0))
-                d_ss = ImageDraw.Draw(im_ss)
-                cx_ss = pad * SS / 2.0
-                cy_ss = pad * SS / 2.0
-                rb_ss = r_b * SS
-                # Soft translucent fill
-                d_ss.ellipse(
-                    [cx_ss - rb_ss, cy_ss - rb_ss, cx_ss + rb_ss, cy_ss + rb_ss],
-                    fill=(r, g, b, 55),
-                )
-                # Brighter edge ring
-                d_ss.ellipse(
-                    [cx_ss - rb_ss, cy_ss - rb_ss, cx_ss + rb_ss, cy_ss + rb_ss],
-                    outline=(r_edge, g_edge, b_edge, 215),
-                    width=max(1, int(1.8 * SS)),
-                )
-                spr = im_ss.resize((pad, pad), Image.Resampling.LANCZOS)
-                base_sprites[b_key] = (spr, pad)
-
-            particles.append({
-                "x0": x0, "y0": y0, "vy": vy, "m": m, "A": A,
-                "radius": radius, "b_key": b_key,
-            })
-    elif is_crescents:
-        # Crescents & Stars: small crescent moons and 5-point stars, sparse and slow
-        r_out = int(round(r * 0.35 + 255 * 0.65))
-        g_out = int(round(g * 0.35 + 255 * 0.65))
-        b_out = int(round(b * 0.35 + 255 * 0.65))
-        cresc_count = max(8, int(count * 0.7))
-
-        for i in range(cresc_count):
-            depth = rng.uniform(0.35, 1.0)
-            is_cresc = (i % 2 == 0)
-            radius = (rng.uniform(7.0, 15.0) if is_cresc else rng.uniform(4.0, 9.0)) * geom_scale
-            angle = rng.uniform(-15.0, 35.0) if is_cresc else rng.uniform(0.0, 72.0)
-            k_choices = [1] if sm <= 1.5 else [1, 2]
-            k = rng.choice(k_choices)
-            vy = k * height / duration
-            m = rng.choice([1, 2])
-            A = rng.uniform(4.0, 12.0) * res_scale
-            x0 = rng.uniform(0, width)
-            y0 = rng.uniform(0, height)
-            alpha = int(round(rng.uniform(160, 245) * (0.5 + 0.5 * depth)))
-
-            r_b = int(round(radius / 2.0)) * 2
-            ang_b = int(round(angle / 5.0)) * 5
-            shape_type = "cresc" if is_cresc else "star5"
-            b_key = (shape_type, r_b, ang_b)
-
-            if b_key not in base_sprites:
-                pad = r_b * 2 + 10
-                SS = 4
-                im_ss = Image.new("RGBA", (pad * SS, pad * SS), (0, 0, 0, 0))
-                d_ss = ImageDraw.Draw(im_ss)
-                cx_ss = pad * SS / 2.0
-                cy_ss = pad * SS / 2.0
-                if is_cresc:
-                    pts = crescent_polygon(cx_ss, cy_ss, r_b * SS, ang_b)
-                else:
-                    pts = star_5point_polygon(cx_ss, cy_ss, r_b * SS, angle_deg=ang_b)
-                d_ss.polygon(pts, fill=(r_out, g_out, b_out, alpha))
-                spr = im_ss.resize((pad, pad), Image.Resampling.LANCZOS)
-                base_sprites[b_key] = (spr, pad)
-
-            particles.append({
-                "x0": x0, "y0": y0, "vy": vy, "m": m, "A": A,
-                "radius": radius, "b_key": b_key,
-                "sub_type": shape_type,
-                "angle_deg": angle,
-                "alpha": alpha,
-            })
-    elif is_eight_stars:
-        # Eight-Point Stars: small Islamic-style stars (two overlaid squares), sparse and slow
-        r_out = int(round(r * 0.35 + 255 * 0.65))
-        g_out = int(round(g * 0.35 + 255 * 0.65))
-        b_out = int(round(b * 0.35 + 255 * 0.65))
-        count_8 = max(8, int(count * 0.65))
-
-        for _ in range(count_8):
-            depth = rng.uniform(0.35, 1.0)
-            radius = rng.uniform(5.0, 13.0) * geom_scale
-            angle = rng.uniform(0.0, 45.0)
-            k_choices = [1] if sm <= 1.5 else [1, 2]
-            k = rng.choice(k_choices)
-            vy = k * height / duration
-            m = rng.choice([1, 2])
-            A = rng.uniform(4.0, 12.0) * res_scale
-            x0 = rng.uniform(0, width)
-            y0 = rng.uniform(0, height)
-            alpha = int(round(rng.uniform(160, 245) * (0.5 + 0.5 * depth)))
-
-            r_b = int(round(radius / 2.0)) * 2
-            ang_b = int(round(angle / 5.0)) * 5
-            b_key = ("star8", r_b, ang_b)
-
-            if b_key not in base_sprites:
-                pad = r_b * 2 + 10
-                SS = 4
-                im_ss = Image.new("RGBA", (pad * SS, pad * SS), (0, 0, 0, 0))
-                d_ss = ImageDraw.Draw(im_ss)
-                cx_ss = pad * SS / 2.0
-                cy_ss = pad * SS / 2.0
-                pts = star_8point_polygon(cx_ss, cy_ss, r_b * SS, angle_deg=ang_b)
-                d_ss.polygon(pts, fill=(r_out, g_out, b_out, alpha))
-                spr = im_ss.resize((pad, pad), Image.Resampling.LANCZOS)
-                base_sprites[b_key] = (spr, pad)
-
-            particles.append({
-                "x0": x0, "y0": y0, "vy": vy, "m": m, "A": A,
-                "radius": radius, "b_key": b_key,
-                "angle_deg": angle,
-                "alpha": alpha,
-            })
-    elif is_flecks:
-        # Drifting Flecks: Horizontal drift with subtle vertical undulating wave
-        for _ in range(count):
-            depth = rng.uniform(0.35, 1.0)
-            radius = (1.2 + depth * 1.8) * geom_scale
-            # Integer screen widths per loop (1, 2, or 3) scaled by speed factor
-            k_choices = [1, 2] if sm <= 1.0 else ([1, 2, 3] if sm <= 2.0 else [2, 3, 4])
-            k = rng.choice(k_choices)
-            vx = k * width / duration
-            m = rng.choice([1, 2, 3])  # integer wave cycles per loop
-            A = rng.uniform(2.5, 7.5) * res_scale
-            x0 = rng.uniform(0, width)
-            y0 = rng.uniform(height * 0.05, height * 0.95)
-            alpha = int(round(rng.uniform(120, 245) * (0.4 + 0.6 * depth)))
-            particles.append({
-                "x0": x0, "y0": y0, "vx": vx, "m": m, "A": A,
-                "radius": radius, "alpha": alpha
-            })
-    else:
-        # Floating Orbs: Vertical float with sinusoidal sway
-        for _ in range(count):
-            depth = rng.uniform(0.3, 1.0)
-            radius = (1.8 + depth * 3.2) * geom_scale
-            k_choices = [1, 2] if sm <= 1.0 else ([1, 2, 3] if sm <= 2.0 else [2, 3, 4])
-            k = rng.choice(k_choices)
-            vy = k * height / duration
-            m = rng.choice([1, 2, 3])
-            A = rng.uniform(4.0, 14.0) * res_scale
-            x0 = rng.uniform(0, width)
-            y0 = rng.uniform(0, height)
-            alpha = int(round(rng.uniform(100, 225) * (0.35 + 0.65 * depth)))
-            particles.append({
-                "x0": x0, "y0": y0, "vy": vy, "m": m, "A": A,
-                "radius": radius, "alpha": alpha
-            })
+    params = {
+        "count": count,
+        "speed": speed,
+        "size": size,
+        "angle": angle,
+        "duration": duration,
+        "color": (r, g, b),
+    }
+    seed = 42 + count + speed + int(angle)
 
     cmd = [
         ffmpeg_bin, "-y",
@@ -899,7 +1078,6 @@ def generate_particle_loop_video(
         stderr=subprocess.PIPE,
     )
 
-    two_pi = 2.0 * math.pi
     base_col = (r, g, b)
     qimg = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
 
@@ -911,127 +1089,34 @@ def generate_particle_loop_video(
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
-        if is_wind:
-            for p in particles:
-                cur_x, cur_y, alpha_val, rot = wind_streak_state(p, t)
-                L = p["length"]
-                T = p["thickness"]
-                margin_check = L + T + 4.0
-                if cur_x < -margin_check or cur_x > width + margin_check or cur_y < -margin_check or cur_y > height + margin_check:
-                    continue
-                draw_particle_shape(
-                    painter,
-                    STYLE_WIND_STREAKS,
-                    cur_x,
-                    cur_y,
-                    length=L,
-                    thickness=T,
-                    rot_rad=rot,
-                    color_rgb=p["color_rgb"],
-                    alpha=alpha_val,
-                )
-        elif is_glints:
-            for p in particles:
-                cur_x, cur_y, alpha_factor = glint_state(p, t, duration)
-                eff_alpha = p["peak_alpha"] * alpha_factor
-                if eff_alpha < 4:
-                    continue
-                draw_particle_shape(
-                    painter,
-                    STYLE_LIGHT_GLINTS,
-                    cur_x,
-                    cur_y,
-                    length=p["length"],
-                    glint_width=p["glint_width"],
-                    angle_deg=p["angle_deg"],
-                    alpha=eff_alpha,
-                    base_color_rgb=base_col,
-                )
-        elif is_stars:
-            for p in particles:
-                cur_x, cur_y, alpha_factor = glint_state(p, t, duration)
-                eff_alpha = p["peak_alpha"] * alpha_factor
-                if eff_alpha < 4:
-                    continue
-                draw_particle_shape(
-                    painter,
-                    STYLE_TWINKLE_STARS,
-                    cur_x,
-                    cur_y,
-                    radius=p["radius"],
-                    angle_deg=p["angle_deg"],
-                    alpha=eff_alpha,
-                    base_color_rgb=base_col,
-                )
-        elif is_bokeh:
-            for p in particles:
-                cur_y = (p["y0"] + p["vy"] * t) % height
-                cur_x = (p["x0"] + p["A"] * math.sin(two_pi * p["m"] * t / duration)) % width
-                draw_particle_shape(
-                    painter,
-                    STYLE_BOKEH_RINGS,
-                    cur_x,
-                    cur_y,
-                    radius=p["radius"],
-                    base_color_rgb=base_col,
-                    size_factor=size_factor,
-                    canvas_height=height,
-                )
-        elif is_crescents:
-            for p in particles:
-                cur_y = (p["y0"] + p["vy"] * t) % height
-                cur_x = (p["x0"] + p["A"] * math.sin(two_pi * p["m"] * t / duration)) % width
-                draw_particle_shape(
-                    painter,
-                    STYLE_CRESCENTS_AND_STARS,
-                    cur_x,
-                    cur_y,
-                    radius=p["radius"],
-                    angle_deg=p.get("angle_deg", 25.0),
-                    alpha=p.get("alpha", 200),
-                    sub_type=p.get("sub_type", "crescent"),
-                    base_color_rgb=base_col,
-                )
-        elif is_eight_stars:
-            for p in particles:
-                cur_y = (p["y0"] + p["vy"] * t) % height
-                cur_x = (p["x0"] + p["A"] * math.sin(two_pi * p["m"] * t / duration)) % width
-                draw_particle_shape(
-                    painter,
-                    STYLE_EIGHT_POINT_STARS,
-                    cur_x,
-                    cur_y,
-                    radius=p["radius"],
-                    angle_deg=p.get("angle_deg", 0.0),
-                    alpha=p.get("alpha", 200),
-                    base_color_rgb=base_col,
-                )
-        elif is_flecks:
-            for p in particles:
-                cur_x = (p["x0"] + p["vx"] * t) % width
-                cur_y = p["y0"] + p["A"] * math.sin(two_pi * p["m"] * t / duration)
-                draw_particle_shape(
-                    painter,
-                    STYLE_DRIFTING_FLECKS,
-                    cur_x,
-                    cur_y,
-                    radius=p["radius"],
-                    alpha=p["alpha"],
-                    base_color_rgb=base_col,
-                )
-        else:
-            for p in particles:
-                cur_y = (p["y0"] + p["vy"] * t) % height
-                cur_x = (p["x0"] + p["A"] * math.sin(two_pi * p["m"] * t / duration)) % width
-                draw_particle_shape(
-                    painter,
-                    STYLE_FLOATING_ORBS,
-                    cur_x,
-                    cur_y,
-                    radius=p["radius"],
-                    alpha=p["alpha"],
-                    base_color_rgb=base_col,
-                )
+        p_state = particle_state(style, params, seed, t, (width, height))
+        for p in p_state.particles:
+            cur_x = p["x"]
+            cur_y = p["y"]
+            L = p.get("length", 0.0)
+            T = p.get("thickness", 0.0)
+            margin_check = L + T + 10.0
+            if cur_x < -margin_check or cur_x > width + margin_check or cur_y < -margin_check or cur_y > height + margin_check:
+                continue
+
+            draw_particle_shape(
+                painter,
+                style,
+                cur_x,
+                cur_y,
+                length=L,
+                thickness=T,
+                radius=p.get("radius", 0.0),
+                glint_width=p.get("glint_width", 0.0),
+                angle_deg=p.get("angle_deg", 0.0),
+                rot_rad=p.get("rot_rad", 0.0),
+                color_rgb=p.get("color_rgb", base_col),
+                alpha=p.get("alpha", 1.0),
+                sub_type=p.get("sub_type", "default"),
+                base_color_rgb=base_col,
+                size_factor=size_factor,
+                canvas_height=height,
+            )
 
         painter.end()
         proc.stdin.write(bytes(qimg.constBits()))
