@@ -5,16 +5,20 @@ and Intro Card independent watermark font rendering & export.
 """
 
 import json
+import shutil
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pytest
 from PIL import Image
-from PySide6.QtWidgets import QApplication, QLabel
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton
 
 from src.services.compositor import create_composition, create_intro_card
+from src.services.font_service import _CUSTOM_FONTS, refresh_fonts
 from src.services.media_probe import extract_video_frame
+from src.services.project_service import bundle_managed_assets, check_missing_assets
 from src.services.render_service import render_project
 from src.ui.main_window import MainWindow, CollapsibleSection
 from src.ui.widgets.searchable_combo import SearchableFontComboBox
@@ -290,3 +294,140 @@ def test_preview_cache_key_and_intro_card_update_on_watermark_font_change(window
     diff_courier = float(np.abs(arr_exp - arr_courier).mean())
     diff_arial = float(np.abs(arr_exp - arr_arial).mean())
     assert diff_courier < diff_arial
+
+
+def test_watermark_size_range_and_old_values_preserved(window, qapp, tmp_path):
+    """Watermark font size spinbox minimum=10, default=18, maximum=80; <=48 projects load unchanged."""
+    assert window.website_size_spin.minimum() == 10
+    assert window.website_size_spin.value() == 18
+    assert window.website_size_spin.maximum() == 80
+
+    window.website_size_spin.setValue(80)
+    assert window.website_size_spin.value() == 80
+    assert window._project()["website_font_size"] == 80
+
+    # Old project with <= 48 size loads unchanged
+    old_proj = {
+        "project_version": 2,
+        "collection_title": "Old Size Test",
+        "tracks": [],
+        "website_font_size": 24,
+    }
+    p = tmp_path / "old_size_24.json"
+    p.write_text(json.dumps(old_proj), encoding="utf-8")
+    window._load_project_file(str(p))
+    qapp.processEvents()
+    assert window.website_size_spin.value() == 24
+
+
+def test_watermark_browse_button_persistence_and_missing_font_fallback(window, qapp, tmp_path):
+    """Browse button registers custom font across pickers, persists via custom_website_font_path, and handles missing files."""
+    assert isinstance(window.website_font_browse_btn, QPushButton)
+    assert "Browse" in window.website_font_browse_btn.text()
+
+    # Copy BebasNeue-Regular.ttf to a temp path and browse it
+    src_ttf = Path("assets/fonts/BebasNeue-Regular.ttf").resolve()
+    browsed_ttf = tmp_path / "BrowsedWatermark.ttf"
+    shutil.copy2(src_ttf, browsed_ttf)
+
+    with patch("src.ui.main_window.QFileDialog.getOpenFileName", return_value=(str(browsed_ttf), "")):
+        window.website_font_browse_btn.click()
+    qapp.processEvents()
+
+    chosen_fam = window.website_font_family
+    assert chosen_fam
+    assert window.custom_website_font_path == str(browsed_ttf)
+    assert window.website_font_combo.currentText() == chosen_fam
+    # Consistent with other Browse buttons: registered font appears in other pickers too
+    assert window.title_font_combo.findText(chosen_fam) >= 0
+    assert window.track_font_combo.findText(chosen_fam) >= 0
+
+    proj = window._project()
+    assert proj["custom_website_font_path"] == str(browsed_ttf)
+    assert proj["website_font_family"] == chosen_fam
+
+    # Bundling & missing asset checks include custom_website_font_path
+    assert "fonts" not in check_missing_assets(proj)
+    managed = bundle_managed_assets(proj, tmp_path / "bundle")
+    assert Path(managed["custom_website_font_path"]).is_file()
+    assert Path(managed["custom_website_font_path"]).parent.name == "fonts"
+
+    # Save, clear font registry, and load into a new window -> restores cleanly
+    proj_path = tmp_path / "browsed_wm_proj.json"
+    window._write_project(str(proj_path))
+    _CUSTOM_FONTS.clear()
+    refresh_fonts()
+
+    win2 = MainWindow()
+    try:
+        win2.resize(1366, 768)
+        win2.show()
+        win2._load_project_file(str(proj_path))
+        qapp.processEvents()
+        assert win2.custom_website_font_path == str(browsed_ttf)
+        assert win2.website_font_family == chosen_fam
+        assert win2.website_font_combo.currentText() == chosen_fam
+
+        # Now delete the custom font file and load -> graceful fallback with zero crash
+        browsed_ttf.unlink()
+        _CUSTOM_FONTS.clear()
+        refresh_fonts()
+        win2._load_project_file(str(proj_path))
+        qapp.processEvents()
+        win2._refresh_preview()
+        qapp.processEvents()
+        assert win2.preview_image.pixmap() is not None
+    finally:
+        dispose_window(win2)
+
+
+def test_watermark_80px_all_corners_no_clipping_and_export(tmp_path):
+    """At 80 px with a long URL, watermark renders inside frame bounds at all 4 corners and exports cleanly."""
+    sample_audio = Path("tests/fixtures/audio/sample_tone.wav").resolve()
+    sample_bg = Path("tests/fixtures/images/sample_bg.png").resolve()
+
+    src_ttf = Path("assets/fonts/BebasNeue-Regular.ttf").resolve()
+    custom_ttf = tmp_path / "ExportBebas80.ttf"
+    shutil.copy2(src_ttf, custom_ttf)
+
+    for corner in ("Top-Left", "Top-Right", "Bottom-Left", "Bottom-Right"):
+        out_dir = tmp_path / f"corner_{corner}"
+        base, _ = create_composition(
+            width=1920,
+            height=1080,
+            background_path=str(sample_bg),
+            logo_path=None,
+            collection_title="Corner 80px Test",
+            track_titles=["Track 1"],
+            template="Cinematic",
+            out_dir=str(out_dir),
+            website_text="www.nasheedstudio.com",
+            website_position=corner,
+            website_font_size=80,
+            website_font_family=str(custom_ttf),
+            website_x_offset=10 if "Left" in corner else -10,
+            website_y_offset=10 if "Top" in corner else -10,
+        )
+        img = Image.open(base)
+        assert img.size == (1920, 1080)
+
+    # Cold export with _CUSTOM_FONTS cleared verifies render_service registers custom_website_font_path
+    _CUSTOM_FONTS.clear()
+    refresh_fonts()
+    out_mp4 = tmp_path / "wm_80px_browsed.mp4"
+    render_project({
+        "collection_title": "80px Custom Export",
+        "background": str(sample_bg),
+        "tracks": [{"title": "Track 1", "path": str(sample_audio), "duration": 1.0}],
+        "website_text": "www.nasheedstudio.com",
+        "website_show": True,
+        "website_position": "Top-Right",
+        "website_font_size": 80,
+        "website_font_family": "Bebas Neue",
+        "custom_website_font_path": str(custom_ttf),
+        "intro_enabled": False,
+        "output_path": str(out_mp4),
+    })
+    assert out_mp4.is_file() and out_mp4.stat().st_size > 0
+    frame = extract_video_frame(str(out_mp4), 0.5)
+    assert frame.size == (1920, 1080)

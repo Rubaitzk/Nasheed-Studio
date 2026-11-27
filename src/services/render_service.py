@@ -108,6 +108,16 @@ def build_render_command(
     cursor_path = project.get("cursor_path") or None
     cursor_size = int(project.get("cursor_size", 32) or 32)
 
+    # Register any project-referenced custom font files before composing frames
+    for _font_key in ("custom_title_font_path", "custom_track_font_path", "custom_website_font_path"):
+        _fp = project.get(_font_key, "")
+        if _fp and Path(_fp).is_file():
+            try:
+                from src.services.font_service import register_custom_font
+                register_custom_font(_fp)
+            except Exception:
+                pass
+
     # Typography & watermarking
     title_font_family = project.get("title_font_family", "Segoe UI")
     title_font_style = project.get("title_font_style", "Bold")

@@ -512,6 +512,7 @@ class MainWindow(QMainWindow):
         self.track_color = (255, 255, 255)
         self.custom_title_font_path = ""
         self.custom_track_font_path = ""
+        self.custom_website_font_path = ""
         self._website_font_family: str = "Segoe UI"
         self.website_font_style: str = "Regular"
         self.website_color = None
@@ -1828,14 +1829,25 @@ class MainWindow(QMainWindow):
         self.website_pos_combo.currentTextChanged.connect(self._on_website_pos_changed)
         sec_web.addLayout(self._create_prop_row("Position:", self.website_pos_combo))
 
+        wf_box = QHBoxLayout()
+        wf_box.setSpacing(6)
+        wf_lbl = QLabel("Font Family:")
+        wf_lbl.setObjectName("prop_label")
+        wf_lbl.setFixedWidth(90)
         self.website_font_combo = SearchableFontComboBox(placeholder="Search watermark font…")
         self.website_font_combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.website_font_combo.view().setTextElideMode(Qt.TextElideMode.ElideRight)
         self.website_font_combo.currentTextChanged.connect(self._on_website_font_changed)
-        sec_web.addLayout(self._create_prop_row("Font Family:", self.website_font_combo))
+        self.website_font_browse_btn = QPushButton("Browse…")
+        self.website_font_browse_btn.setToolTip("Select custom .ttf/.otf/.ttc font file from disk")
+        self.website_font_browse_btn.clicked.connect(self.choose_custom_website_font)
+        wf_box.addWidget(wf_lbl)
+        wf_box.addWidget(self.website_font_combo, 1)
+        wf_box.addWidget(self.website_font_browse_btn)
+        sec_web.addLayout(wf_box)
 
         self.website_size_spin = QSpinBox()
-        self.website_size_spin.setRange(10, 48)
+        self.website_size_spin.setRange(10, 80)
         self.website_size_spin.setValue(18)
         self.website_size_spin.setSuffix(" px")
         self.website_size_spin.valueChanged.connect(self._on_website_size_changed)
@@ -2482,6 +2494,7 @@ class MainWindow(QMainWindow):
             "website_opacity": round(self.website_opacity_slider.value() / 100.0, 2) if hasattr(self, "website_opacity_slider") else 1.0,
             "website_font_family": self.website_font_family,
             "website_font_style": getattr(self, "website_font_style", "Regular"),
+            "custom_website_font_path": getattr(self, "custom_website_font_path", ""),
             "website_color": getattr(self, "website_color", None),
             "website_x_offset": self.website_x_offset_spin.value() if hasattr(self, "website_x_offset_spin") else 0,
             "website_y_offset": self.website_y_offset_spin.value() if hasattr(self, "website_y_offset_spin") else 0,
@@ -3023,19 +3036,33 @@ class MainWindow(QMainWindow):
             "Font files (*.ttf *.otf *.ttc);;TrueType Font (*.ttf);;OpenType Font (*.otf);;All files (*.*)"
         )
         if path:
-            self._set_custom_font(path, is_title=False)
+            self._set_custom_font(path, target="track")
 
-    def _set_custom_font(self, font_path: str, is_title: bool = True) -> None:
+    def choose_custom_website_font(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose custom font file for Website Watermark", "",
+            "Font files (*.ttf *.otf *.ttc);;TrueType Font (*.ttf);;OpenType Font (*.otf);;All files (*.*)"
+        )
+        if path:
+            self._set_custom_font(path, target="website")
+
+    def _set_custom_font(self, font_path: str, is_title: bool = True, target: Optional[str] = None) -> None:
         from src.services.font_service import register_custom_font
+        mode = target or ("title" if is_title else "track")
         try:
             family, style = register_custom_font(font_path)
-            if is_title:
+            if mode == "title":
                 self.custom_title_font_path = font_path
                 self._refresh_system_fonts(initial=False)
                 if hasattr(self, "title_font_combo"):
                     self.title_font_combo.setCurrentText(family)
                 if style and hasattr(self, "title_style_combo"):
                     self.title_style_combo.setCurrentText(style)
+            elif mode == "website":
+                self.custom_website_font_path = font_path
+                self._refresh_system_fonts(initial=False)
+                self.website_font_style = style or "Regular"
+                self.website_font_family = family
             else:
                 self.custom_track_font_path = font_path
                 self._refresh_system_fonts(initial=False)
@@ -4948,6 +4975,7 @@ class MainWindow(QMainWindow):
                     self.website_show_check.setChecked(True)
                 if hasattr(self, "website_opacity_slider"):
                     self.website_opacity_slider.setValue(100)
+                self.custom_website_font_path = ""
                 self.website_font_family = "Segoe UI"
                 self.website_font_style = "Regular"
                 self.website_color = None
@@ -5315,6 +5343,15 @@ class MainWindow(QMainWindow):
             self.website_show_check.setChecked(bool(tmpl["website_show"]))
         if "website_opacity" in tmpl and hasattr(self, "website_opacity_slider"):
             self.website_opacity_slider.setValue(int(float(tmpl["website_opacity"]) * 100))
+        if "custom_website_font_path" in tmpl:
+            self.custom_website_font_path = tmpl["custom_website_font_path"]
+            if self.custom_website_font_path and Path(self.custom_website_font_path).is_file():
+                try:
+                    from src.services.font_service import register_custom_font
+                    register_custom_font(self.custom_website_font_path)
+                    self._refresh_system_fonts(initial=False)
+                except Exception:
+                    pass
         if "website_font_family" in tmpl and tmpl["website_font_family"]:
             self.website_font_family = tmpl["website_font_family"]
         elif "website_font_family" in tmpl and not tmpl["website_font_family"] and tmpl.get("track_font_family"):
@@ -5679,6 +5716,7 @@ class MainWindow(QMainWindow):
             # Custom Fonts registration
             self.custom_title_font_path = data.get("custom_title_font_path", "")
             self.custom_track_font_path = data.get("custom_track_font_path", "")
+            self.custom_website_font_path = data.get("custom_website_font_path", "")
             if self.custom_title_font_path and Path(self.custom_title_font_path).is_file():
                 try:
                     from src.services.font_service import register_custom_font
@@ -5689,6 +5727,12 @@ class MainWindow(QMainWindow):
                 try:
                     from src.services.font_service import register_custom_font
                     register_custom_font(self.custom_track_font_path)
+                except Exception:
+                    pass
+            if self.custom_website_font_path and Path(self.custom_website_font_path).is_file():
+                try:
+                    from src.services.font_service import register_custom_font
+                    register_custom_font(self.custom_website_font_path)
                 except Exception:
                     pass
             self._refresh_system_fonts(initial=False)
