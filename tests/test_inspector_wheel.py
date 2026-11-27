@@ -29,10 +29,10 @@ class TestInspectorWheel(unittest.TestCase):
 
     def test_passive_wheel_does_not_change_spinbox_and_scrolls_panel(self):
         win = self.win
-        win.inspector_tabs.setCurrentIndex(0)
+        win.inspector_tabs.setCurrentIndex(1)
         self.app.processEvents()
 
-        scroll_area = win.inspector_tabs.widget(0)
+        scroll_area = win.inspector_tabs.widget(1)
         vsb = scroll_area.verticalScrollBar()
         target_sb = win.playlist_cols_spin
 
@@ -59,7 +59,7 @@ class TestInspectorWheel(unittest.TestCase):
 
     def test_focused_wheel_adjusts_spinbox_value(self):
         win = self.win
-        win.inspector_tabs.setCurrentIndex(0)
+        win.inspector_tabs.setCurrentIndex(1)
         self.app.processEvents()
 
         target_sb = win.playlist_cols_spin
@@ -68,7 +68,7 @@ class TestInspectorWheel(unittest.TestCase):
         self.assertTrue(target_sb.hasFocus() or any(c.hasFocus() for c in target_sb.findChildren(target_sb.__class__)))
 
         val_before = target_sb.value()
-        scroll_area = win.inspector_tabs.widget(0)
+        scroll_area = win.inspector_tabs.widget(1)
         vsb = scroll_area.verticalScrollBar()
         scroll_before = vsb.value()
 
@@ -108,7 +108,7 @@ class TestInspectorWheel(unittest.TestCase):
 
     def test_keyboard_input_preserved(self):
         win = self.win
-        win.inspector_tabs.setCurrentIndex(0)
+        win.inspector_tabs.setCurrentIndex(1)
         self.app.processEvents()
 
         target_sb = win.playlist_cols_spin

@@ -108,6 +108,7 @@ TEMPLATE_DESIGN_KEYS = [
     "website_opacity",
     "website_font_family",
     "website_font_style",
+    "custom_website_font_path",
     "website_color",
     "website_x_offset",
     "website_y_offset",
@@ -342,7 +343,7 @@ def check_missing_assets(project_data: dict) -> Dict[str, List[Dict[str, str]]]:
         missing.setdefault("intro_audio", []).append({"path": intro_audio, "field": "intro_audio_path"})
 
     # Custom Fonts
-    for font_key in ["custom_title_font_path", "custom_track_font_path"]:
+    for font_key in ["custom_title_font_path", "custom_track_font_path", "custom_website_font_path"]:
         fp = project_data.get(font_key, "")
         if fp and not Path(fp).is_file():
             missing["fonts"].append({"path": fp, "field": font_key})
@@ -370,7 +371,7 @@ def relink_asset(project_data: dict, old_path: str, new_path: str) -> dict:
         return updated
 
     # Check top-level asset fields
-    for field in ["background", "logo", "cursor_path", "transition_sfx_path", "intro_audio_path", "custom_title_font_path", "custom_track_font_path"]:
+    for field in ["background", "logo", "cursor_path", "transition_sfx_path", "intro_audio_path", "custom_title_font_path", "custom_track_font_path", "custom_website_font_path"]:
         cur = updated.get(field, "")
         if cur and str(Path(cur).resolve()) == old_norm:
             updated[field] = new_norm
@@ -447,6 +448,8 @@ def bundle_managed_assets(project_data: dict, project_bundle_dir: Path) -> dict:
         managed["custom_title_font_path"] = copy_file_safe(managed["custom_title_font_path"], "fonts")
     if managed.get("custom_track_font_path"):
         managed["custom_track_font_path"] = copy_file_safe(managed["custom_track_font_path"], "fonts")
+    if managed.get("custom_website_font_path"):
+        managed["custom_website_font_path"] = copy_file_safe(managed["custom_website_font_path"], "fonts")
 
     # 6. Tracks
     if "tracks" in managed:

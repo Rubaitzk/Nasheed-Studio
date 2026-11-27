@@ -493,7 +493,7 @@ final_deliverable/
       create_desktop_shortcut.ps1 ← Desktop shortcut helper
       README_HOW_TO_RUN.txt   ← Quick-start guide
   Source_Code/                ← Complete clean Python source for maintenance & transparency
-  Scripts/                    ← Release automation & automated test suite (437 tests)
+  Scripts/                    ← Release automation & automated test suite (453 tests)
   Templates/                  ← Seed design templates (JSON)
   Installation/
     INSTALLATION.md           ← Installation and first-run instructions
@@ -513,7 +513,7 @@ final_deliverable/
 2. Navigates to `Application/NCN Studio/` and double-clicks `NCN Studio.exe` (or double-clicks `Create Desktop Shortcut.bat` to place a shortcut on Desktop).
 3. No Python installation is required. No external codecs or software installations are needed.
 4. Embedded Python runtime, standard library (`base_library.zip`), PySide6 Qt 6 engine, and static FFmpeg/FFprobe binaries are bundled inside `Application/NCN Studio/_internal/`.
-5. Complete source code, test suite (437 automated tests), and documentation are included for full ownership.
+5. Complete source code, test suite (453 automated tests), and documentation are included for full ownership.
 """
     manifest_path = release_dir / "MANIFEST.md"
     manifest_path.write_text(manifest, encoding="utf-8")

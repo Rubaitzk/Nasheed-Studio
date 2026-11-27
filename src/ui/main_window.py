@@ -512,7 +512,8 @@ class MainWindow(QMainWindow):
         self.track_color = (255, 255, 255)
         self.custom_title_font_path = ""
         self.custom_track_font_path = ""
-        self.website_font_family: Optional[str] = None
+        self.custom_website_font_path = ""
+        self._website_font_family: str = "Segoe UI"
         self.website_font_style: str = "Regular"
         self.website_color = None
         self.intro_title_color = (255, 255, 255)
@@ -931,68 +932,46 @@ class MainWindow(QMainWindow):
         # 5-Category Editor Inspector
         self.inspector_tabs = QTabWidget()
         self.inspector_tabs.setObjectName("inspector_tabs")
+        self.inspector_tabs.setUsesScrollButtons(True)
+        self.inspector_tabs.setIconSize(QSize(11, 11))
+        self.inspector_tabs.tabBar().setExpanding(False)
 
-        # Tab 0: Canvas & Layout
+        # Tab 0: Canvas (preset, background media, logo overlay, ambient particles)
         t0_scroll, t0_layout = self._create_tab_scroll()
         self._build_tab_canvas_layout(t0_layout)
-        self.inspector_tabs.addTab(t0_scroll, get_svg_icon("tab_layout", 13, "#9CA3AF"), "Canvas")
-        self.inspector_tabs.setTabToolTip(0, "Canvas composition, background, logo & playlist layout")
+        self.inspector_tabs.addTab(t0_scroll, get_svg_icon("tab_layout", 11, "#9CA3AF"), "Canvas")
+        self.inspector_tabs.setTabToolTip(0, "Canvas composition, background, logo & ambient particles")
 
-        # Tab 1: Typography & Text
+        # Tab 1: Text (collection title, playlist track typography, playlist layout grid, watermark)
         t1_scroll, t1_layout = self._create_tab_scroll()
         self._build_tab_typography_text(t1_layout)
-        self.inspector_tabs.addTab(t1_scroll, get_svg_icon("tab_text", 13, "#9CA3AF"), "Text")
-        self.inspector_tabs.setTabToolTip(1, "Collection title, track typography & watermark")
+        self.inspector_tabs.addTab(t1_scroll, get_svg_icon("tab_text", 11, "#9CA3AF"), "Text")
+        self.inspector_tabs.setTabToolTip(1, "Collection title, track typography, playlist grid & watermark")
 
-        # Tab 2: Track Indicator
+        # Tab 2: Indicator (active track cursor & highlight indicator)
         t2_scroll, t2_layout = self._create_tab_scroll()
         self._build_tab_track_indicator(t2_layout)
-        self.inspector_tabs.addTab(t2_scroll, get_svg_icon("tab_indicator", 13, "#9CA3AF"), "Indicator")
+        self.inspector_tabs.addTab(t2_scroll, get_svg_icon("tab_indicator", 11, "#9CA3AF"), "Indicator")
         self.inspector_tabs.setTabToolTip(2, "Active track cursor & highlight indicator")
 
-        # Tab 3: Intro & Presentation
+        # Tab 3: Audio (audio normalization & track transition sound effects)
         t3_scroll, t3_layout = self._create_tab_scroll()
-        self._build_tab_intro_presentation(t3_layout)
-        self.inspector_tabs.addTab(t3_scroll, get_svg_icon("tab_intro", 13, "#9CA3AF"), "Intro")
-        self.inspector_tabs.setTabToolTip(3, "Intro sequence, presentation card, intro title & audio")
+        self._build_tab_audio(t3_layout)
+        self.inspector_tabs.addTab(t3_scroll, get_svg_icon("tab_audio", 11, "#9CA3AF"), "Audio")
+        self.inspector_tabs.setTabToolTip(3, "Audio normalization & track transition sound effects")
 
-        # Tab 4: Audio & SFX
+        # Tab 4: Intro (intro sequence, presentation card, intro title, logo & audio)
         t4_scroll, t4_layout = self._create_tab_scroll()
-        self._build_tab_audio(t4_layout)
-        self.inspector_tabs.addTab(t4_scroll, get_svg_icon("tab_audio", 13, "#9CA3AF"), "Audio")
-        self.inspector_tabs.setTabToolTip(4, "Track transition sound effects & general audio")
+        self._build_tab_intro_presentation(t4_layout)
+        self.inspector_tabs.addTab(t4_scroll, get_svg_icon("tab_intro", 11, "#9CA3AF"), "Intro")
+        self.inspector_tabs.setTabToolTip(4, "Intro sequence, presentation card, intro title & audio")
 
         insp_layout.addWidget(self.inspector_tabs, 1)
         self._install_inspector_wheel_filters()
         self.splitter.addWidget(self.inspector_panel)
 
-        # --------------------------------------------------------------
-        # Splitter Vertical Dividers (Item 4)
-        # 1 px vertical dividers centered in splitter handles with symmetric spacing
-        # --------------------------------------------------------------
+        # Preserve symmetric 7 px draggable gap between panels with no visible vertical divider line
         self.splitter.setHandleWidth(7)
-
-        # 1. Divider between Playlist & Audio and Video Canvas (handle 1)
-        h1 = self.splitter.handle(1)
-        h1_layout = QHBoxLayout(h1)
-        h1_layout.setContentsMargins(3, 0, 3, 0)
-        h1_layout.setSpacing(0)
-        self.playlist_canvas_divider = QFrame(h1)
-        self.playlist_canvas_divider.setObjectName("playlist_canvas_divider")
-        self.playlist_canvas_divider.setFixedWidth(1)
-        self.playlist_canvas_divider.setFrameShape(QFrame.Shape.VLine)
-        h1_layout.addWidget(self.playlist_canvas_divider)
-
-        # 2. Divider between Video Canvas and Inspector (handle 2)
-        h2 = self.splitter.handle(2)
-        h2_layout = QHBoxLayout(h2)
-        h2_layout.setContentsMargins(3, 0, 3, 0)
-        h2_layout.setSpacing(0)
-        self.canvas_inspector_divider = QFrame(h2)
-        self.canvas_inspector_divider.setObjectName("canvas_inspector_divider")
-        self.canvas_inspector_divider.setFixedWidth(1)
-        self.canvas_inspector_divider.setFrameShape(QFrame.Shape.VLine)
-        h2_layout.addWidget(self.canvas_inspector_divider)
 
         # Set default splitter weights & stretch
         self.splitter.setStretchFactor(0, 0)
@@ -1484,73 +1463,6 @@ class MainWindow(QMainWindow):
         sec_logo.addWidget(self.logo_cleanup_check)
         layout.addWidget(sec_logo)
 
-        # 4. Playlist Layout & Arrangement
-        sec_pl = CollapsibleSection("Playlist Layout & Grid", collapsed=False)
-        self.playlist_pos_combo = QComboBox()
-        self.playlist_pos_combo.addItems(["Left", "Center", "Right"])
-        self.playlist_pos_combo.currentTextChanged.connect(lambda _: self._on_layout_param_changed())
-        sec_pl.addLayout(self._create_prop_row("Position:", self.playlist_pos_combo))
-
-        self.playlist_cols_spin = QSpinBox()
-        self.playlist_cols_spin.setRange(1, 4)
-        self.playlist_cols_spin.setValue(1)
-        self.playlist_cols_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.playlist_cols_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
-        sec_pl.addLayout(self._create_prop_row("Columns:", self.playlist_cols_spin))
-
-        self.col_spacing_spin = QSpinBox()
-        self.col_spacing_spin.setRange(10, 250)
-        self.col_spacing_spin.setValue(50)
-        self.col_spacing_spin.setSuffix(" px")
-        self.col_spacing_spin.setToolTip("Distance / gap between playlist columns")
-        self.col_spacing_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
-        sec_pl.addLayout(self._create_prop_row("Column Gap:", self.col_spacing_spin))
-
-        self.playlist_col_mode_combo = QComboBox()
-        self.playlist_col_mode_combo.addItems(["Automatic", "Manual"])
-        self.playlist_col_mode_combo.setToolTip("Control how tracks are distributed across columns (Automatic or Manual)")
-        self.playlist_col_mode_combo.currentTextChanged.connect(self._on_col_distribution_mode_changed)
-        sec_pl.addLayout(self._create_prop_row("Distribution:", self.playlist_col_mode_combo))
-
-        self.dist_manual_row = QHBoxLayout()
-        self.dist_manual_row.setSpacing(6)
-        self.dist_manual_lbl = QLabel("Items Per Col:")
-        self.dist_manual_lbl.setObjectName("prop_label")
-        self.dist_manual_lbl.setFixedWidth(90)
-        self.playlist_col_dist_edit = QLineEdit("12, 12")
-        self.playlist_col_dist_edit.setPlaceholderText("e.g. 12, 12")
-        self.playlist_col_dist_edit.setToolTip("Items per column (comma-separated, e.g. '12, 12' or '10, 8'). Unassigned tracks safely flow into the last column.")
-        self.playlist_col_dist_edit.textChanged.connect(lambda _: self._on_layout_param_changed())
-        self.dist_manual_row.addWidget(self.dist_manual_lbl)
-        self.dist_manual_row.addWidget(self.playlist_col_dist_edit, 1)
-        sec_pl.addLayout(self.dist_manual_row)
-        self.dist_manual_lbl.setVisible(False)
-        self.playlist_col_dist_edit.setVisible(False)
-
-        self.playlist_x_offset_spin = QSpinBox()
-        self.playlist_x_offset_spin.setRange(-500, 500)
-        self.playlist_x_offset_spin.setValue(0)
-        self.playlist_x_offset_spin.setSuffix(" px")
-        self.playlist_x_offset_spin.setToolTip("Fine-tune horizontal position of nasheed titles playlist (-500 to +500 px)")
-        self.playlist_x_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
-        sec_pl.addLayout(self._create_prop_row("Track X-Offset:", self.playlist_x_offset_spin))
-
-        self.playlist_y_offset_spin = QSpinBox()
-        self.playlist_y_offset_spin.setRange(-500, 500)
-        self.playlist_y_offset_spin.setValue(0)
-        self.playlist_y_offset_spin.setSuffix(" px")
-        self.playlist_y_offset_spin.setToolTip("Fine-tune vertical position of nasheed titles playlist (-500 to +500 px)")
-        self.playlist_y_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
-        sec_pl.addLayout(self._create_prop_row("Track Y-Offset:", self.playlist_y_offset_spin))
-
-        self.playlist_bg_slider = QSlider(Qt.Orientation.Horizontal)
-        self.playlist_bg_slider.setRange(0, 100)
-        self.playlist_bg_slider.setValue(0)
-        self.playlist_bg_val_lbl = QLabel("0% (Transparent)")
-        self.playlist_bg_slider.valueChanged.connect(self._on_playlist_bg_changed)
-        sec_pl.addLayout(self._create_slider_prop_row("Panel Opacity:", self.playlist_bg_slider, self.playlist_bg_val_lbl))
-        layout.addWidget(sec_pl)
-
         # 4. Ambient Particles Effect (Feature D)
         sec_particles = CollapsibleSection("Ambient Particles Effect", collapsed=False)
         self.particles_check = QCheckBox("Enable Ambient Particles")
@@ -1833,7 +1745,74 @@ class MainWindow(QMainWindow):
         self._refresh_system_fonts(initial=True)
         layout.addWidget(sec_track)
 
-        # 3. Watermark / Website Text (Moved from Tab 3)
+        # 3. Playlist Layout & Grid (Moved from Canvas tab)
+        sec_pl = CollapsibleSection("Playlist Layout & Grid", collapsed=False)
+        self.playlist_pos_combo = QComboBox()
+        self.playlist_pos_combo.addItems(["Left", "Center", "Right"])
+        self.playlist_pos_combo.currentTextChanged.connect(lambda _: self._on_layout_param_changed())
+        sec_pl.addLayout(self._create_prop_row("Position:", self.playlist_pos_combo))
+
+        self.playlist_cols_spin = QSpinBox()
+        self.playlist_cols_spin.setRange(1, 4)
+        self.playlist_cols_spin.setValue(1)
+        self.playlist_cols_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.playlist_cols_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
+        sec_pl.addLayout(self._create_prop_row("Columns:", self.playlist_cols_spin))
+
+        self.col_spacing_spin = QSpinBox()
+        self.col_spacing_spin.setRange(10, 250)
+        self.col_spacing_spin.setValue(50)
+        self.col_spacing_spin.setSuffix(" px")
+        self.col_spacing_spin.setToolTip("Distance / gap between playlist columns")
+        self.col_spacing_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
+        sec_pl.addLayout(self._create_prop_row("Column Gap:", self.col_spacing_spin))
+
+        self.playlist_col_mode_combo = QComboBox()
+        self.playlist_col_mode_combo.addItems(["Automatic", "Manual"])
+        self.playlist_col_mode_combo.setToolTip("Control how tracks are distributed across columns (Automatic or Manual)")
+        self.playlist_col_mode_combo.currentTextChanged.connect(self._on_col_distribution_mode_changed)
+        sec_pl.addLayout(self._create_prop_row("Distribution:", self.playlist_col_mode_combo))
+
+        self.dist_manual_row = QHBoxLayout()
+        self.dist_manual_row.setSpacing(6)
+        self.dist_manual_lbl = QLabel("Items Per Col:")
+        self.dist_manual_lbl.setObjectName("prop_label")
+        self.dist_manual_lbl.setFixedWidth(90)
+        self.playlist_col_dist_edit = QLineEdit("12, 12")
+        self.playlist_col_dist_edit.setPlaceholderText("e.g. 12, 12")
+        self.playlist_col_dist_edit.setToolTip("Items per column (comma-separated, e.g. '12, 12' or '10, 8'). Unassigned tracks safely flow into the last column.")
+        self.playlist_col_dist_edit.textChanged.connect(lambda _: self._on_layout_param_changed())
+        self.dist_manual_row.addWidget(self.dist_manual_lbl)
+        self.dist_manual_row.addWidget(self.playlist_col_dist_edit, 1)
+        sec_pl.addLayout(self.dist_manual_row)
+        self.dist_manual_lbl.setVisible(False)
+        self.playlist_col_dist_edit.setVisible(False)
+
+        self.playlist_x_offset_spin = QSpinBox()
+        self.playlist_x_offset_spin.setRange(-500, 500)
+        self.playlist_x_offset_spin.setValue(0)
+        self.playlist_x_offset_spin.setSuffix(" px")
+        self.playlist_x_offset_spin.setToolTip("Fine-tune horizontal position of nasheed titles playlist (-500 to +500 px)")
+        self.playlist_x_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
+        sec_pl.addLayout(self._create_prop_row("Track X-Offset:", self.playlist_x_offset_spin))
+
+        self.playlist_y_offset_spin = QSpinBox()
+        self.playlist_y_offset_spin.setRange(-500, 500)
+        self.playlist_y_offset_spin.setValue(0)
+        self.playlist_y_offset_spin.setSuffix(" px")
+        self.playlist_y_offset_spin.setToolTip("Fine-tune vertical position of nasheed titles playlist (-500 to +500 px)")
+        self.playlist_y_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
+        sec_pl.addLayout(self._create_prop_row("Track Y-Offset:", self.playlist_y_offset_spin))
+
+        self.playlist_bg_slider = QSlider(Qt.Orientation.Horizontal)
+        self.playlist_bg_slider.setRange(0, 100)
+        self.playlist_bg_slider.setValue(0)
+        self.playlist_bg_val_lbl = QLabel("0% (Transparent)")
+        self.playlist_bg_slider.valueChanged.connect(self._on_playlist_bg_changed)
+        sec_pl.addLayout(self._create_slider_prop_row("Panel Opacity:", self.playlist_bg_slider, self.playlist_bg_val_lbl))
+        layout.addWidget(sec_pl)
+
+        # 4. Watermark / Website Text (Moved from Tab 3)
         sec_web = CollapsibleSection("Watermark & Website Text", collapsed=False)
         self.website_show_check = QCheckBox("Show Website Watermark")
         self.website_show_check.setChecked(True)
@@ -1850,8 +1829,25 @@ class MainWindow(QMainWindow):
         self.website_pos_combo.currentTextChanged.connect(self._on_website_pos_changed)
         sec_web.addLayout(self._create_prop_row("Position:", self.website_pos_combo))
 
+        wf_box = QHBoxLayout()
+        wf_box.setSpacing(6)
+        wf_lbl = QLabel("Font Family:")
+        wf_lbl.setObjectName("prop_label")
+        wf_lbl.setFixedWidth(90)
+        self.website_font_combo = SearchableFontComboBox(placeholder="Search watermark font…")
+        self.website_font_combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.website_font_combo.view().setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.website_font_combo.currentTextChanged.connect(self._on_website_font_changed)
+        self.website_font_browse_btn = QPushButton("Browse…")
+        self.website_font_browse_btn.setToolTip("Select custom .ttf/.otf/.ttc font file from disk")
+        self.website_font_browse_btn.clicked.connect(self.choose_custom_website_font)
+        wf_box.addWidget(wf_lbl)
+        wf_box.addWidget(self.website_font_combo, 1)
+        wf_box.addWidget(self.website_font_browse_btn)
+        sec_web.addLayout(wf_box)
+
         self.website_size_spin = QSpinBox()
-        self.website_size_spin.setRange(10, 48)
+        self.website_size_spin.setRange(10, 80)
         self.website_size_spin.setValue(18)
         self.website_size_spin.setSuffix(" px")
         self.website_size_spin.valueChanged.connect(self._on_website_size_changed)
@@ -1892,8 +1888,8 @@ class MainWindow(QMainWindow):
         self.website_y_offset_spin.setSuffix(" px")
         self.website_y_offset_spin.setToolTip("Fine-tune vertical positioning of watermark from corner (-500 to +500 px)")
         self.website_y_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
-        sec_web.addLayout(self._create_prop_row("Watermark X-Offset:", self.website_x_offset_spin))
-        sec_web.addLayout(self._create_prop_row("Watermark Y-Offset:", self.website_y_offset_spin))
+        sec_web.addLayout(self._create_prop_row("X-Offset:", self.website_x_offset_spin))
+        sec_web.addLayout(self._create_prop_row("Y-Offset:", self.website_y_offset_spin))
 
         self.overlap_warning = QLabel("Logo and website share the same corner. Position will adjust automatically.")
         self.overlap_warning.setObjectName("warning")
@@ -2496,8 +2492,9 @@ class MainWindow(QMainWindow):
             "website_font_size": self.website_size_spin.value() if hasattr(self, "website_size_spin") else 18,
             "website_show": self.website_show_check.isChecked() if hasattr(self, "website_show_check") else True,
             "website_opacity": round(self.website_opacity_slider.value() / 100.0, 2) if hasattr(self, "website_opacity_slider") else 1.0,
-            "website_font_family": getattr(self, "website_font_family", None) or (self.track_font_combo.currentText() if hasattr(self, "track_font_combo") else "Segoe UI"),
+            "website_font_family": self.website_font_family,
             "website_font_style": getattr(self, "website_font_style", "Regular"),
+            "custom_website_font_path": getattr(self, "custom_website_font_path", ""),
             "website_color": getattr(self, "website_color", None),
             "website_x_offset": self.website_x_offset_spin.value() if hasattr(self, "website_x_offset_spin") else 0,
             "website_y_offset": self.website_y_offset_spin.value() if hasattr(self, "website_y_offset_spin") else 0,
@@ -2943,6 +2940,21 @@ class MainWindow(QMainWindow):
             self.intro_title_font_combo.blockSignals(False)
             self._update_intro_title_styles()
 
+        if hasattr(self, "website_font_combo"):
+            cur_web = (
+                self.website_font_combo.currentText().strip()
+                if self.website_font_combo.count()
+                else (self._website_font_family or "Segoe UI")
+            )
+            self.website_font_combo.blockSignals(True)
+            self.website_font_combo.clear()
+            self.website_font_combo.addItems(families)
+            if not _set_combo_case_insensitive(self.website_font_combo, cur_web):
+                default_web = "Segoe UI" if "Segoe UI" in families else families[0]
+                self.website_font_combo.setCurrentText(default_web)
+                self._website_font_family = default_web
+            self.website_font_combo.blockSignals(False)
+
         self._update_title_styles()
         self._update_track_styles()
 
@@ -3024,19 +3036,33 @@ class MainWindow(QMainWindow):
             "Font files (*.ttf *.otf *.ttc);;TrueType Font (*.ttf);;OpenType Font (*.otf);;All files (*.*)"
         )
         if path:
-            self._set_custom_font(path, is_title=False)
+            self._set_custom_font(path, target="track")
 
-    def _set_custom_font(self, font_path: str, is_title: bool = True) -> None:
+    def choose_custom_website_font(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose custom font file for Website Watermark", "",
+            "Font files (*.ttf *.otf *.ttc);;TrueType Font (*.ttf);;OpenType Font (*.otf);;All files (*.*)"
+        )
+        if path:
+            self._set_custom_font(path, target="website")
+
+    def _set_custom_font(self, font_path: str, is_title: bool = True, target: Optional[str] = None) -> None:
         from src.services.font_service import register_custom_font
+        mode = target or ("title" if is_title else "track")
         try:
             family, style = register_custom_font(font_path)
-            if is_title:
+            if mode == "title":
                 self.custom_title_font_path = font_path
                 self._refresh_system_fonts(initial=False)
                 if hasattr(self, "title_font_combo"):
                     self.title_font_combo.setCurrentText(family)
                 if style and hasattr(self, "title_style_combo"):
                     self.title_style_combo.setCurrentText(style)
+            elif mode == "website":
+                self.custom_website_font_path = font_path
+                self._refresh_system_fonts(initial=False)
+                self.website_font_style = style or "Regular"
+                self.website_font_family = family
             else:
                 self.custom_track_font_path = font_path
                 self._refresh_system_fonts(initial=False)
@@ -3085,6 +3111,44 @@ class MainWindow(QMainWindow):
                     m, s = divmod(int(track_st), 60)
                     self.scrubber_cur_label.setText(f"{m:02d}:{s:02d}")
             self._schedule_preview(120)
+
+    @property
+    def website_font_family(self) -> str:
+        if hasattr(self, "website_font_combo") and self.website_font_combo.count():
+            txt = self.website_font_combo.currentText().strip()
+            if txt and (not self._website_font_family or txt.lower() == self._website_font_family.lower()):
+                return txt
+        return self._website_font_family or "Segoe UI"
+
+    @website_font_family.setter
+    def website_font_family(self, value: Optional[str]) -> None:
+        clean = (value or "").strip() or "Segoe UI"
+        self._website_font_family = clean
+        if hasattr(self, "website_font_combo"):
+            self.website_font_combo.blockSignals(True)
+            if self.website_font_combo.count() > 0:
+                if not _set_combo_case_insensitive(self.website_font_combo, clean):
+                    self.website_font_combo.setCurrentText(clean)
+            else:
+                self.website_font_combo.setCurrentText(clean)
+            self.website_font_combo.blockSignals(False)
+        self._cached_intro_pixmap = None
+        self._cached_preview_key = None
+
+    def _on_website_font_changed(self, text: str) -> None:
+        clean = text.strip()
+        if not clean:
+            return
+        if hasattr(self, "website_font_combo") and self.website_font_combo.count() > 0:
+            idx = self.website_font_combo.findText(clean, Qt.MatchFlag.MatchFixedString)
+            if idx < 0:
+                return
+            clean = self.website_font_combo.itemText(idx)
+        self._website_font_family = clean
+        self._cached_intro_pixmap = None
+        self._cached_preview_key = None
+        self._mark_dirty()
+        self._schedule_preview(150)
 
     def _on_website_pos_changed(self, text: str) -> None:
         self._mark_dirty()
@@ -3623,7 +3687,7 @@ class MainWindow(QMainWindow):
                     website_show=intro_web_show,
                     website_opacity=intro_web_op,
                     website_font_size=intro_web_sz,
-                    website_font_family=getattr(self, "website_font_family", None) or intro_title_fam,
+                    website_font_family=self.website_font_family,
                     website_font_style=getattr(self, "website_font_style", "Regular"),
                     website_color=intro_web_col,
                     blur_radius=intro_blur,
@@ -3685,6 +3749,8 @@ class MainWindow(QMainWindow):
         web_sz = self.website_size_spin.value() if hasattr(self, "website_size_spin") else 18
         web_show = self.website_show_check.isChecked() if hasattr(self, "website_show_check") else True
         web_op = round(self.website_opacity_slider.value() / 100.0, 2) if hasattr(self, "website_opacity_slider") else 1.0
+        web_fam = self.website_font_family
+        web_style = getattr(self, "website_font_style", "Regular")
         cur_mode = self._mode_from_combo()
         cur_cursor_size = self.cursor_size_spin.value() if hasattr(self, "cursor_size_spin") else 32
         cur_track_row = max(0, self.track_list.currentRow()) if (hasattr(self, "track_list") and self.track_list.currentRow() >= 0) else 0
@@ -3707,7 +3773,7 @@ class MainWindow(QMainWindow):
             self.logo_scale_spin.value() if hasattr(self, "logo_scale_spin") else 100,
             self.logo_x_offset_spin.value() if hasattr(self, "logo_x_offset_spin") else 0,
             self.logo_y_offset_spin.value() if hasattr(self, "logo_y_offset_spin") else 0,
-            web_txt, web_pos, web_sz, web_show, web_op,
+            web_txt, web_pos, web_sz, web_show, web_op, web_fam, web_style,
             getattr(self, "website_color", None),
             self.website_x_offset_spin.value() if hasattr(self, "website_x_offset_spin") else 0,
             self.website_y_offset_spin.value() if hasattr(self, "website_y_offset_spin") else 0,
@@ -3817,8 +3883,8 @@ class MainWindow(QMainWindow):
                     website_font_size=web_sz,
                     website_show=web_show,
                     website_opacity=web_op,
-                    website_font_family=getattr(self, "website_font_family", None) or track_fam,
-                    website_font_style=getattr(self, "website_font_style", "Regular"),
+                    website_font_family=web_fam,
+                    website_font_style=web_style,
                     website_color=getattr(self, "website_color", None),
                     website_x_offset=self.website_x_offset_spin.value() if hasattr(self, "website_x_offset_spin") else 0,
                     website_y_offset=self.website_y_offset_spin.value() if hasattr(self, "website_y_offset_spin") else 0,
@@ -4909,7 +4975,8 @@ class MainWindow(QMainWindow):
                     self.website_show_check.setChecked(True)
                 if hasattr(self, "website_opacity_slider"):
                     self.website_opacity_slider.setValue(100)
-                self.website_font_family = None
+                self.custom_website_font_path = ""
+                self.website_font_family = "Segoe UI"
                 self.website_font_style = "Regular"
                 self.website_color = None
                 self._update_website_color_btn()
@@ -5276,8 +5343,19 @@ class MainWindow(QMainWindow):
             self.website_show_check.setChecked(bool(tmpl["website_show"]))
         if "website_opacity" in tmpl and hasattr(self, "website_opacity_slider"):
             self.website_opacity_slider.setValue(int(float(tmpl["website_opacity"]) * 100))
-        if "website_font_family" in tmpl:
+        if "custom_website_font_path" in tmpl:
+            self.custom_website_font_path = tmpl["custom_website_font_path"]
+            if self.custom_website_font_path and Path(self.custom_website_font_path).is_file():
+                try:
+                    from src.services.font_service import register_custom_font
+                    register_custom_font(self.custom_website_font_path)
+                    self._refresh_system_fonts(initial=False)
+                except Exception:
+                    pass
+        if "website_font_family" in tmpl and tmpl["website_font_family"]:
             self.website_font_family = tmpl["website_font_family"]
+        elif "website_font_family" in tmpl and not tmpl["website_font_family"] and tmpl.get("track_font_family"):
+            self.website_font_family = tmpl["track_font_family"]
         if "website_font_style" in tmpl:
             self.website_font_style = tmpl["website_font_style"]
         if "website_color" in tmpl:
@@ -5638,6 +5716,7 @@ class MainWindow(QMainWindow):
             # Custom Fonts registration
             self.custom_title_font_path = data.get("custom_title_font_path", "")
             self.custom_track_font_path = data.get("custom_track_font_path", "")
+            self.custom_website_font_path = data.get("custom_website_font_path", "")
             if self.custom_title_font_path and Path(self.custom_title_font_path).is_file():
                 try:
                     from src.services.font_service import register_custom_font
@@ -5648,6 +5727,12 @@ class MainWindow(QMainWindow):
                 try:
                     from src.services.font_service import register_custom_font
                     register_custom_font(self.custom_track_font_path)
+                except Exception:
+                    pass
+            if self.custom_website_font_path and Path(self.custom_website_font_path).is_file():
+                try:
+                    from src.services.font_service import register_custom_font
+                    register_custom_font(self.custom_website_font_path)
                 except Exception:
                     pass
             self._refresh_system_fonts(initial=False)
@@ -5690,7 +5775,14 @@ class MainWindow(QMainWindow):
                 if hasattr(self, "website_opacity_slider"):
                     web_op_val = int(float(data.get("website_opacity", 1.0) if data.get("website_opacity") is not None else 1.0) * 100)
                     self.website_opacity_slider.setValue(web_op_val)
-                self.website_font_family = data.get("website_font_family", None)
+                raw_wf = data.get("website_font_family")
+                if isinstance(raw_wf, str) and raw_wf.strip():
+                    self.website_font_family = raw_wf.strip()
+                else:
+                    fallback_tf = data.get("track_font_family")
+                    self.website_font_family = (
+                        fallback_tf.strip() if isinstance(fallback_tf, str) and fallback_tf.strip() else "Segoe UI"
+                    )
                 self.website_font_style = data.get("website_font_style", "Regular")
                 raw_wc = data.get("website_color", None)
                 self.website_color = tuple(raw_wc) if isinstance(raw_wc, (list, tuple)) else raw_wc
