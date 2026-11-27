@@ -512,7 +512,7 @@ class MainWindow(QMainWindow):
         self.track_color = (255, 255, 255)
         self.custom_title_font_path = ""
         self.custom_track_font_path = ""
-        self.website_font_family: Optional[str] = None
+        self._website_font_family: str = "Segoe UI"
         self.website_font_style: str = "Regular"
         self.website_color = None
         self.intro_title_color = (255, 255, 255)
@@ -1828,6 +1828,12 @@ class MainWindow(QMainWindow):
         self.website_pos_combo.currentTextChanged.connect(self._on_website_pos_changed)
         sec_web.addLayout(self._create_prop_row("Position:", self.website_pos_combo))
 
+        self.website_font_combo = SearchableFontComboBox(placeholder="Search watermark font…")
+        self.website_font_combo.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.website_font_combo.view().setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.website_font_combo.currentTextChanged.connect(self._on_website_font_changed)
+        sec_web.addLayout(self._create_prop_row("Font Family:", self.website_font_combo))
+
         self.website_size_spin = QSpinBox()
         self.website_size_spin.setRange(10, 48)
         self.website_size_spin.setValue(18)
@@ -1870,8 +1876,8 @@ class MainWindow(QMainWindow):
         self.website_y_offset_spin.setSuffix(" px")
         self.website_y_offset_spin.setToolTip("Fine-tune vertical positioning of watermark from corner (-500 to +500 px)")
         self.website_y_offset_spin.valueChanged.connect(lambda _: self._on_layout_param_changed())
-        sec_web.addLayout(self._create_prop_row("Watermark X-Offset:", self.website_x_offset_spin))
-        sec_web.addLayout(self._create_prop_row("Watermark Y-Offset:", self.website_y_offset_spin))
+        sec_web.addLayout(self._create_prop_row("X-Offset:", self.website_x_offset_spin))
+        sec_web.addLayout(self._create_prop_row("Y-Offset:", self.website_y_offset_spin))
 
         self.overlap_warning = QLabel("Logo and website share the same corner. Position will adjust automatically.")
         self.overlap_warning.setObjectName("warning")
@@ -2474,7 +2480,7 @@ class MainWindow(QMainWindow):
             "website_font_size": self.website_size_spin.value() if hasattr(self, "website_size_spin") else 18,
             "website_show": self.website_show_check.isChecked() if hasattr(self, "website_show_check") else True,
             "website_opacity": round(self.website_opacity_slider.value() / 100.0, 2) if hasattr(self, "website_opacity_slider") else 1.0,
-            "website_font_family": getattr(self, "website_font_family", None) or (self.track_font_combo.currentText() if hasattr(self, "track_font_combo") else "Segoe UI"),
+            "website_font_family": self.website_font_family,
             "website_font_style": getattr(self, "website_font_style", "Regular"),
             "website_color": getattr(self, "website_color", None),
             "website_x_offset": self.website_x_offset_spin.value() if hasattr(self, "website_x_offset_spin") else 0,
@@ -2921,6 +2927,21 @@ class MainWindow(QMainWindow):
             self.intro_title_font_combo.blockSignals(False)
             self._update_intro_title_styles()
 
+        if hasattr(self, "website_font_combo"):
+            cur_web = (
+                self.website_font_combo.currentText().strip()
+                if self.website_font_combo.count()
+                else (self._website_font_family or "Segoe UI")
+            )
+            self.website_font_combo.blockSignals(True)
+            self.website_font_combo.clear()
+            self.website_font_combo.addItems(families)
+            if not _set_combo_case_insensitive(self.website_font_combo, cur_web):
+                default_web = "Segoe UI" if "Segoe UI" in families else families[0]
+                self.website_font_combo.setCurrentText(default_web)
+                self._website_font_family = default_web
+            self.website_font_combo.blockSignals(False)
+
         self._update_title_styles()
         self._update_track_styles()
 
@@ -3063,6 +3084,44 @@ class MainWindow(QMainWindow):
                     m, s = divmod(int(track_st), 60)
                     self.scrubber_cur_label.setText(f"{m:02d}:{s:02d}")
             self._schedule_preview(120)
+
+    @property
+    def website_font_family(self) -> str:
+        if hasattr(self, "website_font_combo") and self.website_font_combo.count():
+            txt = self.website_font_combo.currentText().strip()
+            if txt and (not self._website_font_family or txt.lower() == self._website_font_family.lower()):
+                return txt
+        return self._website_font_family or "Segoe UI"
+
+    @website_font_family.setter
+    def website_font_family(self, value: Optional[str]) -> None:
+        clean = (value or "").strip() or "Segoe UI"
+        self._website_font_family = clean
+        if hasattr(self, "website_font_combo"):
+            self.website_font_combo.blockSignals(True)
+            if self.website_font_combo.count() > 0:
+                if not _set_combo_case_insensitive(self.website_font_combo, clean):
+                    self.website_font_combo.setCurrentText(clean)
+            else:
+                self.website_font_combo.setCurrentText(clean)
+            self.website_font_combo.blockSignals(False)
+        self._cached_intro_pixmap = None
+        self._cached_preview_key = None
+
+    def _on_website_font_changed(self, text: str) -> None:
+        clean = text.strip()
+        if not clean:
+            return
+        if hasattr(self, "website_font_combo") and self.website_font_combo.count() > 0:
+            idx = self.website_font_combo.findText(clean, Qt.MatchFlag.MatchFixedString)
+            if idx < 0:
+                return
+            clean = self.website_font_combo.itemText(idx)
+        self._website_font_family = clean
+        self._cached_intro_pixmap = None
+        self._cached_preview_key = None
+        self._mark_dirty()
+        self._schedule_preview(150)
 
     def _on_website_pos_changed(self, text: str) -> None:
         self._mark_dirty()
@@ -3601,7 +3660,7 @@ class MainWindow(QMainWindow):
                     website_show=intro_web_show,
                     website_opacity=intro_web_op,
                     website_font_size=intro_web_sz,
-                    website_font_family=getattr(self, "website_font_family", None) or intro_title_fam,
+                    website_font_family=self.website_font_family,
                     website_font_style=getattr(self, "website_font_style", "Regular"),
                     website_color=intro_web_col,
                     blur_radius=intro_blur,
@@ -3663,6 +3722,8 @@ class MainWindow(QMainWindow):
         web_sz = self.website_size_spin.value() if hasattr(self, "website_size_spin") else 18
         web_show = self.website_show_check.isChecked() if hasattr(self, "website_show_check") else True
         web_op = round(self.website_opacity_slider.value() / 100.0, 2) if hasattr(self, "website_opacity_slider") else 1.0
+        web_fam = self.website_font_family
+        web_style = getattr(self, "website_font_style", "Regular")
         cur_mode = self._mode_from_combo()
         cur_cursor_size = self.cursor_size_spin.value() if hasattr(self, "cursor_size_spin") else 32
         cur_track_row = max(0, self.track_list.currentRow()) if (hasattr(self, "track_list") and self.track_list.currentRow() >= 0) else 0
@@ -3685,7 +3746,7 @@ class MainWindow(QMainWindow):
             self.logo_scale_spin.value() if hasattr(self, "logo_scale_spin") else 100,
             self.logo_x_offset_spin.value() if hasattr(self, "logo_x_offset_spin") else 0,
             self.logo_y_offset_spin.value() if hasattr(self, "logo_y_offset_spin") else 0,
-            web_txt, web_pos, web_sz, web_show, web_op,
+            web_txt, web_pos, web_sz, web_show, web_op, web_fam, web_style,
             getattr(self, "website_color", None),
             self.website_x_offset_spin.value() if hasattr(self, "website_x_offset_spin") else 0,
             self.website_y_offset_spin.value() if hasattr(self, "website_y_offset_spin") else 0,
@@ -3795,8 +3856,8 @@ class MainWindow(QMainWindow):
                     website_font_size=web_sz,
                     website_show=web_show,
                     website_opacity=web_op,
-                    website_font_family=getattr(self, "website_font_family", None) or track_fam,
-                    website_font_style=getattr(self, "website_font_style", "Regular"),
+                    website_font_family=web_fam,
+                    website_font_style=web_style,
                     website_color=getattr(self, "website_color", None),
                     website_x_offset=self.website_x_offset_spin.value() if hasattr(self, "website_x_offset_spin") else 0,
                     website_y_offset=self.website_y_offset_spin.value() if hasattr(self, "website_y_offset_spin") else 0,
@@ -4887,7 +4948,7 @@ class MainWindow(QMainWindow):
                     self.website_show_check.setChecked(True)
                 if hasattr(self, "website_opacity_slider"):
                     self.website_opacity_slider.setValue(100)
-                self.website_font_family = None
+                self.website_font_family = "Segoe UI"
                 self.website_font_style = "Regular"
                 self.website_color = None
                 self._update_website_color_btn()
@@ -5254,8 +5315,10 @@ class MainWindow(QMainWindow):
             self.website_show_check.setChecked(bool(tmpl["website_show"]))
         if "website_opacity" in tmpl and hasattr(self, "website_opacity_slider"):
             self.website_opacity_slider.setValue(int(float(tmpl["website_opacity"]) * 100))
-        if "website_font_family" in tmpl:
+        if "website_font_family" in tmpl and tmpl["website_font_family"]:
             self.website_font_family = tmpl["website_font_family"]
+        elif "website_font_family" in tmpl and not tmpl["website_font_family"] and tmpl.get("track_font_family"):
+            self.website_font_family = tmpl["track_font_family"]
         if "website_font_style" in tmpl:
             self.website_font_style = tmpl["website_font_style"]
         if "website_color" in tmpl:
@@ -5668,7 +5731,14 @@ class MainWindow(QMainWindow):
                 if hasattr(self, "website_opacity_slider"):
                     web_op_val = int(float(data.get("website_opacity", 1.0) if data.get("website_opacity") is not None else 1.0) * 100)
                     self.website_opacity_slider.setValue(web_op_val)
-                self.website_font_family = data.get("website_font_family", None)
+                raw_wf = data.get("website_font_family")
+                if isinstance(raw_wf, str) and raw_wf.strip():
+                    self.website_font_family = raw_wf.strip()
+                else:
+                    fallback_tf = data.get("track_font_family")
+                    self.website_font_family = (
+                        fallback_tf.strip() if isinstance(fallback_tf, str) and fallback_tf.strip() else "Segoe UI"
+                    )
                 self.website_font_style = data.get("website_font_style", "Regular")
                 raw_wc = data.get("website_color", None)
                 self.website_color = tuple(raw_wc) if isinstance(raw_wc, (list, tuple)) else raw_wc
