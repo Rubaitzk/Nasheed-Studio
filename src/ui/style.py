@@ -223,7 +223,7 @@ QFrame#hairline_h {{
     min-height: 1px;
     border: none;
 }}
-QFrame#hairline_v, QFrame#playlist_canvas_divider, QFrame#canvas_inspector_divider {{
+QFrame#hairline_v {{
     background: {t['border_hairline']};
     max-width: 1px;
     min-width: 1px;
@@ -231,10 +231,7 @@ QFrame#hairline_v, QFrame#playlist_canvas_divider, QFrame#canvas_inspector_divid
 }}
 QSplitter::handle {{
     background: {t['bg_window']};
-}}
-QSplitter::handle:hover QFrame#playlist_canvas_divider,
-QSplitter::handle:hover QFrame#canvas_inspector_divider {{
-    background: {t['accent']};
+    border: none;
 }}
 
 /* ---- Input Controls (Uniform 26-28px height, 4px radius) ---- */
@@ -563,8 +560,8 @@ QTabBar::tab {{
     border-bottom: none;
     border-top-left-radius: 4px;
     border-top-right-radius: 4px;
-    padding: 5px 7px;
-    margin-right: 2px;
+    padding: 5px 3px;
+    margin-right: 1px;
     font-size: 8pt;
     font-weight: 500;
 }}
@@ -577,6 +574,21 @@ QTabBar::tab:selected {{
     color: {t['text_main']};
     border-color: {t['border_hairline']};
     border-bottom: 2px solid {t['accent']};
+}}
+QTabBar QToolButton {{
+    background: {t['bg_panel']};
+    color: {t['text_muted']};
+    border: 1px solid {t['border_hairline']};
+    border-radius: 3px;
+    padding: 0px;
+    margin: 0px;
+    min-height: 0px;
+    min-width: 14px;
+    max-width: 16px;
+}}
+QTabBar QToolButton:hover {{
+    background: {t['bg_field']};
+    color: {t['text_main']};
 }}
 
 /* ---- Inspector Collapsible Section Headers ---- */
