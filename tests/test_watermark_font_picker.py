@@ -13,10 +13,10 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 from PIL import Image
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton
+from PySide6.QtWidgets import QApplication, QComboBox, QLabel, QPushButton
 
 from src.services.compositor import create_composition, create_intro_card
-from src.services.font_service import _CUSTOM_FONTS, refresh_fonts
+from src.services.font_service import _CUSTOM_FONTS, list_family_styles, refresh_fonts
 from src.services.media_probe import extract_video_frame
 from src.services.project_service import bundle_managed_assets, check_missing_assets
 from src.services.render_service import render_project
@@ -431,3 +431,176 @@ def test_watermark_80px_all_corners_no_clipping_and_export(tmp_path):
     assert out_mp4.is_file() and out_mp4.stat().st_size > 0
     frame = extract_video_frame(str(out_mp4), 0.5)
     assert frame.size == (1920, 1080)
+
+
+def test_watermark_font_style_dropdown_dynamic_updates(window, qapp):
+    """Font Style dropdown dynamically reflects available styles for selected watermark font."""
+    window.inspector_tabs.setCurrentIndex(1)
+    qapp.processEvents()
+    text_tab = window.inspector_tabs.widget(1)
+
+    sec_web = None
+    for sec in text_tab.findChildren(CollapsibleSection):
+        if "Watermark & Website Text" in sec.toggle_btn.text():
+            sec_web = sec
+            break
+    assert sec_web is not None
+    assert isinstance(window.website_style_combo, QComboBox)
+    assert text_tab.isAncestorOf(window.website_style_combo)
+
+    # Placement: right below Font Family and above Font Size
+    font_y = window.website_font_combo.mapTo(sec_web, window.website_font_combo.rect().topLeft()).y()
+    style_y = window.website_style_combo.mapTo(sec_web, window.website_style_combo.rect().topLeft()).y()
+    size_y = window.website_size_spin.mapTo(sec_web, window.website_size_spin.rect().topLeft()).y()
+    assert font_y < style_y < size_y
+    assert "Font Style:" in [lbl.text() for lbl in sec_web.findChildren(QLabel)]
+
+    # Keep track of Title and Track styles to ensure zero side effects
+    orig_title_style = window.title_style_combo.currentText()
+    orig_track_style = window.track_style_combo.currentText()
+
+    # Multi-style font (Arial): exposes Regular, Bold, Italic, Bold Italic matching list_family_styles
+    window.website_font_combo.setCurrentText("Arial")
+    qapp.processEvents()
+    arial_styles = [window.website_style_combo.itemText(i) for i in range(window.website_style_combo.count())]
+    assert arial_styles == list_family_styles("Arial")
+    assert set(["Regular", "Bold", "Italic"]).issubset(set(arial_styles))
+    assert window.website_style_combo.currentText() == "Regular"
+    assert window.website_font_style == "Regular"
+
+    # Choose Bold Italic on Arial
+    target_style = "Bold Italic" if "Bold Italic" in arial_styles else "Bold"
+    window.website_style_combo.setCurrentText(target_style)
+    qapp.processEvents()
+    assert window.website_font_style == target_style
+
+    # Switch to another multi-style font (Georgia): preserves matching style cleanly
+    window.website_font_combo.setCurrentText("Georgia")
+    qapp.processEvents()
+    georgia_styles = [window.website_style_combo.itemText(i) for i in range(window.website_style_combo.count())]
+    assert georgia_styles == list_family_styles("Georgia")
+    if target_style in georgia_styles:
+        assert window.website_style_combo.currentText() == target_style
+        assert window.website_font_style == target_style
+
+    # Switch to Regular-only font (Impact or Bebas Neue): shows only Regular and clears invalid style
+    reg_only_fam = "Impact" if window.website_font_combo.findText("Impact") >= 0 else "Bebas Neue"
+    window.website_style_combo.setCurrentText("Italic" if "Italic" in georgia_styles else target_style)
+    qapp.processEvents()
+    window.website_font_combo.setCurrentText(reg_only_fam)
+    qapp.processEvents()
+    reg_styles = [window.website_style_combo.itemText(i) for i in range(window.website_style_combo.count())]
+    assert reg_styles == ["Regular"]
+    assert window.website_style_combo.currentText() == "Regular"
+    assert window.website_font_style == "Regular"
+
+    # Title and Track styles remain untouched
+    assert window.title_style_combo.currentText() == orig_title_style
+    assert window.track_style_combo.currentText() == orig_track_style
+
+
+def test_watermark_font_style_persistence_preview_and_export(window, qapp, tmp_path):
+    """Selected watermark font style persists on save/load and is reflected in preview & video export."""
+    sample_audio = Path("tests/fixtures/audio/sample_tone.wav").resolve()
+    sample_bg = Path("tests/fixtures/images/sample_bg.png").resolve()
+
+    window.website_edit.setText("www.stylizedwatermark.com")
+    window.website_show_check.setChecked(True)
+    window.website_size_spin.setValue(36)
+    window.website_font_combo.setCurrentText("Arial")
+    qapp.processEvents()
+
+    window.website_style_combo.setCurrentText("Regular")
+    window._refresh_preview()
+    qapp.processEvents()
+    key_reg = window._cached_preview_key
+    img_reg = window.preview_image.pixmap().toImage()
+
+    window.website_style_combo.setCurrentText("Bold Italic")
+    window._refresh_preview()
+    qapp.processEvents()
+    key_bi = window._cached_preview_key
+    img_bi = window.preview_image.pixmap().toImage()
+
+    assert key_reg != key_bi
+    assert img_reg != img_bi
+    assert window.website_font_style == "Bold Italic"
+
+    # Intro card preview also updates when style changes
+    window.intro_check.setChecked(True)
+    window._toggle_intro_preview()
+    qapp.processEvents()
+    intro_bi = window.preview_image.pixmap().toImage()
+    window.website_style_combo.setCurrentText("Regular")
+    window._refresh_preview()
+    qapp.processEvents()
+    intro_reg = window.preview_image.pixmap().toImage()
+    assert intro_bi != intro_reg
+    window._toggle_intro_preview()
+    qapp.processEvents()
+
+    # Restore Bold Italic, save, and reload into fresh MainWindow
+    window.website_style_combo.setCurrentText("Bold Italic")
+    qapp.processEvents()
+    proj_path = tmp_path / "wm_style_roundtrip.json"
+    window._write_project(str(proj_path))
+    saved = json.loads(proj_path.read_text(encoding="utf-8"))
+    assert saved["website_font_family"] == "Arial"
+    assert saved["website_font_style"] == "Bold Italic"
+
+    win2 = MainWindow()
+    try:
+        win2.resize(1366, 768)
+        win2.show()
+        win2._load_project_file(str(proj_path))
+        qapp.processEvents()
+        assert win2.website_font_family == "Arial"
+        assert win2.website_font_style == "Bold Italic"
+        assert win2.website_style_combo.currentText() == "Bold Italic"
+    finally:
+        dispose_window(win2)
+
+    # Render short MP4 with Arial Bold Italic and confirm exported frame matches Bold Italic closer than Regular
+    out_mp4 = tmp_path / "wm_bold_italic.mp4"
+    proj = window._project()
+    proj["background"] = str(sample_bg)
+    proj["tracks"] = [{"title": "Track 1", "path": str(sample_audio), "duration": 1.0}]
+    proj["intro_enabled"] = False
+    proj["output_path"] = str(out_mp4)
+    render_project(proj)
+
+    base_bi, _ = create_composition(
+        width=1920,
+        height=1080,
+        background_path=str(sample_bg),
+        logo_path=None,
+        collection_title=proj["collection_title"],
+        track_titles=["Track 1"],
+        template=proj.get("template", "Cinematic"),
+        out_dir=str(tmp_path / "ref_bi"),
+        website_text="www.stylizedwatermark.com",
+        website_show=True,
+        website_font_size=36,
+        website_font_family="Arial",
+        website_font_style="Bold Italic",
+    )
+    base_reg, _ = create_composition(
+        width=1920,
+        height=1080,
+        background_path=str(sample_bg),
+        logo_path=None,
+        collection_title=proj["collection_title"],
+        track_titles=["Track 1"],
+        template=proj.get("template", "Cinematic"),
+        out_dir=str(tmp_path / "ref_reg"),
+        website_text="www.stylizedwatermark.com",
+        website_show=True,
+        website_font_size=36,
+        website_font_family="Arial",
+        website_font_style="Regular",
+    )
+    exp_arr = np.array(extract_video_frame(str(out_mp4), 0.5).convert("RGB"), dtype=np.int16)
+    bi_arr = np.array(Image.open(base_bi).convert("RGB"), dtype=np.int16)
+    reg_arr = np.array(Image.open(base_reg).convert("RGB"), dtype=np.int16)
+    assert float(np.abs(exp_arr - bi_arr).mean()) < float(np.abs(exp_arr - reg_arr).mean())
+

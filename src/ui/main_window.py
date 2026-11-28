@@ -514,7 +514,7 @@ class MainWindow(QMainWindow):
         self.custom_track_font_path = ""
         self.custom_website_font_path = ""
         self._website_font_family: str = "Segoe UI"
-        self.website_font_style: str = "Regular"
+        self._website_font_style: str = "Regular"
         self.website_color = None
         self.intro_title_color = (255, 255, 255)
         self.intro_website_color = (204, 204, 204)
@@ -1846,6 +1846,10 @@ class MainWindow(QMainWindow):
         wf_box.addWidget(self.website_font_browse_btn)
         sec_web.addLayout(wf_box)
 
+        self.website_style_combo = QComboBox()
+        self.website_style_combo.currentTextChanged.connect(self._on_website_style_changed)
+        sec_web.addLayout(self._create_prop_row("Font Style:", self.website_style_combo))
+
         self.website_size_spin = QSpinBox()
         self.website_size_spin.setRange(10, 80)
         self.website_size_spin.setValue(18)
@@ -2957,6 +2961,7 @@ class MainWindow(QMainWindow):
 
         self._update_title_styles()
         self._update_track_styles()
+        self._update_website_styles()
 
         if not initial:
             self._mark_dirty()
@@ -3061,8 +3066,8 @@ class MainWindow(QMainWindow):
             elif mode == "website":
                 self.custom_website_font_path = font_path
                 self._refresh_system_fonts(initial=False)
-                self.website_font_style = style or "Regular"
                 self.website_font_family = family
+                self.website_font_style = style or "Regular"
             else:
                 self.custom_track_font_path = font_path
                 self._refresh_system_fonts(initial=False)
@@ -3132,8 +3137,57 @@ class MainWindow(QMainWindow):
             else:
                 self.website_font_combo.setCurrentText(clean)
             self.website_font_combo.blockSignals(False)
+        self._update_website_styles()
         self._cached_intro_pixmap = None
         self._cached_preview_key = None
+
+    @property
+    def website_font_style(self) -> str:
+        if hasattr(self, "website_style_combo") and self.website_style_combo.count():
+            txt = self.website_style_combo.currentText().strip()
+            if txt:
+                return txt
+        return getattr(self, "_website_font_style", "Regular") or "Regular"
+
+    @website_font_style.setter
+    def website_font_style(self, value: Optional[str]) -> None:
+        clean = (value or "").strip() or "Regular"
+        if hasattr(self, "website_style_combo") and self.website_style_combo.count() > 0:
+            self.website_style_combo.blockSignals(True)
+            if not _set_combo_case_insensitive(self.website_style_combo, clean):
+                cur = self.website_style_combo.currentText().strip()
+                clean = cur or (
+                    self.website_style_combo.itemText(0)
+                    if self.website_style_combo.count()
+                    else "Regular"
+                )
+            else:
+                clean = self.website_style_combo.currentText().strip()
+            self.website_style_combo.blockSignals(False)
+        self._website_font_style = clean
+        self._cached_intro_pixmap = None
+        self._cached_preview_key = None
+
+    def _update_website_styles(self) -> None:
+        if not hasattr(self, "website_font_combo") or not hasattr(self, "website_style_combo"):
+            return
+        fam = self.website_font_family
+        styles = list_family_styles(fam) or ["Regular"]
+        cur = self.website_style_combo.currentText() or getattr(self, "_website_font_style", "Regular")
+        self.website_style_combo.blockSignals(True)
+        self.website_style_combo.clear()
+        self.website_style_combo.addItems(styles)
+        if cur in styles:
+            chosen = cur
+        elif "Regular" in styles:
+            chosen = "Regular"
+        elif "Bold" in styles:
+            chosen = "Bold"
+        else:
+            chosen = styles[0]
+        self.website_style_combo.setCurrentText(chosen)
+        self.website_style_combo.blockSignals(False)
+        self._website_font_style = chosen
 
     def _on_website_font_changed(self, text: str) -> None:
         clean = text.strip()
@@ -3145,6 +3199,17 @@ class MainWindow(QMainWindow):
                 return
             clean = self.website_font_combo.itemText(idx)
         self._website_font_family = clean
+        self._update_website_styles()
+        self._cached_intro_pixmap = None
+        self._cached_preview_key = None
+        self._mark_dirty()
+        self._schedule_preview(150)
+
+    def _on_website_style_changed(self, text: str) -> None:
+        clean = text.strip()
+        if not clean:
+            return
+        self._website_font_style = clean
         self._cached_intro_pixmap = None
         self._cached_preview_key = None
         self._mark_dirty()
