@@ -38,7 +38,10 @@ Documentation/
 # Build artifacts & packages
 build/
 dist/
+dist_backup/
+dist_staging/
 final_deliverable/
+final_deliverable_backup/
 final_delivery_proof/
 release_build/
 release_build_log.txt
@@ -60,6 +63,11 @@ picture_for_improving_layout/
 last_improvements/
 reference/
 final_delivery_proof/
+tests/artifacts/particles_aa/
+tests/artifacts/particles_parity/
+tests/artifacts/layout_reorg/
+tests/artifacts/watermark_followup/
+tests/artifacts/watermark_font/
 
 # Render work directories & logs
 *_render_work/
